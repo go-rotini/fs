@@ -156,8 +156,8 @@ func chmodChainFromTo(from, to string, perm os.FileMode) error {
 
 	cur := cleanTo
 	for {
-		if err := os.Chmod(cur, perm); err != nil {
-			return err //nolint:wrapcheck // caller wraps via *PathError
+		if err := osChmod(cur, perm); err != nil {
+			return err
 		}
 		if cur == cleanFrom {
 			return nil
@@ -177,7 +177,7 @@ func chmodChainFromTo(from, to string, perm os.FileMode) error {
 func ListDir(path string, opts ...ListOption) ([]stdfs.DirEntry, error) {
 	cfg := newListOptions(opts)
 
-	f, err := os.Open(path)
+	f, err := osOpen(path)
 	if err != nil {
 		return nil, wrapPathError(opListDir, path, err)
 	}
@@ -215,7 +215,7 @@ func ListDir(path string, opts ...ListOption) ([]stdfs.DirEntry, error) {
 // returns ([ErrNotDir]); a missing path returns the wrapped
 // [ErrNotFound].
 func IsEmpty(path string) (bool, error) {
-	info, err := os.Stat(path)
+	info, err := osStat(path)
 	if err != nil {
 		return false, wrapPathError(opIsEmpty, path, err)
 	}
@@ -223,7 +223,7 @@ func IsEmpty(path string) (bool, error) {
 		return false, wrapPathError(opIsEmpty, path, ErrNotDir)
 	}
 
-	f, err := os.Open(path)
+	f, err := osOpen(path)
 	if err != nil {
 		return false, wrapPathError(opIsEmpty, path, err)
 	}

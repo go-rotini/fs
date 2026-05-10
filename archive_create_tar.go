@@ -73,9 +73,9 @@ func tarWalkHandler(root, path string, d stdfs.DirEntry, werr error, tw *tar.Wri
 
 	var linkTarget string
 	if info.Mode()&os.ModeSymlink != 0 {
-		lt, lerr := os.Readlink(path)
+		lt, lerr := osReadlink(path)
 		if lerr != nil {
-			return lerr //nolint:wrapcheck // outer caller wraps
+			return lerr
 		}
 		linkTarget = lt
 	}

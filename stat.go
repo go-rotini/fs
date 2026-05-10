@@ -53,7 +53,7 @@ func SetMtime(path string, t time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Chtimes(path, atime, t); err != nil {
+	if err := osChtimes(path, atime, t); err != nil {
 		return wrapPathError(opSetTimes, path, err)
 	}
 	return nil
@@ -65,7 +65,7 @@ func SetAtime(path string, t time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Chtimes(path, t, mtime); err != nil {
+	if err := osChtimes(path, t, mtime); err != nil {
 		return wrapPathError(opSetTimes, path, err)
 	}
 	return nil
@@ -73,7 +73,7 @@ func SetAtime(path string, t time.Time) error {
 
 // SetTimes sets both atime and mtime in one syscall.
 func SetTimes(path string, atime, mtime time.Time) error {
-	if err := os.Chtimes(path, atime, mtime); err != nil {
+	if err := osChtimes(path, atime, mtime); err != nil {
 		return wrapPathError(opSetTimes, path, err)
 	}
 	return nil
@@ -139,15 +139,15 @@ func Touch(path string, opts ...TouchOption) error {
 	}
 
 	if !Exists(path) {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, cfg.perm)
+		f, err := osOpenFile(path, os.O_CREATE|os.O_WRONLY, cfg.perm)
 		if err != nil {
 			return wrapPathError(opTouch, path, err)
 		}
-		if cerr := f.Close(); cerr != nil {
+		if cerr := fileClose(f); cerr != nil {
 			return wrapPathError(opTouch, path, cerr)
 		}
 	}
-	if err := os.Chtimes(path, atime, mtime); err != nil {
+	if err := osChtimes(path, atime, mtime); err != nil {
 		return wrapPathError(opTouch, path, err)
 	}
 	return nil

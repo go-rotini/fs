@@ -44,7 +44,7 @@ func extractTarEntry(hdr *tar.Header, tr *tar.Reader, dst string, cfg archiveExt
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
-		if err := os.MkdirAll(target, safeMode(os.FileMode(hdr.Mode), true, cfg.preserveMode)); err != nil {
+		if err := osMkdirAll(target, safeMode(os.FileMode(hdr.Mode), true, cfg.preserveMode)); err != nil {
 			return wrapPathError(opExtractArchive, target, err)
 		}
 	case tar.TypeReg:
@@ -61,22 +61,22 @@ func extractTarEntry(hdr *tar.Header, tr *tar.Reader, dst string, cfg archiveExt
 }
 
 func extractTarRegular(hdr *tar.Header, tr *tar.Reader, target string, cfg archiveExtractOptions, used *int64) error {
-	if err := os.MkdirAll(filepath.Dir(target), Mode0755); err != nil {
+	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
 		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
 	}
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
+	f, err := osOpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
 		safeMode(os.FileMode(hdr.Mode), false, cfg.preserveMode))
 	if err != nil {
 		return wrapPathError(opExtractArchive, target, err)
 	}
 	if _, cerr := io.Copy(limitWrap(f, used, cfg.maxBytes), tr); cerr != nil {
-		_ = f.Close()
+		closeQuietly(f)
 		if errors.Is(cerr, ErrArchiveTooLarge) {
 			return wrapPathError(opExtractArchive, target, ErrArchiveTooLarge)
 		}
 		return wrapPathError(opExtractArchive, target, cerr)
 	}
-	if err := f.Close(); err != nil {
+	if err := fileClose(f); err != nil {
 		return wrapPathError(opExtractArchive, target, err)
 	}
 	return nil
@@ -86,11 +86,11 @@ func extractTarSymlink(hdr *tar.Header, dst, target string) error {
 	if err := validateTarSymlinkTarget(dst, target, hdr.Linkname); err != nil {
 		return wrapPathError(opExtractArchive, target, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), Mode0755); err != nil {
+	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
 		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
 	}
-	_ = os.Remove(target) // symlink can't replace an existing entry
-	if err := os.Symlink(hdr.Linkname, target); err != nil {
+	_ = osRemove(target) //nolint:errcheck // best-effort: missing target is the common case
+	if err := osSymlink(hdr.Linkname, target); err != nil {
 		return wrapPathError(opExtractArchive, target, err)
 	}
 	return nil
@@ -101,11 +101,11 @@ func extractTarHardlink(hdr *tar.Header, dst, target string) error {
 	if lerr != nil {
 		return wrapPathError(opExtractArchive, hdr.Linkname, lerr)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), Mode0755); err != nil {
+	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
 		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
 	}
-	_ = os.Remove(target)
-	if err := os.Link(linkTarget, target); err != nil {
+	_ = osRemove(target) //nolint:errcheck // best-effort: missing target is the common case
+	if err := osLink(linkTarget, target); err != nil {
 		return wrapPathError(opExtractArchive, target, err)
 	}
 	return nil

@@ -204,8 +204,9 @@ func extractArchive(r io.Reader, dst string, cfg archiveExtractOptions) error {
 	_ = perr
 	format := detectArchiveFormat(sniff)
 
-	//nolint:gosec // G301: archive entries set their own modes; root dir matches stdlib MkdirAll's 0o755 default
-	if err := os.MkdirAll(dst, 0o755); err != nil {
+	// G301 doesn't apply: archive entries set their own modes; root dir
+	// matches stdlib MkdirAll's 0o755 default.
+	if err := osMkdirAll(dst, 0o755); err != nil {
 		return wrapPathError(opExtractArchive, dst, err)
 	}
 

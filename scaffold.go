@@ -3,7 +3,6 @@ package fs
 import (
 	"errors"
 	stdfs "io/fs"
-	"os"
 	"path/filepath"
 )
 
@@ -220,7 +219,7 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 			return wrapPathError(opScaffoldApply, action.DstPath, ErrScaffoldUnresolvedConflict)
 		case ScaffoldActionCreate, ScaffoldActionOverwrite:
 			if action.IsDir {
-				if err := os.MkdirAll(action.DstPath, Mode0755); err != nil {
+				if err := osMkdirAll(action.DstPath, Mode0755); err != nil {
 					return wrapPathError(opScaffoldApply, action.DstPath, err)
 				}
 				continue
@@ -237,7 +236,7 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 // text/template with vars, and writes to dstPath atomically. Parent
 // directories are created with mode 0o755.
 func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any) error {
-	if err := os.MkdirAll(filepath.Dir(action.DstPath), Mode0755); err != nil {
+	if err := osMkdirAll(filepath.Dir(action.DstPath), Mode0755); err != nil {
 		return wrapPathError(opScaffoldApply, action.DstPath, err)
 	}
 	data, err := stdfs.ReadFile(src, action.SrcPath)

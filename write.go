@@ -117,9 +117,7 @@ const (
 // need expansion compose [Expand] themselves before calling the
 // write API. Kept as a function so future expansion options have a
 // natural insertion point.
-func resolveWritePath(path string, _ writeOptions) (string, error) {
-	return path, nil
-}
+func resolveWritePath(path string, _ writeOptions) string { return path }
 
 // WriteFile writes data to path atomically (write-temp + rename).
 // Default mode 0o644 for new files; existing files preserve their
@@ -164,12 +162,9 @@ func WriteFileEnsure(path string, data []byte, opts ...WriteOption) error {
 // directly with O_EXCL.
 func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
-	p, err := resolveWritePath(path, cfg)
-	if err != nil {
-		return err
-	}
+	p := resolveWritePath(path, cfg)
 	if cfg.mkdirAll {
-		if err := os.MkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
+		if err := osMkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
 			return wrapPathError(opMkdirAll, p, err)
 		}
 	}
@@ -201,12 +196,9 @@ func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 // doWriteFile is the shared implementation for the atomic write
 // family.
 func doWriteFile(path string, data []byte, cfg writeOptions) error {
-	p, err := resolveWritePath(path, cfg)
-	if err != nil {
-		return err
-	}
+	p := resolveWritePath(path, cfg)
 	if cfg.mkdirAll {
-		if err := os.MkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
+		if err := osMkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
 			return wrapPathError(opMkdirAll, p, err)
 		}
 	}
@@ -345,12 +337,9 @@ func openTempForWrite(dest string, mode os.FileMode, pattern string) (*os.File, 
 // Creates the file with [WithPerm] (default 0o644) if missing.
 func Append(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
-	p, err := resolveWritePath(path, cfg)
-	if err != nil {
-		return err
-	}
+	p := resolveWritePath(path, cfg)
 	if cfg.mkdirAll {
-		if err := os.MkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
+		if err := osMkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
 			return wrapPathError(opMkdirAll, p, err)
 		}
 	}
@@ -387,10 +376,7 @@ func AppendString(path, s string, opts ...WriteOption) error {
 // definition.
 func WriteAt(path string, offset int64, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
-	p, err := resolveWritePath(path, cfg)
-	if err != nil {
-		return err
-	}
+	p := resolveWritePath(path, cfg)
 	if offset < 0 {
 		return wrapPathError(opWrite, p, ErrInvalidPath)
 	}
@@ -424,12 +410,9 @@ func WriteAt(path string, offset int64, data []byte, opts ...WriteOption) error 
 // original error).
 func OpenWrite(path string, opts ...WriteOption) (*os.File, func() error, error) {
 	cfg := newWriteOptions(opts)
-	p, err := resolveWritePath(path, cfg)
-	if err != nil {
-		return nil, nil, err
-	}
+	p := resolveWritePath(path, cfg)
 	if cfg.mkdirAll {
-		if err := os.MkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
+		if err := osMkdirAll(filepath.Dir(p), cfg.dirPerm); err != nil {
 			return nil, nil, wrapPathError(opMkdirAll, p, err)
 		}
 	}

@@ -28,6 +28,11 @@ var (
 	osChtimes  = os.Chtimes
 	osStat     = os.Stat
 	osLstat    = os.Lstat
+	osMkdirAll = os.MkdirAll
+	osSymlink  = os.Symlink
+	osLink     = os.Link
+	osReadlink = os.Readlink
+	osRemove   = os.Remove
 
 	// Method-value hooks for *os.File. The signatures match the
 	// stdlib method values: e.g., (*os.File).Sync has signature

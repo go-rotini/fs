@@ -108,7 +108,7 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 		dstPath := filepath.Join(dst, filepath.FromSlash(path))
 
 		if d.IsDir() {
-			if err := os.MkdirAll(dstPath, Mode0755); err != nil {
+			if err := osMkdirAll(dstPath, Mode0755); err != nil {
 				return wrapPathError(opScaffoldExtract, dstPath, err)
 			}
 			return nil
@@ -136,7 +136,7 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 			}
 		}
 
-		if err := os.MkdirAll(filepath.Dir(dstPath), Mode0755); err != nil {
+		if err := osMkdirAll(filepath.Dir(dstPath), Mode0755); err != nil {
 			return wrapPathError(opScaffoldExtract, dstPath, err)
 		}
 		data, err := stdfs.ReadFile(src, path)

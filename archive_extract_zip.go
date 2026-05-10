@@ -67,7 +67,7 @@ func extractZipReader(zr *zip.Reader, dst string, cfg archiveExtractOptions) err
 			return wrapPathError(opExtractArchive, file.Name, terr)
 		}
 		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, safeMode(file.Mode(), true, cfg.preserveMode)); err != nil {
+			if err := osMkdirAll(target, safeMode(file.Mode(), true, cfg.preserveMode)); err != nil {
 				return wrapPathError(opExtractArchive, target, err)
 			}
 			continue
@@ -85,7 +85,7 @@ func extractZipReader(zr *zip.Reader, dst string, cfg archiveExtractOptions) err
 // chain via [errors.Join] so the caller doesn't lose a Close
 // failure that follows a Copy failure.
 func extractZipEntry(file *zip.File, target string, cfg archiveExtractOptions, used *int64) (rerr error) {
-	if err := os.MkdirAll(filepath.Dir(target), Mode0755); err != nil {
+	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
 		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
 	}
 	rc, err := file.Open()
@@ -94,7 +94,7 @@ func extractZipEntry(file *zip.File, target string, cfg archiveExtractOptions, u
 	}
 	defer func() { rerr = errors.Join(rerr, rc.Close()) }()
 
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
+	f, err := osOpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
 		safeMode(file.Mode(), false, cfg.preserveMode))
 	if err != nil {
 		return wrapPathError(opExtractArchive, target, err)

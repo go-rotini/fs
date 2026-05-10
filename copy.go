@@ -162,21 +162,21 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 }
 
 func copySymlink(src, dst string, cfg copyOptions) error {
-	target, err := os.Readlink(src)
+	target, err := osReadlink(src)
 	if err != nil {
 		return wrapPathError(opCopyFile, src, err)
 	}
 
-	if _, lerr := os.Lstat(dst); lerr == nil {
+	if _, lerr := osLstat(dst); lerr == nil {
 		if !cfg.overwrite {
 			return wrapPathError(opCopyFile, dst, ErrAlreadyExists)
 		}
-		if rerr := os.Remove(dst); rerr != nil {
+		if rerr := osRemove(dst); rerr != nil {
 			return wrapPathError(opCopyFile, dst, rerr)
 		}
 	}
 
-	if serr := os.Symlink(target, dst); serr != nil {
+	if serr := osSymlink(target, dst); serr != nil {
 		return wrapPathError(opCopyFile, dst, serr)
 	}
 	return nil
@@ -193,7 +193,7 @@ func copySymlink(src, dst string, cfg copyOptions) error {
 func CopyDir(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 
-	srcInfo, err := os.Stat(src)
+	srcInfo, err := osStat(src)
 	if err != nil {
 		return wrapPathError(opCopyDir, src, err)
 	}
@@ -201,7 +201,7 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 		return wrapPathError(opCopyDir, src, ErrNotDir)
 	}
 
-	if merr := os.MkdirAll(dst, srcInfo.Mode().Perm()); merr != nil {
+	if merr := osMkdirAll(dst, srcInfo.Mode().Perm()); merr != nil {
 		return wrapPathError(opCopyDir, dst, merr)
 	}
 
@@ -234,7 +234,7 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 				multi.Append(wrapPathError(opCopyDir, path, ierr))
 				return nil
 			}
-			if merr := os.MkdirAll(target, info.Mode().Perm()); merr != nil {
+			if merr := osMkdirAll(target, info.Mode().Perm()); merr != nil {
 				multi.Append(wrapPathError(opCopyDir, target, merr))
 			}
 		case d.Type()&os.ModeSymlink != 0 && !cfg.followSymlinks:
@@ -285,7 +285,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 
 	if !cfg.overwrite {
-		if _, lerr := os.Lstat(dst); lerr == nil {
+		if _, lerr := osLstat(dst); lerr == nil {
 			return wrapPathError(opMove, dst, ErrAlreadyExists)
 		}
 	}
@@ -298,7 +298,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 		return wrapPathError(opMove, src, err)
 	}
 
-	info, lerr := os.Lstat(src)
+	info, lerr := osLstat(src)
 	if lerr != nil {
 		return wrapPathError(opMove, src, lerr)
 	}
@@ -316,7 +316,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 	if cerr := CopyFile(src, dst, opts...); cerr != nil {
 		return cerr
 	}
-	if rerr := os.Remove(src); rerr != nil {
+	if rerr := osRemove(src); rerr != nil {
 		return wrapPathError(opMove, src, rerr)
 	}
 	return nil

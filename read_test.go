@@ -319,7 +319,10 @@ func TestOpenLines_Basic(t *testing.T) {
 	defer func() { _ = closeFn() }()
 
 	var got []string
-	for line := range seq {
+	for line, lerr := range seq {
+		if lerr != nil {
+			t.Fatalf("iter: %v", lerr)
+		}
 		got = append(got, line)
 	}
 	want := []string{"one", "two", "three"}
@@ -342,7 +345,10 @@ func TestOpenLines_EarlyBreak(t *testing.T) {
 	defer func() { _ = closeFn() }()
 
 	count := 0
-	for line := range seq {
+	for line, lerr := range seq {
+		if lerr != nil {
+			t.Fatalf("iter: %v", lerr)
+		}
 		count++
 		if line == "b" {
 			break
@@ -368,11 +374,71 @@ func TestOpenLines_BOMStripped(t *testing.T) {
 	defer func() { _ = closeFn() }()
 
 	var got []string
-	for line := range seq {
+	for line, lerr := range seq {
+		if lerr != nil {
+			t.Fatalf("iter: %v", lerr)
+		}
 		got = append(got, line)
 	}
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("got %v", got)
+	}
+}
+
+// TestOpenLines_ScannerErrorSurfaces verifies the new iter.Seq2
+// signature surfaces a scanner error to the caller. The error case
+// is a line longer than the configured maxSize cap; bufio.Scanner
+// errors with bufio.ErrTooLong rather than silently truncating.
+func TestOpenLines_ScannerErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	// 200 KiB of payload, no newlines, then one newline.
+	huge := make([]byte, 200*1024)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+	huge = append(huge, '\n')
+	if err := os.WriteFile(path, huge, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// 64 KiB cap floor in OpenLines; the line above is much larger.
+	seq, closeFn, err := OpenLines(path, WithMaxSize(64*1024))
+	if err != nil {
+		t.Fatalf("OpenLines: %v", err)
+	}
+	defer func() { _ = closeFn() }()
+
+	var sawErr error
+	for _, lerr := range seq {
+		if lerr != nil {
+			sawErr = lerr
+			break
+		}
+	}
+	if sawErr == nil {
+		t.Fatal("expected scanner error to surface; got none")
+	}
+}
+
+// TestOpenLines_CloseIdempotent verifies the close function may be
+// called more than once without surfacing a double-close error.
+func TestOpenLines_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, closeFn, err := OpenLines(path)
+	if err != nil {
+		t.Fatalf("OpenLines: %v", err)
+	}
+	if err := closeFn(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := closeFn(); err != nil {
+		t.Errorf("second Close: %v", err)
 	}
 }
 
@@ -489,6 +555,27 @@ func TestOpenChunked_DefaultSize(t *testing.T) {
 	}
 	if string(assembled) != "short" {
 		t.Errorf("got %q", assembled)
+	}
+}
+
+// TestOpenChunked_CloseIdempotent verifies the close function may be
+// called more than once without surfacing a double-close error.
+func TestOpenChunked_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("short"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, closeFn, err := OpenChunked(path, 64)
+	if err != nil {
+		t.Fatalf("OpenChunked: %v", err)
+	}
+	if err := closeFn(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := closeFn(); err != nil {
+		t.Errorf("second Close: %v", err)
 	}
 }
 

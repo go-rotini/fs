@@ -80,13 +80,18 @@ if errors.Is(err, fs.ErrFileTooLarge) {
     log.Printf("input too large; use streaming")
 }
 
-// Iterate lines without loading the whole file:
+// Iterate lines without loading the whole file. The iterator's
+// second value is non-nil only if the underlying scanner errors
+// mid-stream (line too long, I/O failure, etc.); always check it.
 seq, closeFn, err := fs.OpenLines(path)
 if err != nil {
     log.Fatal(err)
 }
 defer closeFn()
-for line := range seq {
+for line, err := range seq {
+    if err != nil {
+        log.Fatal(err)
+    }
     process(line)
 }
 ```

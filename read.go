@@ -9,6 +9,7 @@ import (
 	"iter"
 	"os"
 	"strings"
+	"sync"
 )
 
 // DefaultMaxReadSize bounds the default size cap on every read
@@ -206,15 +207,24 @@ func ReadFirstLine(path string, opts ...ReadOption) (string, error) {
 
 // OpenLines returns an iterator over path's lines. Trailing line
 // endings are stripped per line. The caller MUST invoke the returned
-// close function to release the file handle.
+// close function to release the file handle; the close function is
+// idempotent and safe to call from a `defer`.
+//
+// The iterator yields (line, nil) for each successfully read line,
+// and (zero-value, err) once at the end if the underlying scanner
+// failed (line too long, mid-stream I/O error, etc.). Callers should
+// always check the error in the loop body:
 //
 //	seq, closeFn, err := fs.OpenLines("/tmp/log")
 //	if err != nil { return err }
 //	defer closeFn()
-//	for line := range seq {
+//	for line, err := range seq {
+//	    if err != nil {
+//	        return err
+//	    }
 //	    // process line
 //	}
-func OpenLines(path string, opts ...ReadOption) (iter.Seq[string], func() error, error) {
+func OpenLines(path string, opts ...ReadOption) (iter.Seq2[string, error], func() error, error) {
 	cfg := newReadOptions(opts)
 	p, err := resolveReadPath(path, cfg)
 	if err != nil {
@@ -239,20 +249,24 @@ func OpenLines(path string, opts ...ReadOption) (iter.Seq[string], func() error,
 		scanner.Buffer(buf, max(int(cfg.maxSize), minScannerBuf))
 	}
 
-	seq := func(yield func(string) bool) {
+	seq := func(yield func(string, error) bool) {
 		for scanner.Scan() {
-			if !yield(scanner.Text()) {
+			if !yield(scanner.Text(), nil) {
 				return
 			}
 		}
+		if serr := scanner.Err(); serr != nil {
+			yield("", wrapPathError(opRead, p, serr))
+		}
 	}
-	return seq, f.Close, nil
+	return seq, idempotentClose(f, opOpen, p), nil
 }
 
 // OpenChunked returns an iterator that streams path's contents in
 // chunks of size bytes. The iterator stops at EOF; callers can break
 // early. The returned cleanup function closes the underlying file
-// and is idempotent — safe to call multiple times.
+// and is idempotent — safe to call multiple times (e.g., once via
+// `defer` and again explicitly).
 //
 // If size <= 0, a 64 KiB default is used.
 func OpenChunked(path string, size int) (iter.Seq2[[]byte, error], func() error, error) {
@@ -283,7 +297,27 @@ func OpenChunked(path string, size int) (iter.Seq2[[]byte, error], func() error,
 			return
 		}
 	}
-	return seq, f.Close, nil
+	return seq, idempotentClose(f, opOpen, path), nil
+}
+
+// idempotentClose returns a close function that closes f at most
+// once. Subsequent calls return the same result as the first. The
+// op / path are used to wrap a non-nil Close error in *PathError so
+// callers can `errors.Is(err, fs.ErrPermission)` without juggling
+// the raw [*os.PathError] back into the package's envelope.
+func idempotentClose(f *os.File, op, path string) func() error {
+	var (
+		once sync.Once
+		err  error
+	)
+	return func() error {
+		once.Do(func() {
+			if cerr := f.Close(); cerr != nil {
+				err = wrapPathError(op, path, cerr)
+			}
+		})
+		return err
+	}
 }
 
 // ReadAt reads n bytes from path starting at offset. By default

@@ -176,6 +176,38 @@ func TestMultiError_Is(t *testing.T) {
 	}
 }
 
+func TestMultiError_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var m *MultiError
+	if got := m.Unwrap(); got != nil {
+		t.Errorf("nil.Unwrap() = %v, want nil", got)
+	}
+	if got := m.Error(); got != "fs: no errors" {
+		t.Errorf("nil.Error() = %q", got)
+	}
+}
+
+// --- PathError edge cases ---
+
+func TestPathError_NilUnwrap(t *testing.T) {
+	t.Parallel()
+	var pe *PathError
+	if got := pe.Unwrap(); got != nil {
+		t.Errorf("nil PathError.Unwrap() = %v, want nil", got)
+	}
+}
+
+func TestPathError_IsAcrossChain(t *testing.T) {
+	t.Parallel()
+	pe := &PathError{Op: "test", Path: "/x", Cause: ErrNotFound}
+	if !errors.Is(pe, ErrNotFound) {
+		t.Error("PathError.Is should walk to wrapped sentinel")
+	}
+	if !errors.Is(pe, &PathError{}) {
+		t.Error("PathError.Is should match its own type")
+	}
+}
+
 // --- Sentinels and stdlib interop ---
 
 func TestSentinel_NotFound_MatchesStdlib(t *testing.T) {

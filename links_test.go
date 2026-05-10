@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -116,6 +117,27 @@ func TestReadLink_NotASymlink(t *testing.T) {
 }
 
 // --- EvalSymlinks ---
+
+// --- isSymlinkLoop branch coverage ---
+
+func TestIsSymlinkLoop_AllBranches(t *testing.T) {
+	t.Parallel()
+	if isSymlinkLoop(nil) {
+		t.Error("nil should not be a loop")
+	}
+	if !isSymlinkLoop(syscall.ELOOP) {
+		t.Error("syscall.ELOOP should be a loop")
+	}
+	if !isSymlinkLoop(errors.New("foo: too many links")) {
+		t.Error("string-match sentinel should fire")
+	}
+	if !isSymlinkLoop(&os.PathError{Op: "x", Path: "/y", Err: syscall.ELOOP}) {
+		t.Error("wrapped ELOOP should be a loop")
+	}
+	if isSymlinkLoop(errors.New("unrelated error")) {
+		t.Error("unrelated error should not be a loop")
+	}
+}
 
 func TestEvalSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {

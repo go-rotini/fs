@@ -101,12 +101,12 @@ func tarWalkHandler(root, path string, d stdfs.DirEntry, werr error, tw *tar.Wri
 // copyFileIntoTar opens path and streams its bytes to the tar
 // writer's current entry.
 func copyFileIntoTar(path string, tw *tar.Writer) error {
-	f, oerr := os.Open(path)
+	f, oerr := osOpen(path)
 	if oerr != nil {
-		return oerr //nolint:wrapcheck // outer caller wraps
+		return oerr
 	}
 	defer f.Close()
-	if _, cerr := io.Copy(tw, f); cerr != nil {
+	if _, cerr := io.Copy(tw, hookedReader{f}); cerr != nil {
 		return cerr //nolint:wrapcheck // outer caller wraps
 	}
 	return nil

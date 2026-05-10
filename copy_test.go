@@ -160,6 +160,41 @@ func TestCopyFile_MissingSrc(t *testing.T) {
 	}
 }
 
+func TestCopyFile_MissingSrcWithFollowSymlinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := CopyFile(filepath.Join(dir, "missing"), filepath.Join(dir, "dst"), WithFollowSymlinks(true))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestCopyDir_NoOverwriteFlag(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("v"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Pre-existing dst file with a conflicting name; with WithOverwrite(false),
+	// CopyDir aggregates the per-entry conflict into a *MultiError.
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "f"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := CopyDir(src, dst, WithOverwrite(false))
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Errorf("got %v, want ErrAlreadyExists", err)
+	}
+}
+
 func TestCopyFile_NotRegular(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -317,6 +352,51 @@ func TestCopyFile_Symlink(t *testing.T) {
 	}
 }
 
+func TestCopyFile_SymlinkNoOverwrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevation on Windows")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	src := filepath.Join(dir, "link")
+	if err := os.Symlink(target, src); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	dst := filepath.Join(dir, "existing-link")
+	if err := os.Symlink(target, dst); err != nil {
+		t.Fatalf("setup dst symlink: %v", err)
+	}
+
+	err := CopyFile(src, dst, WithOverwrite(false))
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Errorf("got %v, want ErrAlreadyExists", err)
+	}
+}
+
+func TestCopyFile_SymlinkMissingSrc(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink-related test")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "broken")
+	if err := os.Symlink("/never/exists", src); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	// CopyFile (default: don't follow) should still copy the symlink as-is.
+	dst := filepath.Join(dir, "copy")
+	if err := CopyFile(src, dst); err != nil {
+		t.Fatalf("CopyFile broken-symlink: %v", err)
+	}
+	if _, err := os.Lstat(dst); err != nil {
+		t.Errorf("dst missing: %v", err)
+	}
+}
+
 func TestCopyFile_SymlinkFollow(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation typically requires elevation on Windows")
@@ -417,6 +497,15 @@ func TestMove_NoOverwrite(t *testing.T) {
 	}
 	if !Exists(src) {
 		t.Error("src removed despite overwrite-false rejection")
+	}
+}
+
+func TestMove_MissingSrc(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := Move(filepath.Join(dir, "missing"), filepath.Join(dir, "dst"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }
 

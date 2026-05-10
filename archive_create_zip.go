@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"io"
 	stdfs "io/fs"
-	"os"
 	"path/filepath"
 )
 
@@ -77,12 +76,12 @@ func createZip(w io.Writer, root string, cfg archiveCreateOptions) error {
 // open + close pair is deferred so any return path closes the
 // source file exactly once.
 func copyFileIntoZip(path string, ww io.Writer) error {
-	f, oerr := os.Open(path)
+	f, oerr := osOpen(path)
 	if oerr != nil {
-		return oerr //nolint:wrapcheck // outer caller wraps
+		return oerr
 	}
 	defer f.Close()
-	if _, cerr := io.Copy(ww, f); cerr != nil {
+	if _, cerr := io.Copy(ww, hookedReader{f}); cerr != nil {
 		return cerr //nolint:wrapcheck // outer caller wraps
 	}
 	return nil

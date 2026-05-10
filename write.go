@@ -21,7 +21,6 @@ type writeOptions struct {
 	tempPattern string
 	backup      string
 	hasBackup   bool
-	expand      bool
 }
 
 func newWriteOptions(opts []WriteOption) writeOptions {
@@ -113,12 +112,13 @@ const (
 	opOpenWrite = "openwrite"
 )
 
-// resolveWritePath applies WithExpand if requested.
-func resolveWritePath(path string, cfg writeOptions) (string, error) {
-	if !cfg.expand {
-		return path, nil
-	}
-	return Expand(path)
+// resolveWritePath returns path unchanged. The package's writeOptions
+// type does not expose a tilde / $VAR expansion knob; callers that
+// need expansion compose [Expand] themselves before calling the
+// write API. Kept as a function so future expansion options have a
+// natural insertion point.
+func resolveWritePath(path string, _ writeOptions) (string, error) {
+	return path, nil
 }
 
 // WriteFile writes data to path atomically (write-temp + rename).
@@ -177,22 +177,22 @@ func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 	if !cfg.hasPerm {
 		mode = Mode0644
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
+	f, err := osOpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_EXCL, mode)
 	if err != nil {
 		return wrapPathError(opWrite, p, err)
 	}
-	if _, werr := f.Write(data); werr != nil {
-		_ = f.Close()
+	if _, werr := fileWrite(f, data); werr != nil {
+		closeQuietly(f)
 		_ = os.Remove(p)
 		return wrapPathError(opWrite, p, werr)
 	}
 	if cfg.hasSync && cfg.sync {
-		if serr := f.Sync(); serr != nil {
-			_ = f.Close()
+		if serr := fileSync(f); serr != nil {
+			closeQuietly(f)
 			return wrapPathError(opWrite, p, serr)
 		}
 	}
-	if cerr := f.Close(); cerr != nil {
+	if cerr := fileClose(f); cerr != nil {
 		return wrapPathError(opWrite, p, cerr)
 	}
 	return nil
@@ -221,21 +221,21 @@ func doWriteFile(path string, data []byte, cfg writeOptions) error {
 // Caller has already opted out of atomicity via WithAtomic(false).
 func writeDirect(path string, data []byte, cfg writeOptions) error {
 	mode, _ := resolveMode(path, cfg)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := osOpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return wrapPathError(opWrite, path, err)
 	}
-	if _, werr := f.Write(data); werr != nil {
-		_ = f.Close()
+	if _, werr := fileWrite(f, data); werr != nil {
+		closeQuietly(f)
 		return wrapPathError(opWrite, path, werr)
 	}
 	if cfg.hasSync && cfg.sync {
-		if serr := f.Sync(); serr != nil {
-			_ = f.Close()
+		if serr := fileSync(f); serr != nil {
+			closeQuietly(f)
 			return wrapPathError(opWrite, path, serr)
 		}
 	}
-	if cerr := f.Close(); cerr != nil {
+	if cerr := fileClose(f); cerr != nil {
 		return wrapPathError(opWrite, path, cerr)
 	}
 	return nil
@@ -264,29 +264,29 @@ func writeAtomic(path string, data []byte, cfg writeOptions) error {
 		}
 	}()
 
-	if _, werr := tmp.Write(data); werr != nil {
-		_ = tmp.Close()
+	if _, werr := fileWrite(tmp, data); werr != nil {
+		closeQuietly(tmp)
 		return wrapPathError(opWrite, path, werr)
 	}
 	if doSync {
-		if serr := tmp.Sync(); serr != nil {
-			_ = tmp.Close()
+		if serr := fileSync(tmp); serr != nil {
+			closeQuietly(tmp)
 			return wrapPathError(opWrite, path, serr)
 		}
 	}
-	if cerr := tmp.Close(); cerr != nil {
+	if cerr := fileClose(tmp); cerr != nil {
 		return wrapPathError(opWrite, path, cerr)
 	}
 
 	if cfg.hasBackup && existed {
 		backup := path + cfg.backup
 		_ = os.Remove(backup)
-		if rerr := os.Rename(path, backup); rerr != nil {
+		if rerr := osRename(path, backup); rerr != nil {
 			return wrapPathError(opRename, path, rerr)
 		}
 	}
 
-	if rerr := os.Rename(tmpName, path); rerr != nil {
+	if rerr := osRename(tmpName, path); rerr != nil {
 		return wrapPathError(opRename, path, rerr)
 	}
 	committed = true
@@ -330,10 +330,10 @@ func openTempForWrite(dest string, mode os.FileMode, pattern string) (*os.File, 
 	if err != nil {
 		return nil, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
-	if err := os.Chmod(tmp.Name(), mode); err != nil {
-		_ = tmp.Close()
+	if err := osChmod(tmp.Name(), mode); err != nil {
+		closeQuietly(tmp)
 		_ = os.Remove(tmp.Name())
-		return nil, err //nolint:wrapcheck // wrapped by caller via *PathError
+		return nil, err
 	}
 	return tmp, nil
 }
@@ -355,22 +355,22 @@ func Append(path string, data []byte, opts ...WriteOption) error {
 		}
 	}
 	mode := cfg.perm
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
+	f, err := osOpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
 	if err != nil {
 		return wrapPathError(opAppend, p, err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { closeQuietly(f) }()
 
 	if cfg.locked {
 		if lerr := lockFile(f); lerr != nil {
 			return wrapPathError(opAppend, p, lerr)
 		}
 	}
-	if _, werr := f.Write(data); werr != nil {
+	if _, werr := fileWrite(f, data); werr != nil {
 		return wrapPathError(opAppend, p, werr)
 	}
 	if cfg.hasSync && cfg.sync {
-		if serr := f.Sync(); serr != nil {
+		if serr := fileSync(f); serr != nil {
 			return wrapPathError(opAppend, p, serr)
 		}
 	}
@@ -394,16 +394,16 @@ func WriteAt(path string, offset int64, data []byte, opts ...WriteOption) error 
 	if offset < 0 {
 		return wrapPathError(opWrite, p, ErrInvalidPath)
 	}
-	f, err := os.OpenFile(p, os.O_RDWR, 0)
+	f, err := osOpenFile(p, os.O_RDWR, 0)
 	if err != nil {
 		return wrapPathError(opWrite, p, err)
 	}
-	defer func() { _ = f.Close() }()
-	if _, werr := f.WriteAt(data, offset); werr != nil {
+	defer func() { closeQuietly(f) }()
+	if _, werr := fileWriteAt(f, data, offset); werr != nil {
 		return wrapPathError(opWrite, p, werr)
 	}
 	if cfg.hasSync && cfg.sync {
-		if serr := f.Sync(); serr != nil {
+		if serr := fileSync(f); serr != nil {
 			return wrapPathError(opWrite, p, serr)
 		}
 	}
@@ -460,25 +460,25 @@ func OpenWrite(path string, opts ...WriteOption) (*os.File, func() error, error)
 				}
 			}()
 			if doSync {
-				if serr := tmp.Sync(); serr != nil {
-					_ = tmp.Close()
+				if serr := fileSync(tmp); serr != nil {
+					closeQuietly(tmp)
 					result = wrapPathError(opWrite, p, serr)
 					return
 				}
 			}
-			if cerr := tmp.Close(); cerr != nil {
+			if cerr := fileClose(tmp); cerr != nil {
 				result = wrapPathError(opWrite, p, cerr)
 				return
 			}
 			if cfg.hasBackup && existed {
 				backup := p + cfg.backup
 				_ = os.Remove(backup)
-				if rerr := os.Rename(p, backup); rerr != nil {
+				if rerr := osRename(p, backup); rerr != nil {
 					result = wrapPathError(opRename, p, rerr)
 					return
 				}
 			}
-			if rerr := os.Rename(tmpName, p); rerr != nil {
+			if rerr := osRename(tmpName, p); rerr != nil {
 				result = wrapPathError(opRename, p, rerr)
 				return
 			}

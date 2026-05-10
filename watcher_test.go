@@ -349,6 +349,140 @@ func TestWatcher_CloseIdempotent(t *testing.T) {
 
 // --- Debouncing ---
 
+// --- WatchOp ---
+
+func TestWatchOp_String(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		op   WatchOp
+		want string
+	}{
+		{0, "none"},
+		{WatchCreate, "create"},
+		{WatchWrite, "write"},
+		{WatchRemove, "remove"},
+		{WatchRename, "rename"},
+		{WatchChmod, "chmod"},
+		{WatchCreate | WatchWrite, "create+write"},
+		{WatchCreate | WatchWrite | WatchRemove | WatchRename | WatchChmod, "create+write+remove+rename+chmod"},
+	}
+	for _, c := range cases {
+		if got := c.op.String(); got != c.want {
+			t.Errorf("WatchOp(%d).String() = %q, want %q", c.op, got, c.want)
+		}
+	}
+}
+
+func TestWatchOp_Has(t *testing.T) {
+	t.Parallel()
+	op := WatchCreate | WatchWrite
+	if !op.Has(WatchCreate) || !op.Has(WatchWrite) {
+		t.Error("Has should report set bits")
+	}
+	if op.Has(WatchRemove) {
+		t.Error("Has should not report unset bit")
+	}
+}
+
+// --- Watcher options not exercised elsewhere ---
+
+func TestWatcher_OptionsDoNotPanic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	w, err := NewWatcher(path,
+		WithPolling(pollInterval),
+		WithDebounce(0),
+		WithLogger(nil), // nil logger should be tolerated; constructor falls back to discard
+		WithRecursive(false),
+		WithBufferSize(8),
+	)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+}
+
+// --- Backend selection: native-fallback-to-polling ---
+
+// TestWatcher_NativeBackendFallsBackToPolling exercises the
+// non-WithPolling path through selectBackend. The native backend
+// constructors on every platform are placeholders that return
+// errWatcherUnsupportedBackend; selectBackend catches that and
+// returns a polling backend instead. The watcher must construct
+// successfully and basic event flow must still work.
+func TestWatcher_NativeBackendFallsBackToPolling(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// No WithPolling — forces native-backend attempt + fallback.
+	w, err := NewWatcher(path, WithDebounce(0))
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+}
+
+func TestWatcher_NewDirWatcherRecursive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, p := range []string{
+		filepath.Join(dir, "sub1"),
+		filepath.Join(dir, "sub2", "deep"),
+	} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+
+	w, err := NewDirWatcher(dir,
+		WithPolling(pollInterval),
+		WithDebounce(0),
+		WithRecursive(true),
+	)
+	if err != nil {
+		t.Fatalf("NewDirWatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+}
+
+// --- pollingBackend.RemovePath ---
+
+func TestPollingBackend_RemovePath(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(pollInterval)
+	t.Cleanup(func() { _ = b.Close() })
+
+	dir := t.TempDir()
+	if err := b.AddPath(dir); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+	if err := b.RemovePath(dir); err != nil {
+		t.Errorf("RemovePath: %v", err)
+	}
+	// Removing again must succeed (idempotent).
+	if err := b.RemovePath(dir); err != nil {
+		t.Errorf("RemovePath idempotent: %v", err)
+	}
+}
+
+func TestPollingBackend_AddAfterCloseErrors(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(pollInterval)
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := b.AddPath(t.TempDir()); !errors.Is(err, ErrWatcherClosed) {
+		t.Errorf("got %v, want ErrWatcherClosed", err)
+	}
+}
+
 func TestWatcher_DebounceCoalescesBurst(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

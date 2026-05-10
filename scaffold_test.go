@@ -279,6 +279,84 @@ func TestScaffoldExtract_CustomVersionMarker(t *testing.T) {
 	}
 }
 
+// --- ScaffoldExtract conflict policies ---
+
+func TestScaffoldExtract_OverwriteAll(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	srcV1 := fstest.MapFS{"a.txt": {Data: []byte("v1")}}
+	if err := ScaffoldExtract(srcV1, dst); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+
+	// User edits, version bumps, OverwriteAll forces replacement.
+	if err := os.WriteFile(filepath.Join(dst, "a.txt"), []byte("user"), 0o644); err != nil {
+		t.Fatalf("user edit: %v", err)
+	}
+	srcV2 := fstest.MapFS{"a.txt": {Data: []byte("v2")}}
+	if err := ScaffoldExtract(srcV2, dst, WithScaffoldOnConflict(ScaffoldOverwriteAll)); err != nil {
+		t.Fatalf("v2: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "a.txt")); string(got) != "v2" {
+		t.Errorf("got %q, want v2", got)
+	}
+}
+
+func TestScaffoldExtract_PromptInteractive(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	srcV1 := fstest.MapFS{"a.txt": {Data: []byte("v1")}}
+	if err := ScaffoldExtract(srcV1, dst); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "a.txt"), []byte("user-edit"), 0o644); err != nil {
+		t.Fatalf("user edit: %v", err)
+	}
+
+	srcV2 := fstest.MapFS{"a.txt": {Data: []byte("v2")}}
+	prompts := 0
+	if err := ScaffoldExtract(srcV2, dst,
+		WithScaffoldOnConflict(ScaffoldPromptInteractive),
+		WithScaffoldPromptFunc(func(string, ScaffoldAction) ScaffoldActionOp {
+			prompts++
+			return ScaffoldActionSkip
+		}),
+	); err != nil {
+		t.Fatalf("ScaffoldExtract: %v", err)
+	}
+	if prompts == 0 {
+		t.Error("prompt callback never invoked")
+	}
+	// Skip means user-edit preserved.
+	if got, _ := os.ReadFile(filepath.Join(dst, "a.txt")); string(got) != "user-edit" {
+		t.Errorf("got %q, want user-edit (skip preserves)", got)
+	}
+}
+
+func TestScaffoldExtract_PromptRequired(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	srcV1 := fstest.MapFS{"a.txt": {Data: []byte("v1")}}
+	if err := ScaffoldExtract(srcV1, dst); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	srcV2 := fstest.MapFS{"a.txt": {Data: []byte("v2")}}
+	err := ScaffoldExtract(srcV2, dst, WithScaffoldOnConflict(ScaffoldPromptInteractive))
+	if !errors.Is(err, ErrScaffoldPromptRequired) {
+		t.Errorf("got %v, want ErrScaffoldPromptRequired", err)
+	}
+}
+
+func TestScaffoldExtract_MergeUnsupported(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	src := fstest.MapFS{"a.txt": {Data: []byte("x")}}
+	err := ScaffoldExtract(src, dst, WithScaffoldOnConflict(ScaffoldMergeWithUserEdits))
+	if !errors.Is(err, ErrScaffoldMergeUnsupported) {
+		t.Errorf("got %v, want ErrScaffoldMergeUnsupported", err)
+	}
+}
+
 // --- ScaffoldActionOp.String ---
 
 func TestScaffoldActionOp_String(t *testing.T) {

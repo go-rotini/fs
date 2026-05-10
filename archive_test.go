@@ -413,6 +413,222 @@ func TestOpenAutoArchive_Gzip(t *testing.T) {
 	}
 }
 
+// --- cappedWriter partial-write path ---
+
+// TestCappedWriter_PartialWrite exercises the path where the caller
+// writes a chunk that crosses the cap. The writer should commit the
+// partial bytes that fit and then surface ErrArchiveTooLarge.
+func TestCappedWriter_PartialWrite(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	used := int64(0)
+	w := limitWrap(&buf, &used, 5)
+
+	// First write: 3 bytes, fits.
+	if n, err := w.Write([]byte("abc")); err != nil || n != 3 {
+		t.Fatalf("first write: n=%d err=%v", n, err)
+	}
+	// Second write: 5 bytes, but only 2 remaining → partial commit + cap error.
+	n, err := w.Write([]byte("12345"))
+	if !errors.Is(err, ErrArchiveTooLarge) {
+		t.Errorf("got %v, want ErrArchiveTooLarge", err)
+	}
+	if n != 2 {
+		t.Errorf("partial bytes = %d, want 2", n)
+	}
+	if buf.String() != "abc12" {
+		t.Errorf("buffered = %q, want abc12", buf.String())
+	}
+	// Third write: any byte → cap error.
+	n, err = w.Write([]byte("z"))
+	if !errors.Is(err, ErrArchiveTooLarge) {
+		t.Errorf("post-cap got %v, want ErrArchiveTooLarge", err)
+	}
+	if n != 0 {
+		t.Errorf("post-cap n = %d, want 0", n)
+	}
+}
+
+func TestCappedWriter_DisabledCap(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	used := int64(0)
+	// limit <= 0 disables the cap.
+	w := limitWrap(&buf, &used, 0)
+	// Writing more than any plausible cap should never error.
+	if _, err := w.Write([]byte(strings.Repeat("x", 1024))); err != nil {
+		t.Errorf("disabled-cap write errored: %v", err)
+	}
+}
+
+// --- Create-side filter ---
+
+func TestCreateArchive_CreateFilter(t *testing.T) {
+	t.Parallel()
+	src := makeTreeFixture(t)
+	archivePath := filepath.Join(t.TempDir(), "out.tar")
+
+	// Skip everything under sub/.
+	if err := CreateArchiveFile(archivePath, src,
+		WithArchiveCreateFilter(func(path string, _ os.FileInfo) bool {
+			return !strings.Contains(path, string(filepath.Separator)+"sub")
+		}),
+	); err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := ExtractArchiveFile(archivePath, dst); err != nil {
+		t.Fatalf("ExtractArchiveFile: %v", err)
+	}
+	if Exists(filepath.Join(dst, "sub")) {
+		t.Error("create filter did not exclude sub/ subtree")
+	}
+	if !Exists(filepath.Join(dst, "a.txt")) {
+		t.Error("non-filtered entry missing")
+	}
+}
+
+// --- Tar hardlinks ---
+
+func TestExtractArchive_TarHardlink(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	// First write the regular file.
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "real.txt", Mode: 0o644, Size: 5, ModTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if _, err := tw.Write([]byte("hello")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	// Then a hard link to it.
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "hard.txt", Mode: 0o644, Typeflag: tar.TypeLink, Linkname: "real.txt", ModTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteHeader link: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := ExtractArchive(&buf, dst); err != nil {
+		t.Fatalf("ExtractArchive: %v", err)
+	}
+	a, _ := os.ReadFile(filepath.Join(dst, "real.txt"))
+	b, _ := os.ReadFile(filepath.Join(dst, "hard.txt"))
+	if string(a) != "hello" || string(b) != "hello" {
+		t.Errorf("hard link not extracted: real=%q link=%q", a, b)
+	}
+	same, err := SameFile(filepath.Join(dst, "real.txt"), filepath.Join(dst, "hard.txt"))
+	if err != nil {
+		t.Fatalf("SameFile: %v", err)
+	}
+	if !same {
+		t.Error("hard link did not produce shared inode")
+	}
+}
+
+func TestExtractArchive_TarHardlinkEscape(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "hard", Mode: 0o644, Typeflag: tar.TypeLink, Linkname: "../escape", ModTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err := ExtractArchive(&buf, dst)
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("got %v, want ErrEscapesRoot", err)
+	}
+}
+
+// --- Symlink (POSIX): non-escape + Readlink ---
+
+func TestExtractArchive_TarSymlinkInside(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevation on Windows")
+	}
+	t.Parallel()
+	dst := t.TempDir()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "real.txt", Mode: 0o644, Size: 1, ModTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "lnk", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "real.txt", ModTime: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteHeader link: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := ExtractArchive(&buf, dst); err != nil {
+		t.Fatalf("ExtractArchive: %v", err)
+	}
+	link := filepath.Join(dst, "lnk")
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if got != "real.txt" {
+		t.Errorf("link target = %q, want real.txt", got)
+	}
+}
+
+// --- Zip filter exercises zipFileToArchiveHeader ---
+
+func TestExtractArchive_ZipFilter(t *testing.T) {
+	t.Parallel()
+	src := makeTreeFixture(t)
+	archivePath := filepath.Join(t.TempDir(), "out.zip")
+	if err := CreateArchiveFile(archivePath, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+
+	dst := t.TempDir()
+	// Filter receives an ArchiveHeader from zipFileToArchiveHeader.
+	// The filter callback being invoked at all proves the helper ran.
+	called := false
+	if err := ExtractArchiveFile(archivePath, dst,
+		WithArchiveFilter(func(h ArchiveHeader) bool {
+			called = true
+			// Drop b.txt; keep everything else.
+			return !strings.HasSuffix(h.Name, "b.txt")
+		}),
+	); err != nil {
+		t.Fatalf("ExtractArchiveFile: %v", err)
+	}
+	if !called {
+		t.Error("filter callback never invoked")
+	}
+	if Exists(filepath.Join(dst, "sub", "b.txt")) {
+		t.Error("filter did not exclude sub/b.txt")
+	}
+	if !Exists(filepath.Join(dst, "a.txt")) {
+		t.Error("non-filtered entry missing")
+	}
+}
+
 // --- ArchiveFormat.String ---
 
 func TestArchiveFormat_String(t *testing.T) {

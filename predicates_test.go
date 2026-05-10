@@ -182,4 +182,12 @@ func TestIsExecutable(t *testing.T) {
 	if !IsExecutable(plain) {
 		t.Errorf("IsExecutable(0o755) = false")
 	}
+	// Directory should not be reported executable even with +x.
+	if IsExecutable(dir) {
+		t.Error("IsExecutable(dir) = true; only regular files qualify")
+	}
+	// Missing path.
+	if IsExecutable(filepath.Join(dir, "missing")) {
+		t.Error("IsExecutable(missing) = true")
+	}
 }

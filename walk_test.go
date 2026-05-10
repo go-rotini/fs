@@ -261,6 +261,55 @@ func TestWalk_FollowSymlinks(t *testing.T) {
 	}
 }
 
+func TestWalk_FollowSymlinksMaxDepth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevation on Windows")
+	}
+	t.Parallel()
+	root := t.TempDir()
+	deep := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	var visits []string
+	err := Walk(root, func(p string, _ stdfs.DirEntry, _ error) error {
+		visits = append(visits, p)
+		return nil
+	}, WalkFollowSymlinks(true), WithMaxDepth(1))
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	for _, p := range visits {
+		rel, _ := filepath.Rel(root, p)
+		if strings.Count(rel, string(filepath.Separator)) > 1 {
+			t.Errorf("entry past depth 1 visited: %s", rel)
+		}
+	}
+}
+
+func TestWalk_FollowSymlinksMissingRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := Walk(filepath.Join(dir, "missing"), func(string, stdfs.DirEntry, error) error {
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err == nil {
+		t.Error("expected error walking missing root with follow-symlinks")
+	}
+}
+
+func TestWalk_FollowSymlinksErrorHandlerSwallow(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := Walk(filepath.Join(dir, "missing"), func(string, stdfs.DirEntry, error) error {
+		return nil
+	}, WalkFollowSymlinks(true), WithErrorHandler(func(string, error) error { return nil }))
+	if err != nil {
+		t.Errorf("error-handler swallow: %v", err)
+	}
+}
+
 func TestWalk_SymlinkLoopDetected(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation typically requires elevation on Windows")

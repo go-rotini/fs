@@ -33,11 +33,10 @@ test-conformance:
 test-fuzz:
 	@go test -fuzz=FuzzExpand -fuzztime=60s -run=^$$ .
 	@go test -fuzz=FuzzIsSubpath -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzGlob -fuzztime=60s -run=^$$ .
+	@go test -fuzz=FuzzMatch -fuzztime=60s -run=^$$ .
 	@go test -fuzz=FuzzParseBytes -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzWalkOptions -fuzztime=60s -run=^$$ .
 	@go test -fuzz=FuzzSanitizeFilename -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzWatcher -fuzztime=60s -run=^$$ ./watcher
+	@go test -fuzz=FuzzMagic -fuzztime=60s -run=^$$ .
 
 test-mutation:
 	@go tool github.com/go-gremlins/gremlins/cmd/gremlins unleash --config .gremlins.yaml

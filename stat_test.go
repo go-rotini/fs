@@ -218,6 +218,30 @@ func TestSetTimes(t *testing.T) {
 	}
 }
 
+func TestSetMtime_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := SetMtime(filepath.Join(dir, "missing"), time.Now()); err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
+func TestSetAtime_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := SetAtime(filepath.Join(dir, "missing"), time.Now()); err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
+func TestSetTimes_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := SetTimes(filepath.Join(dir, "missing"), time.Now(), time.Now()); err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
 // --- Touch ---
 
 func TestTouch_CreatesMissing(t *testing.T) {

@@ -85,9 +85,9 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	var srcInfo os.FileInfo
 	var err error
 	if cfg.followSymlinks {
-		srcInfo, err = os.Stat(src)
+		srcInfo, err = osStat(src)
 	} else {
-		srcInfo, err = os.Lstat(src)
+		srcInfo, err = osLstat(src)
 	}
 	if err != nil {
 		return wrapPathError(opCopyFile, src, err)
@@ -102,12 +102,12 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	}
 
 	if !cfg.overwrite {
-		if _, lerr := os.Lstat(dst); lerr == nil {
+		if _, lerr := osLstat(dst); lerr == nil {
 			return wrapPathError(opCopyFile, dst, ErrAlreadyExists)
 		}
 	}
 
-	sf, err := os.Open(src)
+	sf, err := osOpen(src)
 	if err != nil {
 		return wrapPathError(opCopyFile, src, err)
 	}
@@ -121,36 +121,36 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	tmpPath := tmp.Name()
 	cleanupTmp := func() { _ = os.Remove(tmpPath) }
 
-	if _, cerr := io.Copy(tmp, sf); cerr != nil {
-		_ = tmp.Close()
+	if _, cerr := io.Copy(tmp, hookedReader{sf}); cerr != nil {
+		closeQuietly(tmp)
 		cleanupTmp()
 		return wrapPathError(opCopyFile, src, cerr)
 	}
 
-	if cerr := tmp.Sync(); cerr != nil {
-		_ = tmp.Close()
+	if cerr := fileSync(tmp); cerr != nil {
+		closeQuietly(tmp)
 		cleanupTmp()
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
 
-	if cerr := tmp.Close(); cerr != nil {
+	if cerr := fileClose(tmp); cerr != nil {
 		cleanupTmp()
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
 
-	if cerr := os.Chmod(tmpPath, srcInfo.Mode().Perm()); cerr != nil {
+	if cerr := osChmod(tmpPath, srcInfo.Mode().Perm()); cerr != nil {
 		cleanupTmp()
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
 
 	if cfg.preserveMtime {
-		if cerr := os.Chtimes(tmpPath, time.Now(), srcInfo.ModTime()); cerr != nil {
+		if cerr := osChtimes(tmpPath, time.Now(), srcInfo.ModTime()); cerr != nil {
 			cleanupTmp()
 			return wrapPathError(opCopyFile, dst, cerr)
 		}
 	}
 
-	if cerr := os.Rename(tmpPath, dst); cerr != nil {
+	if cerr := osRename(tmpPath, dst); cerr != nil {
 		cleanupTmp()
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
@@ -266,7 +266,7 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 // unused; rename is atomic only within a single filesystem.
 func Rename(src, dst string, opts ...CopyOption) error {
 	_ = opts
-	if err := os.Rename(src, dst); err != nil {
+	if err := osRename(src, dst); err != nil {
 		return wrapPathError(opRename, src, err)
 	}
 	return nil
@@ -290,7 +290,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 		}
 	}
 
-	err := os.Rename(src, dst)
+	err := osRename(src, dst)
 	if err == nil {
 		return nil
 	}

@@ -316,6 +316,23 @@ func TestEqualPath_DifferentCleaning(t *testing.T) {
 	}
 }
 
+func TestSplit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		path, dir, file string
+	}{
+		{"/a/b/c", "/a/b/", "c"},
+		{"foo.txt", "", "foo.txt"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		d, f := Split(c.path)
+		if d != c.dir || f != c.file {
+			t.Errorf("Split(%q) = (%q, %q); want (%q, %q)", c.path, d, f, c.dir, c.file)
+		}
+	}
+}
+
 func TestEqualPath_CaseSensitivity(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

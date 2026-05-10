@@ -123,21 +123,6 @@ func TestWriteFile_WithMkdirAll(t *testing.T) {
 	}
 }
 
-func TestWriteFile_WithExpand(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("FS_TEST_DIR", dir)
-	path := "$FS_TEST_DIR/f"
-	cfg := newWriteOptions([]WriteOption{WithMkdirAll(false)})
-	cfg.expand = true
-	if err := doWriteFile(path, []byte("hello"), cfg); err != nil {
-		t.Fatalf("doWriteFile: %v", err)
-	}
-	got, _ := os.ReadFile(filepath.Join(dir, "f"))
-	if string(got) != "hello" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- WriteString / WriteFileSecret / WriteFileEnsure ---
 
 func TestWriteString(t *testing.T) {
@@ -398,6 +383,103 @@ func TestOpenWrite_PreservesExistingMode(t *testing.T) {
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode not preserved: got %o", info.Mode().Perm())
+	}
+}
+
+func TestOpenWrite_WithMkdirAll(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deep", "nested", "f")
+
+	f, finalize, err := OpenWrite(path, WithMkdirAll(true))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("ok"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := finalize(); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "ok" {
+		t.Errorf("got %q, want ok", got)
+	}
+}
+
+func TestOpenWrite_WithBackup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	f, finalize, err := OpenWrite(path, WithBackup(".bak"))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v2"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := finalize(); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "v2" {
+		t.Errorf("file content: %q", got)
+	}
+	if got, _ := os.ReadFile(path + ".bak"); string(got) != "v1" {
+		t.Errorf("backup content: %q", got)
+	}
+}
+
+// --- Append branches ---
+
+func TestAppend_WithMkdirAll(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deep", "nested", "log")
+	if err := Append(path, []byte("x"), WithMkdirAll(true)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "x" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestAppend_WithSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log")
+	if err := Append(path, []byte("x"), WithSync(true)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+}
+
+// --- WriteFileExclusive: WithMkdirAll path ---
+
+func TestWriteFileExclusive_WithMkdirAll(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deep", "f")
+	if err := WriteFileExclusive(path, []byte("x"), WithMkdirAll(true)); err != nil {
+		t.Fatalf("WriteFileExclusive: %v", err)
+	}
+}
+
+// --- WithBackup default suffix ---
+
+func TestWriteFile_WithBackupDefaultSuffix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := WriteFile(path, []byte("new"), WithBackup("")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got, _ := os.ReadFile(path + ".bak"); string(got) != "orig" {
+		t.Errorf("default-suffix backup not produced: %q", got)
 	}
 }
 

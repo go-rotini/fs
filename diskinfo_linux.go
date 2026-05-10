@@ -104,7 +104,7 @@ func resolveMountInfo(path string) (mountInfoEntry, error) {
 	}
 	if bestLen < 0 {
 		// Fall back to the synthetic root mount entry.
-		return mountInfoEntry{mountPoint: "/", fsType: "unknown"}, nil
+		return mountInfoEntry{mountPoint: "/", fsType: unknownLabel}, nil
 	}
 	return best, nil
 }
@@ -123,7 +123,7 @@ func filesystemTypeOf(path string) (string, error) {
 		return "", wrapPathError(opFilesystemType, path, err)
 	}
 	if e.fsType == "" {
-		return "unknown", nil
+		return unknownLabel, nil
 	}
 	return e.fsType, nil
 }

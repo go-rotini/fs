@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// unknownLabel is the canonical string returned by stringer-style
+// helpers ([ArchiveFormat.String], [HashAlgo.String], [LineEnding],
+// [FilesystemType], etc.) when a value cannot be classified.
+const unknownLabel = "unknown"
+
 // PathError wraps an underlying filesystem error with the operation
 // and path that produced it. The package returns *PathError from every
 // op-with-a-path entry point; Cause is typically a *os.PathError or a

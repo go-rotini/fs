@@ -51,7 +51,7 @@ func (a HashAlgo) String() string {
 	case HashMD5:
 		return "md5"
 	default:
-		return "unknown"
+		return unknownLabel
 	}
 }
 

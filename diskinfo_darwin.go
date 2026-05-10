@@ -36,7 +36,7 @@ func filesystemTypeOf(path string) (string, error) {
 	}
 	t := cstrFromInt8(st.Fstypename[:])
 	if t == "" {
-		return "unknown", nil
+		return unknownLabel, nil
 	}
 	return t, nil
 }

@@ -98,7 +98,7 @@ func filesystemTypeOf(path string) (string, error) {
 	}
 	t := syscall.UTF16ToString(fsName[:])
 	if t == "" {
-		return "unknown", nil
+		return unknownLabel, nil
 	}
 	return t, nil
 }

@@ -37,7 +37,7 @@ func (l LineEnding) String() string {
 	case LineMixed:
 		return "mixed"
 	}
-	return "unknown"
+	return unknownLabel
 }
 
 // utf8BOM is the three-byte UTF-8 byte-order mark.

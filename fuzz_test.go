@@ -77,8 +77,8 @@ func FuzzMatch(f *testing.F) {
 	})
 }
 
-// FuzzParseBytes drives [ParseBytes] / [ParseBytesStrict] with
-// random size strings. Never panics.
+// FuzzParseBytes drives [ParseBytes] / [ParseBytesIEC] with random
+// size strings. Never panics.
 func FuzzParseBytes(f *testing.F) {
 	seeds := []string{
 		"1024",
@@ -97,7 +97,7 @@ func FuzzParseBytes(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, input string) {
 		_, _ = ParseBytes(input)
-		_, _ = ParseBytesStrict(input)
+		_, _ = ParseBytesIEC(input)
 	})
 }
 

@@ -34,9 +34,11 @@ func TestFormatBytes_Boundaries(t *testing.T) {
 	}
 }
 
-// --- ParseBytes (lenient) ---
+// --- ParseBytes: strict-SI by default ---
 
-func TestParseBytes_IECUnits(t *testing.T) {
+// IEC binary units (KiB, MiB, ...) are always 1024-based regardless
+// of which ParseBytes variant is used — they're unambiguous.
+func TestParseBytes_IECSuffixes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		in   string
@@ -63,17 +65,20 @@ func TestParseBytes_IECUnits(t *testing.T) {
 	}
 }
 
-func TestParseBytes_SIUnitsLenient(t *testing.T) {
+// ParseBytes treats bare SI suffixes (KB, MB, GB, ...) as strict
+// SI: 1KB = 1000, matching kubectl / docker / kafka convention.
+func TestParseBytes_SISuffixesStrict(t *testing.T) {
 	t.Parallel()
-	// Lenient mode treats KB/MB/GB as 1024-based.
 	cases := []struct {
 		in   string
 		want int64
 	}{
-		{"1KB", 1024},
-		{"1MB", 1 << 20},
-		{"1.5GB", 1<<30 + 1<<29},
-		{"2tb", 2 << 40},
+		{"1KB", 1000},
+		{"1MB", 1_000_000},
+		{"1.5GB", 1_500_000_000},
+		{"2TB", 2_000_000_000_000},
+		{"1KiB", 1024}, // IEC stays 1024-based
+		{"1MiB", 1 << 20},
 	}
 	for _, c := range cases {
 		got, err := ParseBytes(c.in)
@@ -86,25 +91,27 @@ func TestParseBytes_SIUnitsLenient(t *testing.T) {
 	}
 }
 
-func TestParseBytesStrict_SI(t *testing.T) {
+// ParseBytesIEC reinterprets bare SI suffixes as 1024-based for
+// interop with legacy "disk-vendor" tools.
+func TestParseBytesIEC_SISuffixesAsBinary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		in   string
 		want int64
 	}{
-		{"1KB", 1000},
-		{"1MB", 1_000_000},
-		{"1.5GB", 1_500_000_000},
-		{"1KiB", 1024}, // IEC stays 1024-based
-		{"1MiB", 1 << 20},
+		{"1KB", 1024},
+		{"1MB", 1 << 20},
+		{"1.5GB", 1<<30 + 1<<29},
+		{"2tb", 2 << 40},
+		{"1KiB", 1024}, // IEC suffixes still 1024-based
 	}
 	for _, c := range cases {
-		got, err := ParseBytesStrict(c.in)
+		got, err := ParseBytesIEC(c.in)
 		if err != nil {
-			t.Errorf("ParseBytesStrict(%q): %v", c.in, err)
+			t.Errorf("ParseBytesIEC(%q): %v", c.in, err)
 		}
 		if got != c.want {
-			t.Errorf("ParseBytesStrict(%q) = %d, want %d", c.in, got, c.want)
+			t.Errorf("ParseBytesIEC(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
@@ -120,6 +127,9 @@ func TestParseBytes_Errors(t *testing.T) {
 
 // --- Round-trip ---
 
+// FormatBytes always emits IEC binary units, so a round trip
+// through ParseBytes (which honors IEC suffixes as 1024-based)
+// recovers the original value.
 func TestFormatBytes_RoundTrip(t *testing.T) {
 	t.Parallel()
 	canonical := []string{
@@ -131,7 +141,6 @@ func TestFormatBytes_RoundTrip(t *testing.T) {
 		"1 GiB",
 	}
 	for _, s := range canonical {
-		// strings.NoSpace removes the space so ParseBytes accepts both forms.
 		n, err := ParseBytes(strings.ReplaceAll(s, " ", ""))
 		if err != nil {
 			t.Errorf("ParseBytes(%q): %v", s, err)

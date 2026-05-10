@@ -20,6 +20,15 @@ const (
 // target, returns nil. If linkPath exists but points elsewhere or is
 // not a symlink, returns [ErrAlreadyExists].
 //
+// Concurrent callers: the idempotency check (Readlink → Symlink)
+// is NOT atomic. Between the two syscalls another process can
+// create the link with a different target; the loser of that race
+// sees [ErrAlreadyExists]. POSIX `symlink(2)` is atomic for the
+// create-if-not-exists case but Go's stdlib does not expose the
+// flag needed to thread that through. For strict
+// "exactly one creator wins" semantics, accept [ErrAlreadyExists]
+// from one of the concurrent callers as a successful outcome.
+//
 // The target is stored verbatim in the link — it is not validated,
 // resolved, or required to exist (a "dangling" symlink is allowed,
 // matching [os.Symlink]).

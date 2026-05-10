@@ -34,26 +34,45 @@ func FormatBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", value, suffixes[exp])
 }
 
-// ParseBytes parses a human-readable size string. Accepts both IEC
-// units (`KiB`, `MiB`, `GiB`, `TiB`, `PiB`, `EiB`) and SI units
-// (`KB`, `MB`, `GB`, `TB`, `PB`, `EB`); SI units are interpreted as
-// powers of 1024 (matching common CLI usage). Use
-// [ParseBytesStrict] for true 1000-base SI semantics.
+// ParseBytes parses a human-readable size string with strict SI
+// semantics: `KB` = 1000, `MB` = 1000000, etc. IEC binary units
+// (`KiB`, `MiB`, ...) keep their canonical 1024-based meaning.
 //
-// Whitespace between the number and the unit is optional. The unit
-// is case-insensitive. A bare number (no unit) is treated as bytes.
-// Decimal mantissas are supported ("1.5GB" → 1610612736).
+// This is the same convention `kubectl`, `docker`, `kafka`, and
+// most other modern CLI tools use. For the legacy "disk-vendor"
+// idiom where bare `KB` means 1024, see [ParseBytesIEC].
+//
+// Accepted units (case-insensitive):
+//
+//	bare / B               -> 1
+//	K / KB                 -> 1000          KiB -> 1024
+//	M / MB                 -> 1000²         MiB -> 1024²
+//	G / GB                 -> 1000³         GiB -> 1024³
+//	T / TB                 -> 1000⁴         TiB -> 1024⁴
+//	P / PB                 -> 1000⁵         PiB -> 1024⁵
+//	E / EB                 -> 1000⁶         EiB -> 1024⁶
+//
+// Whitespace between the number and the unit is optional. A bare
+// number (no unit) is treated as bytes. Decimal mantissas are
+// supported ("1.5GB" → 1500000000).
 func ParseBytes(s string) (int64, error) {
 	return parseBytes(s, false)
 }
 
-// ParseBytesStrict is [ParseBytes] with strict SI semantics: KB=1000,
-// MB=1000000, etc. IEC units (KiB, MiB) still mean 1024-based.
-func ParseBytesStrict(s string) (int64, error) {
+// ParseBytesIEC is [ParseBytes] but with the legacy "disk-vendor"
+// idiom where bare `KB` / `MB` / `GB` mean powers of 1024 (so
+// `1KB == 1024`). IEC-suffixed units (`KiB`, `MiB`, ...) still
+// mean their canonical 1024-based values — they're 1024-based
+// either way.
+//
+// Use this when interoperating with tools that quote disk sizes in
+// the old `KB == 1024` convention. New code should prefer
+// [ParseBytes].
+func ParseBytesIEC(s string) (int64, error) {
 	return parseBytes(s, true)
 }
 
-func parseBytes(raw string, strict bool) (int64, error) {
+func parseBytes(raw string, iec bool) (int64, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return 0, fmt.Errorf("%w: empty input", ErrInvalidByteSize)
@@ -81,7 +100,7 @@ func parseBytes(raw string, strict bool) (int64, error) {
 		return 0, fmt.Errorf("%w: invalid number %q: %w", ErrInvalidByteSize, numStr, err)
 	}
 
-	mult, ok := unitMultiplier(unit, strict)
+	mult, ok := unitMultiplier(unit, iec)
 	if !ok {
 		return 0, fmt.Errorf("%w: unknown unit %q", ErrInvalidByteSize, unit)
 	}
@@ -89,8 +108,12 @@ func parseBytes(raw string, strict bool) (int64, error) {
 }
 
 // unitMultiplier resolves a normalized (lowercase, trimmed) unit
-// string to a byte multiplier. Returns ok=false on unknown units.
-func unitMultiplier(u string, strict bool) (int64, bool) {
+// string to a byte multiplier. When iec=true, bare SI units
+// (K, KB, M, MB, ...) are interpreted as powers of 1024; when
+// iec=false (the default for [ParseBytes]), they're strict SI
+// powers of 1000. The IEC-suffixed units (kib, mib, ...) are
+// always 1024-based.
+func unitMultiplier(u string, iec bool) (int64, bool) {
 	switch u {
 	case "", "b":
 		return 1, true
@@ -107,35 +130,35 @@ func unitMultiplier(u string, strict bool) (int64, bool) {
 	case "eib":
 		return 1 << 60, true
 	case "k", "kb":
-		if strict {
-			return 1000, true
+		if iec {
+			return 1 << 10, true
 		}
-		return 1 << 10, true
+		return 1000, true
 	case "m", "mb":
-		if strict {
-			return 1000 * 1000, true
+		if iec {
+			return 1 << 20, true
 		}
-		return 1 << 20, true
+		return 1000 * 1000, true
 	case "g", "gb":
-		if strict {
-			return 1000 * 1000 * 1000, true
+		if iec {
+			return 1 << 30, true
 		}
-		return 1 << 30, true
+		return 1000 * 1000 * 1000, true
 	case "t", "tb":
-		if strict {
-			return 1000 * 1000 * 1000 * 1000, true
+		if iec {
+			return 1 << 40, true
 		}
-		return 1 << 40, true
+		return 1000 * 1000 * 1000 * 1000, true
 	case "p", "pb":
-		if strict {
-			return 1000 * 1000 * 1000 * 1000 * 1000, true
+		if iec {
+			return 1 << 50, true
 		}
-		return 1 << 50, true
+		return 1000 * 1000 * 1000 * 1000 * 1000, true
 	case "e", "eb":
-		if strict {
-			return 1000 * 1000 * 1000 * 1000 * 1000 * 1000, true
+		if iec {
+			return 1 << 60, true
 		}
-		return 1 << 60, true
+		return 1000 * 1000 * 1000 * 1000 * 1000 * 1000, true
 	}
 	return 0, false
 }

@@ -375,6 +375,12 @@ func (w *Watcher) fanOut(ev WatchEvent) {
 
 // Close releases all resources. Idempotent — repeated calls are
 // no-ops.
+//
+// The error return is reserved for forward compatibility. v0.1
+// always returns nil; once native backends (inotify, kqueue,
+// ReadDirectoryChangesW) are wired up, a Close-time flush or
+// fd-release failure may surface here. Existing callers that
+// already check the return will not need to change.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
 	if w.closed {

@@ -101,6 +101,12 @@
 //   - [Hash], [HashCompare], and [HashWriter] expose MD5 and SHA-1 for
 //     non-security uses (legacy compat, content-addressed caches);
 //     they are NOT secure for integrity defense against attackers.
+//   - [ParseBytes] uses strict SI semantics: `1KB == 1000`, matching
+//     kubectl / docker / kafka. IEC binary units (`1KiB == 1024`)
+//     keep their canonical meaning. For the legacy disk-vendor idiom
+//     where bare `KB` means 1024, use [ParseBytesIEC]. This is the
+//     opposite of what the previous-generation Go ecosystem libraries
+//     often did, so be deliberate about which function you call.
 //
 // # Stability
 //

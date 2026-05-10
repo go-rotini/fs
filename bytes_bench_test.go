@@ -14,7 +14,7 @@ func BenchmarkParseBytes(b *testing.B) {
 		{"mib", "100MiB"},
 		{"gib", "1GiB"},
 		{"decimal", "1.5GB"},
-		{"strict-kb", "10KB"},
+		{"si-kb", "10KB"},
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {

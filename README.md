@@ -12,11 +12,17 @@ quality standards as `go-rotini/yaml`, `go-rotini/toml`,
 
 ## Status
 
-✅ **v0.1.0 surface complete.** Every Phase-1-through-26 feature is
-implemented and tested. The watcher's platform-native backends (inotify
-/ kqueue / ReadDirectoryChangesW) are scheduled as a follow-up; the
-polling fallback is fully wired and gives correct behavior on every
-platform today.
+🚧 **v0.1.0 surface complete; watching is polling-only.** Every
+phase-1-through-26 feature is implemented and tested **except** the
+watcher's platform-native event delivery: inotify (Linux), kqueue
+(macOS/BSD), and `ReadDirectoryChangesW` (Windows) are scheduled as a
+post-v0.1 follow-up. In the interim every watcher uses the polling
+backend (`os.Lstat` in a loop, 1-second default interval). The
+polling backend is correct on every platform but has the latency
+profile and mtime-resolution limits you'd expect from polling — see
+`doc.go`'s Pitfalls section. Callers who need sub-second event
+delivery today should hold off; callers who reload a config file or
+template tree on save are well served by the polling backend.
 
 ## Features
 
@@ -32,14 +38,17 @@ platform today.
   (`TestHarness`, `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT`)
   live in [`github.com/go-rotini/fs/fstest`](https://pkg.go.dev/github.com/go-rotini/fs/fstest)
   so callers opt into the `testing` dependency only in their `_test.go`
-  files. Platform-native APIs (inotify / kqueue / `ReadDirectoryChangesW`;
-  flock / `LockFileEx`) are accessed directly through stdlib's `syscall`
-  package.
+  files. Platform-native syscall paths (flock / `LockFileEx` for the
+  post-v0.1 lock helpers; inotify / kqueue / `ReadDirectoryChangesW`
+  for the post-v0.1 native watcher backends) are reached directly
+  through stdlib's `syscall` package — no third-party wrappers.
 - **Safe-by-default**: atomic writes via temp+rename, bounded reads
   (default 100 MiB), idempotent removal, mode preservation on
   overwrite, archive extraction confined via `MustBeChildOf`.
 - Atomic-rename-aware file watching with multi-subscriber broadcast
-  and 75 ms trailing-edge debouncing.
+  and 75 ms trailing-edge debouncing. v0.1 ships the polling backend
+  only (1 s default interval, configurable); platform-native
+  inotify / kqueue / `ReadDirectoryChangesW` are post-v0.1.
 - Find-up project discovery (`FindUp`, `ProjectRoot`), XDG-aware user
   directories, hidden / pattern walk filtering, and path-safety
   primitives (`IsSubpath`, `MustBeChildOf`, `EvalSymlinksWithin`).
@@ -144,6 +153,14 @@ for ev := range events {
 The watcher watches the file's PARENT directory and filters by
 basename, so editor atomic-save patterns (write-temp + rename) are
 detected correctly.
+
+In v0.1 every watcher is backed by polling (`os.Lstat` in a loop,
+1-second default interval). Pass `fs.WithPolling(d)` to tighten the
+interval at the cost of more stat syscalls; pass `fs.WithDebounce(0)`
+in tests that need immediate event visibility. Platform-native
+inotify / kqueue / `ReadDirectoryChangesW` are scheduled for the
+next minor — when they land, the API stays the same and the polling
+fallback remains available via `WithPolling`.
 
 ### Extract an archive safely
 

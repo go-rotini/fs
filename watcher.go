@@ -36,11 +36,17 @@ var (
 	ErrWatcherUnsupportedOS = errors.New("fs: watcher: native backend unavailable on this platform — use WithPolling")
 )
 
-// Watcher monitors one path (file or directory) for changes via the
-// platform's kernel notification API on the parent directory, with
-// basename filtering. A polling fallback is selected on platforms
-// where no native backend is wired up, or when the caller passes
-// [WithPolling].
+// Watcher monitors one path (file or directory) for changes. The
+// watcher watches the parent directory and filters by basename, so
+// editor atomic-save patterns (write-temp + rename) are detected
+// correctly.
+//
+// In v0.1 every Watcher uses the polling backend regardless of
+// platform — `os.Lstat` in a loop at the configured interval
+// (default 1 second; override via [WithPolling]). The
+// platform-native backends (inotify on Linux, kqueue on macOS/BSD,
+// ReadDirectoryChangesW on Windows) are scheduled for a follow-up
+// release; the API will not change when they land.
 //
 // Construct via [NewWatcher] (existing path), [NewLazyWatcher]
 // (path may not exist yet), or [NewDirWatcher] (recursive directory

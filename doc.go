@@ -18,10 +18,11 @@
 // The fs package is a single flat root for production code — watcher,
 // lock, archive, scaffold, and disk-info helpers all live in the same
 // package. The whole production surface has zero non-stdlib runtime
-// imports AND does not import [testing]. Platform-native APIs
-// (inotify on Linux, kqueue on macOS/BSD, ReadDirectoryChangesW on
-// Windows; flock / LockFileEx for the post-v0.1 lock helpers) are
-// accessed directly through stdlib's [syscall] package.
+// imports AND does not import [testing]. Where the package reaches
+// for platform-native syscalls (flock / LockFileEx for the post-v0.1
+// lock helpers; inotify / kqueue / ReadDirectoryChangesW for the
+// post-v0.1 native watcher backends), it does so directly through
+// stdlib's [syscall] package — no third-party wrappers.
 //
 // The one sub-package is [github.com/go-rotini/fs/fstest], which
 // holds the test helpers (`TestHarness`, `MockFS`, `WithTempEnv`,
@@ -83,14 +84,20 @@
 //   - On Windows, symlink creation typically requires Administrator or
 //     Developer Mode. The package's symlink-using helpers return a
 //     clear error when the privilege isn't held.
+//   - v0.1 ships polling-only watching. The platform-native backends
+//     (inotify on Linux, kqueue on macOS/BSD, ReadDirectoryChangesW on
+//     Windows) are not yet wired up; every [Watcher] uses the polling
+//     backend regardless of [WithPolling]. Default interval is 1
+//     second; pass [WithPolling] with a finer interval when latency
+//     matters. The API will not change when native backends land.
 //   - The watcher's debouncer adds 75 ms of trailing-edge latency by
 //     default ([WithDebounce]). Tests that need immediate event
 //     visibility should pass `WithDebounce(0)`.
 //   - The polling backend reads file mtimes from [os.Lstat]; on
 //     filesystems that round mtime to second-resolution (FAT,
 //     network-attached SMB), back-to-back writes within one second can
-//     be missed. Use the platform-native backend (when fully wired) or
-//     [WithPolling]-with-a-finer-interval where this matters.
+//     be missed. Until the native backends land, [WithPolling] with a
+//     finer interval is the only mitigation.
 //   - [Hash], [HashCompare], and [HashWriter] expose MD5 and SHA-1 for
 //     non-security uses (legacy compat, content-addressed caches);
 //     they are NOT secure for integrity defense against attackers.
@@ -99,8 +106,9 @@
 //
 // The public API is stable starting at v0.1.0. New features may arrive
 // in minor releases; breaking changes are reserved for major version
-// bumps. The post-v0.1 roadmap includes lock helpers, caching helpers,
-// tail-follow, log rotation, versioned backups, transactional
-// plan/apply, and a .gitignore parser — all in the fs package, not as
-// sub-packages.
+// bumps. The post-v0.1 roadmap includes the native watcher backends
+// (inotify / kqueue / ReadDirectoryChangesW), lock helpers, caching
+// helpers, tail-follow, log rotation, versioned backups, transactional
+// plan/apply, and a .gitignore parser — all in the fs package (the
+// only sub-package is fstest for test helpers).
 package fs

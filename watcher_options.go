@@ -67,11 +67,16 @@ func WithBufferSize(n int) WatcherOption {
 	}
 }
 
-// WithPolling forces the polling backend (os.Stat in a loop at the
-// given interval) instead of the platform-native kernel API. Useful
-// for filesystems where inotify / kqueue / ReadDirectoryChangesW are
-// known to be unreliable (NFS, FUSE, exotic mounts) or in tests that
-// want deterministic, syscall-free behavior.
+// WithPolling overrides the polling interval. In v0.1 every watcher
+// uses polling regardless; this option is the only way to tune the
+// stat-loop cadence (default 1 second).
+//
+// Once the platform-native backends (inotify / kqueue /
+// ReadDirectoryChangesW) land in a follow-up release, WithPolling
+// will force the polling backend in preference to the native one —
+// useful for filesystems where the native APIs are known to be
+// unreliable (NFS, FUSE, exotic mounts) or in tests that want
+// deterministic, syscall-free behavior.
 //
 // interval <= 0 selects the default 1s.
 func WithPolling(interval time.Duration) WatcherOption {

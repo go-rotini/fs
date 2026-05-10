@@ -256,11 +256,11 @@ func FirstExisting(paths []string) (string, bool) {
 // root is absolute; relative-to-cwd otherwise. The root entry itself
 // is included if its basename matches.
 //
-// Walk-style options (skip-hidden, skip-names, max-depth, etc.) land
-// in Phase 11 along with [Walk]; this signature will gain variadic
-// options at that point.
-func Find(root, pattern string) ([]string, error) {
-	return findInternal(root, opFind, func(d stdfs.DirEntry, _ string) (bool, error) {
+// Honors all [WalkOption]s ([WalkSkipHidden], [WithSkipNames],
+// [WithSkipPatterns], [WithMaxDepth], [WalkFollowSymlinks],
+// [WithErrorHandler]).
+func Find(root, pattern string, opts ...WalkOption) ([]string, error) {
+	return findInternal(root, opFind, opts, func(d stdfs.DirEntry, _ string) (bool, error) {
 		ok, err := filepath.Match(pattern, d.Name())
 		if err != nil {
 			return false, err //nolint:wrapcheck // caller wraps via *PathError
@@ -271,8 +271,8 @@ func Find(root, pattern string) ([]string, error) {
 
 // FindByRegex is [Find] using a [regexp.Regexp] matched against the
 // basename instead of a glob.
-func FindByRegex(root string, re *regexp.Regexp) ([]string, error) {
-	return findInternal(root, opFindByRegex, func(d stdfs.DirEntry, _ string) (bool, error) {
+func FindByRegex(root string, re *regexp.Regexp, opts ...WalkOption) ([]string, error) {
+	return findInternal(root, opFindByRegex, opts, func(d stdfs.DirEntry, _ string) (bool, error) {
 		return re.MatchString(d.Name()), nil
 	})
 }
@@ -280,8 +280,8 @@ func FindByRegex(root string, re *regexp.Regexp) ([]string, error) {
 // FindFunc returns paths under root for which pred returns true. pred
 // receives the walk path (absolute when root is absolute) and the
 // entry's [os.FileInfo].
-func FindFunc(root string, pred func(path string, info os.FileInfo) bool) ([]string, error) {
-	return findInternal(root, opFindFunc, func(d stdfs.DirEntry, path string) (bool, error) {
+func FindFunc(root string, pred func(path string, info os.FileInfo) bool, opts ...WalkOption) ([]string, error) {
+	return findInternal(root, opFindFunc, opts, func(d stdfs.DirEntry, path string) (bool, error) {
 		info, err := d.Info()
 		if err != nil {
 			return false, err //nolint:wrapcheck // caller wraps via *PathError
@@ -290,9 +290,9 @@ func FindFunc(root string, pred func(path string, info os.FileInfo) bool) ([]str
 	})
 }
 
-func findInternal(root, op string, match func(stdfs.DirEntry, string) (bool, error)) ([]string, error) {
+func findInternal(root, op string, opts []WalkOption, match func(stdfs.DirEntry, string) (bool, error)) ([]string, error) {
 	var matches []string
-	werr := filepath.WalkDir(root, func(path string, d stdfs.DirEntry, walkErr error) error {
+	werr := Walk(root, func(path string, d stdfs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -304,7 +304,7 @@ func findInternal(root, op string, match func(stdfs.DirEntry, string) (bool, err
 			matches = append(matches, path)
 		}
 		return nil
-	})
+	}, opts...)
 	if werr != nil {
 		if errors.Is(werr, stdfs.ErrNotExist) {
 			return nil, wrapPathError(op, root, werr)

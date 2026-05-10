@@ -5,7 +5,6 @@ import (
 	stdfs "io/fs"
 	"os"
 	"sync"
-	"testing"
 )
 
 const (
@@ -77,35 +76,7 @@ func TempDir(dir, pattern string) (string, func() error, error) {
 	return name, cleanup, nil
 }
 
-// TempFileT is [TempFile] with cleanup auto-registered via
-// [testing.T.Cleanup]. Tests get the open file directly and never
-// have to manage cleanup themselves.
-func TempFileT(t *testing.T, pattern string) *os.File {
-	t.Helper()
-	f, cleanup, err := TempFile("", pattern)
-	if err != nil {
-		t.Fatalf("TempFileT: %v", err)
-	}
-	t.Cleanup(func() {
-		// Best-effort cleanup at test teardown; t.Logf may panic if the
-		// test goroutine has already returned, so swallow silently.
-		_ = cleanup() //nolint:errcheck // see comment above
-	})
-	return f
-}
-
-// TempDirT is [TempDir] with cleanup auto-registered via
-// [testing.T.Cleanup]. Tests get the directory path directly.
-func TempDirT(t *testing.T, pattern string) string {
-	t.Helper()
-	dir, cleanup, err := TempDir("", pattern)
-	if err != nil {
-		t.Fatalf("TempDirT: %v", err)
-	}
-	t.Cleanup(func() {
-		// Best-effort cleanup at test teardown; t.Logf may panic if the
-		// test goroutine has already returned, so swallow silently.
-		_ = cleanup() //nolint:errcheck // see comment above
-	})
-	return dir
-}
+// TempFileT and TempDirT — `t.Cleanup`-registering convenience
+// wrappers — live in [github.com/go-rotini/fs/fstest]. They cannot
+// live here without pulling [testing] into every consumer's
+// production binary.

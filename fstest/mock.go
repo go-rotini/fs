@@ -1,4 +1,4 @@
-package fs
+package fstest
 
 import (
 	stdfs "io/fs"
@@ -6,8 +6,9 @@ import (
 )
 
 // MockFS returns a read-only [io/fs.FS] over a path → contents map.
-// Useful for testing read paths ([Walk], [Glob], [Find], [ReadFile]
-// against the io/fs.FS surface) without touching disk.
+// Useful for testing read paths ([fs.Walk], [fs.Glob], [fs.Find],
+// [fs.ReadFile] against the io/fs.FS surface) without touching
+// disk.
 //
 // Wraps stdlib's [testing/fstest.MapFS]; entries are accessible via
 // the same path-based methods as any other io/fs.FS.

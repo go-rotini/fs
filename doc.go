@@ -9,18 +9,26 @@
 // one-line calls with safe defaults and useful errors. It is NOT a
 // virtual filesystem abstraction (see afero / go-billy); every
 // operation talks to the real filesystem. For tests against a fixture
-// without disk I/O, use [MockFS] (read paths) or [NewTestHarness]
-// (write paths in a [testing.T.TempDir]).
+// without disk I/O, use the helpers in
+// [github.com/go-rotini/fs/fstest]: `fstest.MockFS` (read paths) or
+// `fstest.NewTestHarness` (write paths in a [testing.T.TempDir]).
 //
 // # Zero third-party dependencies
 //
-// The fs package is a single flat root with no sub-packages — watcher,
-// lock, archive, scaffold, disk-info, and test-harness helpers all live
-// in the same package. The whole surface has zero non-stdlib runtime
-// imports. Platform-native APIs (inotify on Linux, kqueue on macOS/BSD,
-// ReadDirectoryChangesW on Windows; flock / LockFileEx for the
-// post-v0.1 lock helpers) are accessed directly through stdlib's
-// [syscall] package.
+// The fs package is a single flat root for production code — watcher,
+// lock, archive, scaffold, and disk-info helpers all live in the same
+// package. The whole production surface has zero non-stdlib runtime
+// imports AND does not import [testing]. Platform-native APIs
+// (inotify on Linux, kqueue on macOS/BSD, ReadDirectoryChangesW on
+// Windows; flock / LockFileEx for the post-v0.1 lock helpers) are
+// accessed directly through stdlib's [syscall] package.
+//
+// The one sub-package is [github.com/go-rotini/fs/fstest], which
+// holds the test helpers (`TestHarness`, `MockFS`, `WithTempEnv`,
+// `TempFileT`, `TempDirT`). Keeping those out of the main package is
+// what lets production binaries avoid pulling stdlib's [testing]
+// package — and its global flag registration — into their import
+// graph.
 //
 // # API conventions
 //

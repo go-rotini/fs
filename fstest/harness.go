@@ -1,4 +1,4 @@
-package fs
+package fstest
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/go-rotini/fs"
 )
 
 // TestHarness is a sandbox for tests that exercise filesystem-aware
@@ -15,9 +17,6 @@ import (
 // happens automatically via `t.Cleanup`) and exposes ergonomic
 // helpers for placing fixtures, reading them back, and producing
 // deterministic snapshots for golden-file comparison.
-//
-// The harness is for callers' tests, not the fs package's own
-// tests. Internal tests in this package use `t.TempDir()` directly.
 type TestHarness struct {
 	t    *testing.T
 	root string
@@ -29,6 +28,17 @@ type TestHarness struct {
 func NewTestHarness(t *testing.T) *TestHarness {
 	t.Helper()
 	return &TestHarness{t: t, root: t.TempDir()}
+}
+
+// NewHarnessAt returns a [*TestHarness] rooted at an existing
+// directory. Unlike [NewTestHarness], this does NOT create the
+// directory or register cleanup — the caller owns the root's
+// lifecycle. Intended for acceptance-style tests that have already
+// allocated a working directory and want the harness's [Snapshot] /
+// [Path] ergonomics over it.
+func NewHarnessAt(t *testing.T, root string) *TestHarness {
+	t.Helper()
+	return &TestHarness{t: t, root: root}
 }
 
 // Root returns the absolute path of the harness's root directory.
@@ -52,10 +62,10 @@ func (h *TestHarness) Path(rel string) string {
 func (h *TestHarness) Write(rel string, data []byte) string {
 	h.t.Helper()
 	p := h.Path(rel)
-	if err := os.MkdirAll(filepath.Dir(p), Mode0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), fs.Mode0755); err != nil {
 		h.t.Fatalf("TestHarness.Write: MkdirAll: %v", err)
 	}
-	if err := WriteFile(p, data); err != nil {
+	if err := fs.WriteFile(p, data); err != nil {
 		h.t.Fatalf("TestHarness.Write: %v", err)
 	}
 	return p
@@ -82,7 +92,7 @@ func (h *TestHarness) Read(rel string) []byte {
 func (h *TestHarness) Mkdir(rel string) string {
 	h.t.Helper()
 	p := h.Path(rel)
-	if err := os.MkdirAll(p, Mode0755); err != nil {
+	if err := os.MkdirAll(p, fs.Mode0755); err != nil {
 		h.t.Fatalf("TestHarness.Mkdir: %v", err)
 	}
 	return p
@@ -95,7 +105,7 @@ func (h *TestHarness) Mkdir(rel string) string {
 func (h *TestHarness) Symlink(rel, target string) string {
 	h.t.Helper()
 	p := h.Path(rel)
-	if err := os.MkdirAll(filepath.Dir(p), Mode0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), fs.Mode0755); err != nil {
 		h.t.Fatalf("TestHarness.Symlink: MkdirAll: %v", err)
 	}
 	if err := os.Symlink(target, p); err != nil {

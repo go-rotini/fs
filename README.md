@@ -24,11 +24,17 @@ platform today.
   reads, idempotent removal, ergonomic predicates.
 - Cross-platform from day one: Linux / macOS / Windows in CI; FreeBSD
   builds and vets clean.
-- **Zero non-stdlib runtime dependencies** — the entire fs package
-  (watcher, archive, scaffold, disk-info, test-harness, post-v0.1 lock
-  helpers) is one flat root with no sub-packages. Platform-native APIs
-  (inotify / kqueue / `ReadDirectoryChangesW`; flock / `LockFileEx`)
-  are accessed directly through stdlib's `syscall` package.
+- **Zero non-stdlib runtime dependencies, no `testing` import** — the
+  production surface (watcher, archive, scaffold, disk-info, post-v0.1
+  lock helpers) lives in one flat root. Importing `github.com/go-rotini/fs`
+  does **not** pull stdlib's `testing` package — or its global
+  `-test.*` flag registration — into your binary. Test helpers
+  (`TestHarness`, `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT`)
+  live in [`github.com/go-rotini/fs/fstest`](https://pkg.go.dev/github.com/go-rotini/fs/fstest)
+  so callers opt into the `testing` dependency only in their `_test.go`
+  files. Platform-native APIs (inotify / kqueue / `ReadDirectoryChangesW`;
+  flock / `LockFileEx`) are accessed directly through stdlib's `syscall`
+  package.
 - **Safe-by-default**: atomic writes via temp+rename, bounded reads
   (default 100 MiB), idempotent removal, mode preservation on
   overwrite, archive extraction confined via `MustBeChildOf`.
@@ -171,9 +177,18 @@ appConfig, err := fs.AppConfigDir("myapp")
 
 ### Test-harness for caller tests
 
+The test helpers live in [`github.com/go-rotini/fs/fstest`](https://pkg.go.dev/github.com/go-rotini/fs/fstest)
+so importing the main `fs` package never pulls stdlib's `testing`
+into your production binary.
+
 ```go
+import (
+    "github.com/go-rotini/fs"
+    "github.com/go-rotini/fs/fstest"
+)
+
 func TestMyApp(t *testing.T) {
-    h := fs.NewTestHarness(t)
+    h := fstest.NewTestHarness(t)
     h.WriteString("config.yaml", "port: 8080\n")
     h.Mkdir("data/cache")
 
@@ -196,11 +211,16 @@ asymmetry, watcher debounce latency, polling-mtime resolution, the
 
 ## Architecture
 
-The package is a flat directory of files; there are no sub-packages.
+The production package is a flat directory of files; the only
+sub-package is `fstest`, which holds the test helpers. Keeping the
+test helpers out of the main package is what lets production binaries
+avoid pulling stdlib's `testing` package (and its global flag
+registration) into their import graph.
+
 Feature areas use name-prefixing where ambiguity would otherwise arise
 (`*Watcher` / `WatchEvent` / `WatchOp`; `ExtractArchive` /
 `CreateArchive` / `ArchiveFormat`; `ScaffoldApply` / `ScaffoldPlan`;
-`DiskUsage` / `DiskUsageOf`; `*TestHarness`).
+`DiskUsage` / `DiskUsageOf`).
 
 Per-feature option types are scoped (`ReadOption`, `WriteOption`,
 `WalkOption`, `CopyOption`, `RemoveOption`, `WatcherOption`,

@@ -160,42 +160,5 @@ func TestTempDir_CleanupIdempotent(t *testing.T) {
 	}
 }
 
-// --- TempFileT / TempDirT ---
-
-func TestTempFileT_AutoCleanup(t *testing.T) {
-	t.Parallel()
-	var nameSnapshot string
-
-	t.Run("inner", func(t *testing.T) {
-		f := TempFileT(t, "rotini-tft-*")
-		nameSnapshot = f.Name()
-		if !Exists(nameSnapshot) {
-			t.Fatal("file should exist while subtest is alive")
-		}
-	})
-
-	// After inner subtest completes, t.Cleanup ran.
-	if Exists(nameSnapshot) {
-		t.Errorf("file %s should have been auto-cleaned after subtest", nameSnapshot)
-	}
-}
-
-func TestTempDirT_AutoCleanup(t *testing.T) {
-	t.Parallel()
-	var dirSnapshot string
-
-	t.Run("inner", func(t *testing.T) {
-		dir := TempDirT(t, "rotini-tdt-*")
-		dirSnapshot = dir
-		if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
-		if !IsDir(dirSnapshot) {
-			t.Fatal("dir should exist while subtest is alive")
-		}
-	})
-
-	if Exists(dirSnapshot) {
-		t.Errorf("dir %s should have been auto-cleaned after subtest", dirSnapshot)
-	}
-}
+// TempFileT and TempDirT live in [github.com/go-rotini/fs/fstest];
+// see fstest/temp_test.go for their tests.

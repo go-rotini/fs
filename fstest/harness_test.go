@@ -1,15 +1,14 @@
-package fs
+package fstest
 
 import (
-	stdfs "io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-)
 
-// --- TestHarness ---
+	"github.com/go-rotini/fs"
+)
 
 func TestTestHarness_RootIsTempDir(t *testing.T) {
 	t.Parallel()
@@ -46,6 +45,14 @@ func TestTestHarness_PathAbsoluteStripped(t *testing.T) {
 	want := filepath.Join(h.Root(), "etc", "passwd")
 	if got != want {
 		t.Errorf("absolute path leaked outside harness: got %s, want %s", got, want)
+	}
+}
+
+func TestTestHarness_PathEmpty(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	if h.Path("") == "" {
+		t.Error("Path('') should still return harness root")
 	}
 }
 
@@ -117,11 +124,11 @@ func TestTestHarness_Remove(t *testing.T) {
 	t.Parallel()
 	h := NewTestHarness(t)
 	h.WriteString("temp.txt", "x")
-	if !Exists(h.Path("temp.txt")) {
+	if !fs.Exists(h.Path("temp.txt")) {
 		t.Fatal("setup failed")
 	}
 	h.Remove("temp.txt")
-	if Exists(h.Path("temp.txt")) {
+	if fs.Exists(h.Path("temp.txt")) {
 		t.Error("Remove did not delete file")
 	}
 }
@@ -133,7 +140,7 @@ func TestTestHarness_RemoveTree(t *testing.T) {
 	h.WriteString("sub/b.txt", "b")
 	h.Mkdir("sub/deep")
 	h.Remove("sub")
-	if Exists(h.Path("sub")) {
+	if fs.Exists(h.Path("sub")) {
 		t.Error("Remove did not delete tree")
 	}
 }
@@ -143,6 +150,23 @@ func TestTestHarness_RemoveMissingTolerated(t *testing.T) {
 	h := NewTestHarness(t)
 	// Removing something that doesn't exist must not fail the test.
 	h.Remove("never-existed")
+}
+
+func TestTestHarness_AllMethodsHappyPath(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	if h.Path("a/b/c") == "" {
+		t.Error("Path empty")
+	}
+	h.Mkdir("dir")
+	h.WriteString("file.txt", "x")
+	if string(h.Read("file.txt")) != "x" {
+		t.Error("read content mismatch")
+	}
+	if runtime.GOOS != "windows" {
+		h.Symlink("link", h.Path("file.txt"))
+	}
+	h.Remove("dir")
 }
 
 // --- Snapshot ---
@@ -211,129 +235,20 @@ func TestTestHarness_SnapshotSymlinks(t *testing.T) {
 	}
 }
 
-// --- MockFS ---
-
-func TestMockFS_ReadFile(t *testing.T) {
+func TestNewHarnessAt(t *testing.T) {
 	t.Parallel()
-	fsys := MockFS(map[string]string{
-		"a.txt":     "alpha",
-		"sub/b.txt": "beta",
-	})
-	data, err := stdfs.ReadFile(fsys, "a.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
-	if string(data) != "alpha" {
-		t.Errorf("got %q, want alpha", data)
+	h := NewHarnessAt(t, root)
+	if h.Root() != root {
+		t.Errorf("Root = %s, want %s", h.Root(), root)
 	}
-}
-
-func TestMockFS_WalkCompat(t *testing.T) {
-	t.Parallel()
-	fsys := MockFS(map[string]string{
-		"a.txt":     "a",
-		"sub/b.txt": "b",
-	})
-	var paths []string
-	if err := stdfs.WalkDir(fsys, ".", func(p string, _ stdfs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		paths = append(paths, p)
-		return nil
-	}); err != nil {
-		t.Fatalf("WalkDir: %v", err)
+	if string(h.Read("a.txt")) != "alpha" {
+		t.Error("NewHarnessAt did not see pre-existing file")
 	}
-	// Should include "." plus both files plus the "sub" directory.
-	if len(paths) < 3 {
-		t.Errorf("walk visited %d entries, want >=3: %v", len(paths), paths)
-	}
-}
-
-func TestMockFS_Empty(t *testing.T) {
-	t.Parallel()
-	fsys := MockFS(nil)
-	if _, err := stdfs.ReadFile(fsys, "missing"); err == nil {
-		t.Error("expected error reading from empty MockFS")
-	}
-}
-
-// --- WithTempEnv ---
-
-func TestWithTempEnv_RestoresOnCleanup(t *testing.T) {
-	const key = "ROTINI_FS_TESTHARNESS_ENV"
-	//nolint:usetesting // direct Setenv is the scenario WithTempEnv is meant to handle
-	if err := os.Setenv(key, "outer"); err != nil {
-		t.Fatalf("Setenv: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv(key) })
-
-	t.Run("inner", func(t *testing.T) {
-		WithTempEnv(t)
-		// Mutate env inside the subtest via direct os.Setenv —
-		// WithTempEnv's reason to exist.
-		//nolint:usetesting // direct Setenv is the scenario under test
-		if err := os.Setenv(key, "inner"); err != nil {
-			t.Fatalf("Setenv: %v", err)
-		}
-		if got := os.Getenv(key); got != "inner" {
-			t.Errorf("inside subtest got %q, want inner", got)
-		}
-	})
-
-	// After the subtest's t.Cleanup runs, the variable should be back
-	// to its outer value.
-	if got := os.Getenv(key); got != "outer" {
-		t.Errorf("after subtest got %q, want outer", got)
-	}
-}
-
-func TestWithTempEnv_RestoresClearedVar(t *testing.T) {
-	const key = "ROTINI_FS_TESTHARNESS_CLEAR"
-	//nolint:usetesting // direct Setenv is the scenario WithTempEnv is meant to handle
-	if err := os.Setenv(key, "set-by-outer"); err != nil {
-		t.Fatalf("Setenv: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Unsetenv(key) })
-
-	t.Run("inner", func(t *testing.T) {
-		WithTempEnv(t)
-		if err := os.Unsetenv(key); err != nil {
-			t.Fatalf("Unsetenv: %v", err)
-		}
-		if _, ok := os.LookupEnv(key); ok {
-			t.Error("expected unset inside subtest")
-		}
-	})
-
-	if got, ok := os.LookupEnv(key); !ok || got != "set-by-outer" {
-		t.Errorf("after subtest got (%q, %v), want (set-by-outer, true)", got, ok)
-	}
-}
-
-// --- TestHarness happy-path method coverage ---
-
-func TestTestHarness_AllMethodsHappyPath(t *testing.T) {
-	t.Parallel()
-	h := NewTestHarness(t)
-	if h.Path("a/b/c") == "" {
-		t.Error("Path empty")
-	}
-	h.Mkdir("dir")
-	h.WriteString("file.txt", "x")
-	if string(h.Read("file.txt")) != "x" {
-		t.Error("read content mismatch")
-	}
-	if runtime.GOOS != "windows" {
-		h.Symlink("link", h.Path("file.txt"))
-	}
-	h.Remove("dir")
-}
-
-func TestTestHarness_PathEmpty(t *testing.T) {
-	t.Parallel()
-	h := NewTestHarness(t)
-	if h.Path("") == "" {
-		t.Error("Path('') should still return harness root")
+	if !strings.Contains(h.Snapshot(), "FILE a.txt") {
+		t.Error("Snapshot missing pre-existing file")
 	}
 }

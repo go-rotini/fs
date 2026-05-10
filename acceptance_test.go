@@ -1,4 +1,4 @@
-package fs
+package fs_test
 
 import (
 	"os"
@@ -6,12 +6,20 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/go-rotini/fs"
+	"github.com/go-rotini/fs/fstest"
 )
 
 // Acceptance tests exercise real-world CLI scenarios end-to-end.
 // Each test name starts with `TestAcceptance` so
 // `make test-acceptance` (which uses `-run TestAcceptance`) can
 // target them.
+//
+// This file uses `package fs_test` (external) so it can import
+// [github.com/go-rotini/fs/fstest] for the test-harness / mock
+// helpers without forcing those into the main package's import
+// graph.
 
 // TestAcceptanceProjectRoot — fixture tree with `.git` at the top;
 // from a deeply-nested subdirectory, ProjectRoot returns the
@@ -27,7 +35,7 @@ func TestAcceptanceProjectRoot(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	got, err := ProjectRoot(deep)
+	got, err := fs.ProjectRoot(deep)
 	if err != nil {
 		t.Fatalf("ProjectRoot: %v", err)
 	}
@@ -45,7 +53,7 @@ func TestAcceptanceConfigSave(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "secrets.yaml")
 
-	if err := WriteFileSecret(cfg, []byte("token: abc123\n")); err != nil {
+	if err := fs.WriteFileSecret(cfg, []byte("token: abc123\n")); err != nil {
 		t.Fatalf("WriteFileSecret: %v", err)
 	}
 	info, _ := os.Stat(cfg)
@@ -54,7 +62,7 @@ func TestAcceptanceConfigSave(t *testing.T) {
 	}
 
 	// Overwrite with new content.
-	if err := WriteFile(cfg, []byte("token: xyz789\n")); err != nil {
+	if err := fs.WriteFile(cfg, []byte("token: xyz789\n")); err != nil {
 		t.Fatalf("WriteFile overwrite: %v", err)
 	}
 
@@ -92,10 +100,10 @@ func TestAcceptanceWalkSkipping(t *testing.T) {
 	}
 
 	var visited []string
-	err := Walk(root, func(path string, _ os.DirEntry, _ error) error {
+	err := fs.Walk(root, func(path string, _ os.DirEntry, _ error) error {
 		visited = append(visited, path)
 		return nil
-	}, WithSkipNames([]string{".git", "node_modules", ".terraform"}))
+	}, fs.WithSkipNames([]string{".git", "node_modules", ".terraform"}))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -143,7 +151,7 @@ func TestAcceptanceFindUpEnv(t *testing.T) {
 		}
 	}
 
-	got, err := FindUpAll(".env", leaf, WithStopAt(rootDir))
+	got, err := fs.FindUpAll(".env", leaf, fs.WithStopAt(rootDir))
 	if err != nil {
 		t.Fatalf("FindUpAll: %v", err)
 	}
@@ -151,7 +159,7 @@ func TestAcceptanceFindUpEnv(t *testing.T) {
 		t.Fatalf("got %d matches, want 3: %v", len(got), got)
 	}
 
-	pr, err := ProjectRoot(leaf)
+	pr, err := fs.ProjectRoot(leaf)
 	if err != nil {
 		t.Fatalf("ProjectRoot: %v", err)
 	}
@@ -171,7 +179,7 @@ func TestAcceptanceUserDirs(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	got, err := ConfigDir()
+	got, err := fs.ConfigDir()
 	if err != nil {
 		t.Fatalf("ConfigDir: %v", err)
 	}
@@ -179,7 +187,7 @@ func TestAcceptanceUserDirs(t *testing.T) {
 		t.Errorf("ConfigDir = %s, want %s", got, dir)
 	}
 
-	app, err := AppConfigDir("myapp")
+	app, err := fs.AppConfigDir("myapp")
 	if err != nil {
 		t.Fatalf("AppConfigDir: %v", err)
 	}
@@ -211,10 +219,10 @@ func TestAcceptanceArchiveRoundtrip(t *testing.T) {
 		}
 	}
 
-	if err := CreateArchiveFile(archivePath, src, WithArchiveFormat(ArchiveFormatTarGz)); err != nil {
+	if err := fs.CreateArchiveFile(archivePath, src, fs.WithArchiveFormat(fs.ArchiveFormatTarGz)); err != nil {
 		t.Fatalf("CreateArchiveFile: %v", err)
 	}
-	if err := ExtractArchiveFile(archivePath, dst); err != nil {
+	if err := fs.ExtractArchiveFile(archivePath, dst); err != nil {
 		t.Fatalf("ExtractArchiveFile: %v", err)
 	}
 
@@ -244,21 +252,21 @@ func TestAcceptanceArchiveRoundtrip(t *testing.T) {
 func TestAcceptanceScaffoldIdempotent(t *testing.T) {
 	t.Parallel()
 	dst := t.TempDir()
-	src := MockFS(map[string]string{
+	src := fstest.MockFS(map[string]string{
 		"README.md":             "# {{.Name}}\n",
 		"src/{{.Name}}/main.go": "package {{.Name}}\n",
 	})
 
-	if err := ScaffoldApply(src, dst, struct{ Name string }{Name: "myapp"}); err != nil {
+	if err := fs.ScaffoldApply(src, dst, struct{ Name string }{Name: "myapp"}); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-	first := h(t, dst).Snapshot()
+	first := fstest.NewHarnessAt(t, dst).Snapshot()
 
 	// Modify a destination file; second apply should NOT overwrite it.
 	if err := os.WriteFile(filepath.Join(dst, "README.md"), []byte("user-edit"), 0o644); err != nil {
 		t.Fatalf("user edit: %v", err)
 	}
-	if err := ScaffoldApply(src, dst, struct{ Name string }{Name: "myapp"}); err != nil {
+	if err := fs.ScaffoldApply(src, dst, struct{ Name string }{Name: "myapp"}); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
 
@@ -279,12 +287,21 @@ func canTestXDG() bool {
 	return runtime.GOOS == "linux" || runtime.GOOS == "freebsd"
 }
 
-// h is a shorthand TestHarness factory used inside acceptance tests.
-func h(t *testing.T, root string) *TestHarness {
+// sameRealPath resolves both paths through filepath.EvalSymlinks
+// before comparing; macOS resolves `/var/folders/...` (where
+// `t.TempDir()` returns) to `/private/var/folders/...` so direct
+// string equality on TempDir-derived paths fails. Local copy of the
+// helper in find_test.go (package fs); this file is package fs_test
+// so it can't reach the original.
+func sameRealPath(t *testing.T, a, b string) bool {
 	t.Helper()
-	// Use a harness rooted at an existing dir by side-loading it;
-	// NewTestHarness creates its own temp dir, so for an existing
-	// dst we'd need a different shape. For acceptance tests we just
-	// want a Snapshot() helper, so build one ad-hoc.
-	return &TestHarness{t: t, root: root}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		t.Fatalf("EvalSymlinks %s: %v", a, err)
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		t.Fatalf("EvalSymlinks %s: %v", b, err)
+	}
+	return ra == rb
 }

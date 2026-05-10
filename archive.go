@@ -175,12 +175,10 @@ type gzipReadCloser struct {
 }
 
 func (g *gzipReadCloser) Close() error {
-	gerr := g.Reader.Close()
-	ferr := g.file.Close()
-	if gerr != nil {
-		return gerr //nolint:wrapcheck // surfacing the gzip close error directly
-	}
-	return ferr //nolint:wrapcheck // surfacing the file close error directly
+	// errors.Join keeps both errors in the chain — gzip Close
+	// flushes internal state, and we never want a benign gzip
+	// success to mask a file Close failure (or vice versa).
+	return errors.Join(g.Reader.Close(), g.file.Close())
 }
 
 // bufferedReadCloser exposes Close on the underlying file while

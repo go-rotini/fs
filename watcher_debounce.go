@@ -61,11 +61,16 @@ func (d *debouncer) In(ev rawWatchEvent) {
 		st.timer.Reset(d.delay)
 		return
 	}
+	// Capture the path locally so the timer callback doesn't depend
+	// on the loop variable's identity should this code ever move
+	// inside a range loop. st is captured so the accumulated op
+	// (which other Reset calls may OR into) is read at fire time.
+	path := ev.path
 	st := &timerState{op: ev.op}
 	st.timer = time.AfterFunc(d.delay, func() {
 		d.mu.Lock()
-		out := rawWatchEvent{path: ev.path, op: st.op}
-		delete(d.timers, ev.path)
+		out := rawWatchEvent{path: path, op: st.op}
+		delete(d.timers, path)
 		closed := d.closed
 		d.mu.Unlock()
 		if closed {
@@ -76,7 +81,7 @@ func (d *debouncer) In(ev rawWatchEvent) {
 		default:
 		}
 	})
-	d.timers[ev.path] = st
+	d.timers[path] = st
 }
 
 // Out returns the channel of debounced events.

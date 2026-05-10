@@ -59,7 +59,7 @@ func (b *pollingBackend) AddPath(path string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
-		return errWatcherUnsupportedBackend
+		return ErrWatcherClosed
 	}
 	if _, ok := b.paths[abs]; ok {
 		return nil // already registered

@@ -60,17 +60,7 @@ func createZip(w io.Writer, root string, cfg archiveCreateOptions) error {
 		if d.IsDir() {
 			return nil
 		}
-
-		//nolint:gosec // G304/G122: zip creation is run on a trusted source tree by the caller
-		f, oerr := os.Open(path)
-		if oerr != nil {
-			return oerr //nolint:wrapcheck // outer caller wraps
-		}
-		if _, cerr := io.Copy(ww, f); cerr != nil {
-			_ = f.Close()
-			return cerr //nolint:wrapcheck // outer caller wraps
-		}
-		return f.Close()
+		return copyFileIntoZip(path, ww)
 	})
 
 	if walkErr != nil {
@@ -79,6 +69,21 @@ func createZip(w io.Writer, root string, cfg archiveCreateOptions) error {
 	}
 	if err := zw.Close(); err != nil {
 		return wrapPathError(opCreateArchive, root, err)
+	}
+	return nil
+}
+
+// copyFileIntoZip opens path and streams its bytes into ww. The
+// open + close pair is deferred so any return path closes the
+// source file exactly once.
+func copyFileIntoZip(path string, ww io.Writer) error {
+	f, oerr := os.Open(path)
+	if oerr != nil {
+		return oerr //nolint:wrapcheck // outer caller wraps
+	}
+	defer f.Close()
+	if _, cerr := io.Copy(ww, f); cerr != nil {
+		return cerr //nolint:wrapcheck // outer caller wraps
 	}
 	return nil
 }

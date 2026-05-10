@@ -372,3 +372,102 @@ func TestFind_HonorsMaxDepth(t *testing.T) {
 		}
 	}
 }
+
+// --- Walk with WalkFollowSymlinks behaviors ---
+
+func TestWalk_FollowSymlinksFnSkipDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "skip-me"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "skip-me", "x"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	visits := 0
+	err := Walk(root, func(p string, d stdfs.DirEntry, _ error) error {
+		visits++
+		if d.IsDir() && filepath.Base(p) == "skip-me" {
+			return filepath.SkipDir
+		}
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if visits == 0 {
+		t.Error("walk visited zero entries")
+	}
+}
+
+func TestWalk_FollowSymlinksFnError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	sentinel := errors.New("fn-stop")
+	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
+		return sentinel
+	}, WalkFollowSymlinks(true))
+	if !errors.Is(err, sentinel) {
+		t.Errorf("got %v, want sentinel", err)
+	}
+}
+
+func TestWalk_FollowSymlinks_MissingTarget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Create a dangling symlink (target missing).
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(root, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err == nil {
+		t.Fatal("expected error from dangling symlink stat")
+	}
+}
+
+func TestWalk_FollowSymlinks_ErrorHandlerSwallowsStatError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(root, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
+		return nil
+	}, WalkFollowSymlinks(true), WithErrorHandler(func(_ string, _ error) error { return nil }))
+	if err != nil {
+		t.Errorf("Walk: %v", err)
+	}
+}
+
+func TestWalk_FollowSymlinks_LoopDetection(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	sub := filepath.Join(root, "a")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Create a symlink that points back to root from inside.
+	if err := os.Symlink(root, filepath.Join(sub, "back")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err != nil {
+		t.Errorf("Walk: %v", err)
+	}
+}

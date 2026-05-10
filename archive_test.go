@@ -648,3 +648,557 @@ func TestArchiveFormat_String(t *testing.T) {
 		}
 	}
 }
+
+// --- Fault-injection: archive create ---
+//
+// These tests swap package-level OS hooks (see fault_hooks.go) to
+// exercise defensive error branches that real I/O can't easily
+// provoke. None call t.Parallel — the hooks are package-global.
+
+func TestFault_CreateArchive_Tar_ReadError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	orig := fileRead
+	t.Cleanup(func() { fileRead = orig })
+	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	_ = h
+
+	out := filepath.Join(dir, "out.tar")
+	err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatTar))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CreateArchive_Zip_ReadError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	orig := fileRead
+	t.Cleanup(func() { fileRead = orig })
+	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	_ = h
+
+	out := filepath.Join(dir, "out.zip")
+	err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatZip))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CreateArchive_Tar_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failOpenAlways()
+
+	out := filepath.Join(dir, "out.tar")
+	err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatTar))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CreateArchive_Zip_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failOpenAlways()
+
+	out := filepath.Join(dir, "out.zip")
+	err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatZip))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CreateArchive_Tar_ReadlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink("target", filepath.Join(src, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.failReadlinkAlways()
+
+	out := filepath.Join(dir, "out.tar")
+	err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatTar))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: archive extract ---
+
+func TestFault_ExtractArchive_RootMkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := CreateArchive(&buf, src, WithArchiveFormat(ArchiveFormatTar)); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+	h.failMkdirAllAlways()
+	err := ExtractArchive(&buf, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractTar_FinalCloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.tar")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatTar)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	h.failCloseAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractTar_MkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.tar")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatTar)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	h.failMkdirAllAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractTar_OpenFileError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.tar")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatTar)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	h.failOpenFileAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractTar_SymlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink("target", filepath.Join(src, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.tar")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatTar)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	h.failSymlinkAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractTar_HardlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	target := filepath.Join(src, "real")
+	if err := os.WriteFile(target, []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Link(target, filepath.Join(src, "hard")); err != nil {
+		t.Skipf("hardlinks not supported: %v", err)
+	}
+
+	// CreateArchive doesn't emit hardlink entries; build one manually.
+	archive := filepath.Join(dir, "archive.tar")
+	tarFile, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create tar: %v", err)
+	}
+	tw := tar.NewWriter(tarFile)
+	if err := tw.WriteHeader(&tar.Header{Name: "real", Mode: 0o644, Size: 2, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("WriteHeader real: %v", err)
+	}
+	if _, err := tw.Write([]byte("xy")); err != nil {
+		t.Fatalf("Write real: %v", err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "hard", Mode: 0o644, Linkname: "real", Typeflag: tar.TypeLink}); err != nil {
+		t.Fatalf("WriteHeader hard: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw close: %v", err)
+	}
+	if err := tarFile.Close(); err != nil {
+		t.Fatalf("file close: %v", err)
+	}
+
+	h.failLinkAlways()
+	err = ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractZip_MkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.zip")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	h.failMkdirAllAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ExtractZip_OpenFileError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archive := filepath.Join(dir, "archive.zip")
+	if err := CreateArchiveFile(archive, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	h.failOpenFileAlways()
+	err := ExtractArchiveFile(archive, filepath.Join(dir, "extract"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- ExtractArchive size cap ---
+
+func TestExtractArchive_ZipMaxBytes(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "big"), bytes.Repeat([]byte("X"), 4096), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "out.zip")
+	if err := CreateArchiveFile(archivePath, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+
+	dst := t.TempDir()
+	// 16-byte cap on a 4KB zip: must error.
+	err := ExtractArchiveFile(archivePath, dst, WithArchiveMaxBytes(16))
+	if !errors.Is(err, ErrArchiveTooLarge) {
+		t.Errorf("got %v, want ErrArchiveTooLarge", err)
+	}
+}
+
+// --- Archive format dispatch & error paths ---
+
+func TestCreateArchive_UnknownFormat(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	dir := t.TempDir()
+	err := CreateArchive(&buf, dir, WithArchiveFormat(ArchiveFormat(99)))
+	if !errors.Is(err, ErrArchiveFormatUnknown) {
+		t.Errorf("got %v, want ErrArchiveFormatUnknown", err)
+	}
+}
+
+func TestExtractArchive_UnknownFormat(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// 16 bytes of garbage that doesn't match any sniffer.
+	r := bytes.NewReader([]byte("not-an-archive!!"))
+	err := ExtractArchive(r, dir)
+	if !errors.Is(err, ErrArchiveFormatUnknown) {
+		t.Errorf("got %v, want ErrArchiveFormatUnknown", err)
+	}
+}
+
+func TestExtractArchiveFile_OpenError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := ExtractArchiveFile(filepath.Join(dir, "nonexistent.tar"), filepath.Join(dir, "out"))
+	if err == nil {
+		t.Fatal("expected error for missing archive")
+	}
+}
+
+func TestCreateArchiveFile_CreateError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Try to create archive at a path whose parent doesn't exist.
+	err := CreateArchiveFile(filepath.Join(dir, "missing", "out.tar"), src, WithArchiveFormat(ArchiveFormatTar))
+	if err == nil {
+		t.Fatal("expected error for unwritable archive path")
+	}
+}
+
+func TestOpenAutoArchive_OpenError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := OpenAutoArchive(filepath.Join(dir, "nonexistent"))
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestOpenAutoArchive_BadGzip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.gz")
+	// gzip magic prefix but truncated body — gzip.NewReader will fail.
+	if err := os.WriteFile(path, []byte{0x1f, 0x8b}, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := OpenAutoArchive(path)
+	if err == nil {
+		t.Fatal("expected error from gzip.NewReader on truncated input")
+	}
+}
+
+// --- ExtractArchive zip stream paths ---
+
+func TestExtractArchive_ZipStream_NoCap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := CreateArchive(&buf, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+	// maxBytes=0 disables the cap, exercising the io.Copy-without-LimitReader branch.
+	if err := ExtractArchive(&buf, filepath.Join(dir, "extract"), WithArchiveMaxBytes(0)); err != nil {
+		t.Fatalf("ExtractArchive: %v", err)
+	}
+}
+
+func TestExtractArchive_ZipStream_CorruptZip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// "PK\x05\x06" is the zip end-of-central-directory marker; without
+	// the trailing bytes it parses as a corrupt zip.
+	r := bytes.NewReader([]byte("PK\x05\x06\x00\x00\x00\x00garbage"))
+	err := ExtractArchive(r, filepath.Join(dir, "extract"))
+	if err == nil {
+		t.Fatal("expected error from corrupt zip stream")
+	}
+}
+
+func TestExtractArchive_ZipStream_TooLarge(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), bytes.Repeat([]byte("X"), 4096), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := CreateArchive(&buf, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+
+	// 100 bytes is well below the zip's actual size, so the streaming
+	// buffer trips the cap.
+	err := ExtractArchive(&buf, filepath.Join(dir, "extract"), WithArchiveMaxBytes(100))
+	if !errors.Is(err, ErrArchiveTooLarge) {
+		t.Errorf("got %v, want ErrArchiveTooLarge", err)
+	}
+}
+
+// --- ExtractArchive tar.gz round-trip via sniff path ---
+
+func TestExtractArchive_TarGzStream(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := CreateArchive(&buf, src, WithArchiveFormat(ArchiveFormatTarGz)); err != nil {
+		t.Fatalf("CreateArchive(tgz): %v", err)
+	}
+	if err := ExtractArchive(&buf, filepath.Join(dir, "extract")); err != nil {
+		t.Fatalf("ExtractArchive(tgz): %v", err)
+	}
+	if !Exists(filepath.Join(dir, "extract", "f")) {
+		t.Error("extracted file missing")
+	}
+}
+
+// --- CreateArchive filter/symlink behavior ---
+
+func TestCreateArchive_Zip_SkipsSymlinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink("f.txt", filepath.Join(src, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	out := filepath.Join(dir, "out.zip")
+	if err := CreateArchiveFile(out, src, WithArchiveFormat(ArchiveFormatZip)); err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+	// Verify the symlink was skipped: extract and confirm only f.txt is present.
+	dst := filepath.Join(dir, "extract")
+	if err := ExtractArchiveFile(out, dst); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if Exists(filepath.Join(dst, "lnk")) {
+		t.Error("symlink unexpectedly present in zip extract")
+	}
+}
+
+func TestCreateArchive_Zip_FilterFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "skip.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	out := filepath.Join(dir, "out.zip")
+	err := CreateArchiveFile(out, src,
+		WithArchiveFormat(ArchiveFormatZip),
+		WithArchiveCreateFilter(func(p string, _ os.FileInfo) bool {
+			return !strings.HasSuffix(p, ".tmp")
+		}))
+	if err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+}
+
+func TestCreateArchive_TarGz_FilterFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "skip.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	out := filepath.Join(dir, "out.tar.gz")
+	err := CreateArchiveFile(out, src,
+		WithArchiveFormat(ArchiveFormatTarGz),
+		WithArchiveCreateFilter(func(p string, _ os.FileInfo) bool {
+			return !strings.HasSuffix(p, ".tmp")
+		}))
+	if err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+}

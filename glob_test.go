@@ -232,3 +232,28 @@ func TestGlobAny_BadPatternReturnsPartial(t *testing.T) {
 		t.Errorf("partial result = %v, want one entry from first pattern", got)
 	}
 }
+
+// --- Glob expand error paths ---
+
+func TestGlob_BadExpand(t *testing.T) {
+	t.Parallel()
+	_, err := Glob("$ROTINI_NEVER_SET_AT_ALL/*", WithStrictExpansion())
+	if err == nil {
+		t.Error("expected strict-expansion error")
+	}
+}
+
+func TestGlobAny_PartialBadOnFirstPattern(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	got, err := GlobAny([]string{"["}, WithStrictExpansion())
+	if err == nil {
+		t.Error("expected error from malformed pattern")
+	}
+	if len(got) != 0 {
+		t.Errorf("partial = %v, want empty", got)
+	}
+}

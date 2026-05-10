@@ -143,3 +143,18 @@ func TestFormatBytes_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// --- ParseBytes large units ---
+
+func TestParseBytes_ExtremeValues(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"1PiB", "1EiB", "1.5p", "2eb"} {
+		got, err := ParseBytes(in)
+		if err != nil {
+			t.Errorf("ParseBytes(%q): %v", in, err)
+		}
+		if got <= 0 {
+			t.Errorf("ParseBytes(%q) = %d", in, got)
+		}
+	}
+}

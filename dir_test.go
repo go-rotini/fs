@@ -357,3 +357,134 @@ func TestDirSize_DeadlineExceeded(t *testing.T) {
 		t.Errorf("got %v, want context.DeadlineExceeded", err)
 	}
 }
+
+// --- Fault-injection: IsEmpty / ListDir / MkdirAll ---
+//
+// These tests swap package-level OS hooks (see fault_hooks.go) to
+// exercise defensive error branches that real I/O can't easily
+// provoke. None call t.Parallel — the hooks are package-global.
+
+func TestFault_IsEmpty_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failOpenAlways()
+	_, err := IsEmpty(dir)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ListDir_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failOpenAlways()
+	_, err := ListDir(dir)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_MkdirAll_EnforcePerm_ChmodError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failChmodAlways()
+	err := MkdirAll(filepath.Join(dir, "a", "b", "c"), 0o755, WithEnforcePerm(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- DirSize / IsEmpty / MkdirAll error paths ---
+
+func TestDirSize_MissingPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := DirSize(context.Background(), filepath.Join(dir, "missing"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestDirSize_PreCanceledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := DirSize(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got %v, want context.Canceled", err)
+	}
+}
+
+func TestDirSize_MidWalkCancellation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for i := range 50 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d", i)), []byte("x"), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Microsecond)
+	defer cancel()
+	_, err := DirSize(ctx, dir)
+	// Either cancellation or success can happen depending on timing.
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("got %v, want nil or context error", err)
+	}
+}
+
+func TestIsEmpty_NotDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := IsEmpty(path)
+	if !errors.Is(err, ErrNotDir) {
+		t.Errorf("got %v, want ErrNotDir", err)
+	}
+}
+
+func TestMkdirAll_OnReadonlyParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("Chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := MkdirAll(filepath.Join(dir, "child"), 0o755); err == nil {
+		t.Error("expected error creating child of read-only dir")
+	}
+}
+
+// --- ListDir filter + sort + skipHidden combination ---
+
+func TestListDir_AllOptions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, name := range []string{"a.txt", ".hidden", "b.txt", ".dotrc"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+	got, err := ListDir(dir,
+		WithSkipHidden(true),
+		WithSorted(true),
+		WithListFilter(func(e stdfs.DirEntry) bool { return strings.HasSuffix(e.Name(), ".txt") }),
+	)
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d, want 2 (a.txt + b.txt)", len(got))
+	}
+	if got[0].Name() != "a.txt" || got[1].Name() != "b.txt" {
+		t.Errorf("not sorted: %v", got)
+	}
+}

@@ -524,7 +524,7 @@ func TestMove_CrossDeviceFallback(t *testing.T) {
 	}
 
 	// Sanity: isCrossDevice recognizes wrapped EXDEV.
-	wrapped := fmt.Errorf("wrapped: %w", &os.PathError{Op: "rename", Path: src, Err: stubEXDEV()})
+	wrapped := fmt.Errorf("wrapped: %w", &os.PathError{Op: "rename", Path: src, Err: exdevError()})
 	if !isCrossDevice(wrapped) {
 		t.Fatalf("isCrossDevice did not recognize wrapped EXDEV: %v", wrapped)
 	}
@@ -536,5 +536,527 @@ func TestMove_CrossDeviceFallback(t *testing.T) {
 	got, _ := os.ReadFile(dst)
 	if string(got) != "payload" {
 		t.Errorf("Move dst content: got %q", got)
+	}
+}
+
+// --- Fault-injection: CopyFile ---
+//
+// These tests swap package-level OS hooks (see fault_hooks.go) to
+// exercise defensive error branches that real I/O can't easily
+// provoke. None call t.Parallel — the hooks are package-global.
+
+func TestFault_CopyFile_SyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failSyncAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_CloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failCloseAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_ChmodError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failChmodAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_ChtimesError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failChtimesAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_RenameError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failRenameAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_StatError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failLstatAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_FollowSymlinkStatError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failStatAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"), WithFollowSymlinks(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_OpenSrcError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failOpenAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyFile_ReadError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	orig := fileRead
+	t.Cleanup(func() { fileRead = orig })
+	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	_ = h
+
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: copySymlink ---
+
+func TestFault_CopySymlink_ReadlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "lnk")
+	if err := os.Symlink("target", src); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.failReadlinkAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopySymlink_SymlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "lnk")
+	if err := os.Symlink("target", src); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.failSymlinkAlways()
+	err := CopyFile(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopySymlink_RemoveError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "lnk")
+	dst := filepath.Join(dir, "dst")
+	if err := os.Symlink("target", src); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	if err := os.Symlink("preexisting", dst); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.failRemoveAlways()
+	err := CopyFile(src, dst, WithOverwrite(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: CopyDir ---
+
+func TestFault_CopyDir_StatError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failStatAlways()
+	err := CopyDir(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyDir_MkdirAllError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failMkdirAllAlways()
+	err := CopyDir(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyDir_SubdirMkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// First MkdirAll succeeds (creates dst); second fails (the per-entry
+	// subdir create inside the walk callback).
+	calls := 0
+	orig := osMkdirAll
+	osMkdirAll = func(p string, m os.FileMode) error {
+		calls++
+		if calls == 1 {
+			return orig(p, m)
+		}
+		return errInjected
+	}
+	_ = h
+
+	err := CopyDir(src, dst)
+	multi, ok := err.(*MultiError)
+	if !ok {
+		t.Fatalf("got %T, want *MultiError; err=%v", err, err)
+	}
+	if !errors.Is(multi, errInjected) {
+		t.Errorf("multierror does not contain errInjected: %v", multi)
+	}
+}
+
+func TestFault_CopyDir_PerEntryCopyError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Fail the first osOpen (CopyFile reads the source via osOpen).
+	calls := 0
+	orig := osOpen
+	osOpen = func(p string) (*os.File, error) {
+		calls++
+		if calls == 1 {
+			return nil, errInjected
+		}
+		return orig(p)
+	}
+	_ = h
+
+	err := CopyDir(src, dst)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_CopyDir_PerEntrySymlinkError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink("target", filepath.Join(src, "lnk")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	h.failSymlinkAlways()
+
+	err := CopyDir(src, dst)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: Move (EXDEV fallback + post-EXDEV branches) ---
+
+func TestFault_Move_CrossDeviceFallback(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// First osRename returns syscall.EXDEV; subsequent calls behave
+	// normally so the CopyFile fallback's own internal rename can
+	// commit the destination.
+	calls := 0
+	orig := osRename
+	osRename = func(s, d string) error {
+		calls++
+		if calls == 1 {
+			return exdevError()
+		}
+		return orig(s, d)
+	}
+	_ = h
+
+	if err := Move(src, dst); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != "payload" {
+		t.Errorf("dst: %q", got)
+	}
+	if Exists(src) {
+		t.Error("src still present after Move fallback")
+	}
+}
+
+func TestFault_Move_CrossDeviceDirFallback(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "srcdir")
+	dst := filepath.Join(dir, "dstdir")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("payload"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	calls := 0
+	orig := osRename
+	osRename = func(s, d string) error {
+		calls++
+		if calls == 1 {
+			return exdevError()
+		}
+		return orig(s, d)
+	}
+	_ = h
+
+	if err := Move(src, dst); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if Exists(src) {
+		t.Error("src still present after dir Move fallback")
+	}
+	if !Exists(filepath.Join(dst, "f")) {
+		t.Error("dst/f missing after fallback")
+	}
+}
+
+func TestFault_Move_LstatErrorAfterEXDEV(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	osRename = func(string, string) error { return exdevError() }
+	h.failLstatAlways()
+
+	err := Move(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Move_CopyDirErrorAfterEXDEV(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "srcdir")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Force EXDEV on the outer rename, then break MkdirAll so CopyDir
+	// fails before any per-entry work.
+	osRename = func(string, string) error { return exdevError() }
+	h.failMkdirAllAlways()
+
+	err := Move(src, filepath.Join(dir, "dstdir"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Move_CopyFileErrorAfterEXDEV(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	osRename = func(string, string) error { return exdevError() }
+	h.failOpenAlways()
+
+	err := Move(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Move_DirRemoveAllErrorAfterEXDEV(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "srcdir")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// EXDEV on outer; CopyDir succeeds; then RemoveAll fails because
+	// the source dir is read-only. RemoveAll uses the stdlib path
+	// directly (not hooked), so the chmod-readonly trick is the
+	// portable way to provoke this branch.
+	osRename = func(string, string) error { return exdevError() }
+	if runtime.GOOS == goosWindows {
+		t.Skip("readonly trick is POSIX-only")
+	}
+	if err := os.Chmod(src, 0o500); err != nil {
+		t.Skipf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(src, 0o755) })
+	_ = h
+
+	if err := Move(src, filepath.Join(dir, "dstdir")); err == nil {
+		t.Skip("RemoveAll on readonly parent didn't fail on this filesystem")
+	}
+}
+
+func TestFault_Move_RemoveErrorAfterCopy(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	origRename := osRename
+	osRename = func(s, d string) error {
+		// Force EXDEV exactly once for the outer Move; subsequent
+		// renames (used by CopyFile's atomic temp+rename) succeed.
+		osRename = origRename
+		return exdevError()
+	}
+	h.failRemoveAlways()
+
+	err := Move(src, filepath.Join(dir, "dst"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- CopyDir / Rename misc ---
+
+func TestCopyDir_MissingDst(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := filepath.Join(t.TempDir(), "deeply", "nested", "dst")
+	if err := CopyDir(src, dst); err != nil {
+		t.Fatalf("CopyDir: %v", err)
+	}
+	if !Exists(filepath.Join(dst, "f")) {
+		t.Error("file not copied to deeply nested dst")
+	}
+}
+
+func TestRename_MissingSrc(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := Rename(filepath.Join(dir, "missing"), filepath.Join(dir, "dst"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestCopyFile_NoWriteToReadonlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := filepath.Join(root, "ro")
+	if err := os.Mkdir(dst, 0o500); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dst, 0o755) })
+
+	if err := CopyFile(src, filepath.Join(dst, "f")); err == nil {
+		t.Error("expected error copying into read-only dir")
 	}
 }

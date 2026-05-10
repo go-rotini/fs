@@ -206,3 +206,14 @@ func TestRemoveContents_MultipleEntries(t *testing.T) {
 		t.Errorf("entries remain: %v", entries)
 	}
 }
+
+// --- RemoveAll with WithStrict ---
+
+func TestRemoveAll_StrictMissing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	err := RemoveAll(filepath.Join(dir, "missing"), WithStrict(true))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}

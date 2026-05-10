@@ -720,3 +720,514 @@ func TestWriteFile_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip mismatch; got %d bytes, want %d", len(got), len(want))
 	}
 }
+
+// --- Fault-injection: WriteFile family ---
+//
+// These tests swap package-level OS hooks (see fault_hooks.go) to
+// exercise defensive error branches that real I/O can't easily
+// provoke. None call t.Parallel — the hooks are package-global.
+
+func TestFault_WriteFile_SyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failSyncAlways()
+	// WriteFile over an existing file syncs by default.
+	err := WriteFile(path, []byte("new"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_CloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failCloseAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_WriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failWriteAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_RenameError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failRenameAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_BackupRenameError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Wrap osRename so the FIRST call (the backup rename) fails;
+	// subsequent calls behave normally.
+	calls := 0
+	orig := osRename
+	osRename = func(src, dst string) error {
+		calls++
+		if calls == 1 {
+			return errInjected
+		}
+		return orig(src, dst)
+	}
+	_ = h // hook restore via t.Cleanup
+
+	err := WriteFile(path, []byte("v2"), WithBackup(".bak"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_AtomicFalseSyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failSyncAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"), WithAtomic(false), WithSync(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_AtomicFalseCloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failCloseAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"), WithAtomic(false))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_AtomicFalseWriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failWriteAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"), WithAtomic(false))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFile_MkdirAllError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failMkdirAllAlways()
+	err := WriteFile(filepath.Join(dir, "sub", "f"), []byte("x"), WithMkdirAll(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: WriteFileExclusive ---
+
+func TestFault_WriteFileExclusive_SyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failSyncAlways()
+	err := WriteFileExclusive(filepath.Join(dir, "f"), []byte("x"), WithSync(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFileExclusive_CloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failCloseAlways()
+	err := WriteFileExclusive(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFileExclusive_WriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failWriteAlways()
+	err := WriteFileExclusive(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteFileExclusive_MkdirAllError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failMkdirAllAlways()
+	err := WriteFileExclusive(filepath.Join(dir, "sub", "f"), []byte("x"), WithMkdirAll(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: Append ---
+
+func TestFault_Append_WriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failWriteAlways()
+	err := Append(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Append_SyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failSyncAlways()
+	err := Append(filepath.Join(dir, "f"), []byte("x"), WithSync(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Append_MkdirAllError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failMkdirAllAlways()
+	err := Append(filepath.Join(dir, "sub", "f"), []byte("x"), WithMkdirAll(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_Append_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failOpenFileAlways()
+	err := Append(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: WriteAt ---
+
+func TestFault_WriteAt_WriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("xxxxx"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failWriteAtAlways()
+	err := WriteAt(path, 0, []byte("y"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteAt_SyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("xxxxx"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failSyncAlways()
+	err := WriteAt(path, 0, []byte("y"), WithSync(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_WriteAt_OpenError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("orig"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.failOpenFileAlways()
+	err := WriteAt(path, 0, []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: OpenWrite finalize paths ---
+
+func TestFault_OpenWrite_FinalizeSyncError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	f, finalize, err := OpenWrite(path, WithSync(true))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v2"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	h.failSyncAlways()
+	if err := finalize(); !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_OpenWrite_FinalizeCloseError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	f, finalize, err := OpenWrite(filepath.Join(dir, "f"))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	h.failCloseAlways()
+	if err := finalize(); !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_OpenWrite_FinalizeRenameError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	f, finalize, err := OpenWrite(filepath.Join(dir, "f"))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	h.failRenameAlways()
+	if err := finalize(); !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_OpenWrite_FinalizeBackupRenameError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	f, finalize, err := OpenWrite(path, WithBackup(".bak"))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v2"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	h.failRenameAlways()
+	if err := finalize(); !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_OpenWrite_MkdirAllError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failMkdirAllAlways()
+	_, _, err := OpenWrite(filepath.Join(dir, "sub", "f"), WithMkdirAll(true))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- Fault-injection: openTempForWrite chmod ---
+
+func TestFault_OpenTempForWrite_ChmodError(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	h.failChmodAlways()
+	err := WriteFile(filepath.Join(dir, "f"), []byte("x"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- WriteAt / OpenWrite / WriteFileExclusive option coverage ---
+
+func TestWriteAt_WithSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := WriteAt(path, 6, []byte("WORLD"), WithSync(true)); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "hello WORLD" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestOpenWrite_WithSyncOnOverwrite(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	f, finalize, err := OpenWrite(path, WithSync(true))
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("v2"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := finalize(); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+}
+
+func TestOpenWrite_FinalizeIdempotentSuccess(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	f, finalize, err := OpenWrite(path)
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := f.WriteString("ok"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := finalize(); err != nil {
+		t.Fatalf("first finalize: %v", err)
+	}
+	if err := finalize(); err != nil {
+		t.Errorf("second finalize: %v", err)
+	}
+}
+
+func TestWriteFileExclusive_WithSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := WriteFileExclusive(filepath.Join(dir, "f"), []byte("x"), WithSync(true)); err != nil {
+		t.Fatalf("WriteFileExclusive WithSync: %v", err)
+	}
+}
+
+func TestWriteFileExclusive_WithPerm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := WriteFileExclusive(path, []byte("x"), WithPerm(0o600)); err != nil {
+		t.Fatalf("WriteFileExclusive: %v", err)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("perm = %o, want 0o600", info.Mode().Perm())
+	}
+}
+
+func TestWriteFile_WithAtomicFalseSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := WriteFile(filepath.Join(dir, "f"), []byte("x"), WithAtomic(false), WithSync(true)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func TestWriteFile_WithAtomicFalseBadOpen(t *testing.T) {
+	t.Parallel()
+	if err := WriteFile("/proc/1/cant-create-here", []byte("x"), WithAtomic(false)); err == nil {
+		t.Skip("/proc not present or writable; behavior platform-dependent")
+	}
+}
+
+// --- Permission-denied error paths via chmod parent (POSIX-only) ---
+
+func chmodAndCleanup(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatalf("Chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+func TestWriteFile_NoWriteToReadonlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	chmodAndCleanup(t, dir, 0o500) // r-x: cannot write inside
+
+	if err := WriteFile(filepath.Join(dir, "f"), []byte("x")); err == nil {
+		t.Error("expected error writing into read-only dir")
+	}
+}
+
+func TestWriteFileExclusive_NoWriteToReadonlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	chmodAndCleanup(t, dir, 0o500)
+
+	if err := WriteFileExclusive(filepath.Join(dir, "f"), []byte("x")); err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestAppend_NoWriteToReadonlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	chmodAndCleanup(t, dir, 0o500)
+
+	if err := Append(filepath.Join(dir, "f"), []byte("x")); err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestOpenWrite_NoWriteToReadonlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses POSIX perms")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	chmodAndCleanup(t, dir, 0o500)
+
+	if _, _, err := OpenWrite(filepath.Join(dir, "f")); err == nil {
+		t.Error("expected error")
+	}
+}

@@ -376,3 +376,130 @@ func TestScaffoldActionOp_String(t *testing.T) {
 		}
 	}
 }
+
+// --- Fault-injection: ScaffoldApply / ScaffoldExtract ---
+//
+// These tests swap package-level OS hooks (see fault_hooks.go) to
+// exercise defensive error branches that real I/O can't easily
+// provoke. None call t.Parallel — the hooks are package-global.
+
+func TestFault_ScaffoldApply_MkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := t.TempDir()
+	srcFS := os.DirFS(srcDir)
+	h.failMkdirAllAlways()
+	err := ScaffoldApply(srcFS, filepath.Join(dst, "out"), nil)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ScaffoldExtract_MkdirError(t *testing.T) {
+	h := newFaultyHooks(t)
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := t.TempDir()
+	srcFS := os.DirFS(srcDir)
+	h.failMkdirAllAlways()
+	err := ScaffoldExtract(srcFS, filepath.Join(dst, "out"))
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+func TestFault_ScaffoldExtract_MarkerWriteError(t *testing.T) {
+	h := newFaultyHooks(t)
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "f"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := t.TempDir()
+	srcFS := os.DirFS(srcDir)
+
+	// First osChmod (the temp file's chmod for the content) succeeds;
+	// subsequent calls fail. By the time we get to the marker write
+	// chmod, the injected error fires.
+	calls := 0
+	orig := osChmod
+	osChmod = func(p string, m os.FileMode) error {
+		calls++
+		if calls == 1 {
+			return orig(p, m)
+		}
+		return errInjected
+	}
+	_ = h
+
+	err := ScaffoldExtract(srcFS, dst)
+	if !errors.Is(err, errInjected) {
+		t.Errorf("got %v, want errInjected", err)
+	}
+}
+
+// --- ScaffoldExtract: prompt-driven skip ---
+
+func TestScaffoldExtract_PromptSkip(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "f"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "f"), []byte("v0"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srcFS := os.DirFS(srcDir)
+	prompt := func(_ string, _ ScaffoldAction) ScaffoldActionOp {
+		return ScaffoldActionSkip
+	}
+	err := ScaffoldExtract(srcFS, dst,
+		WithScaffoldOnConflict(ScaffoldPromptInteractive),
+		WithScaffoldPromptFunc(prompt))
+	if err != nil {
+		t.Fatalf("ScaffoldExtract: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dst, "f"))
+	if string(got) != "v0" {
+		t.Errorf("got %q, want unchanged v0", got)
+	}
+}
+
+// --- ScaffoldApply: prompt returns an unsupported action ---
+
+func TestScaffoldApply_PromptUnsupportedAction(t *testing.T) {
+	t.Parallel()
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "f"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "f"), []byte("v0"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srcFS := os.DirFS(srcDir)
+	prompt := func(_ string, _ ScaffoldAction) ScaffoldActionOp {
+		return ScaffoldActionConflict // Conflict is invalid as a prompt response.
+	}
+	err := ScaffoldApply(srcFS, dst, nil,
+		WithScaffoldOnConflict(ScaffoldPromptInteractive),
+		WithScaffoldPromptFunc(prompt))
+	if !errors.Is(err, ErrScaffoldPromptUnsupported) {
+		t.Errorf("got %v, want ErrScaffoldPromptUnsupported", err)
+	}
+}
+
+// --- ScaffoldActionOp.String fallback ---
+
+func TestScaffoldActionOp_String_Unknown(t *testing.T) {
+	t.Parallel()
+	got := ScaffoldActionOp(99).String()
+	if got == "" {
+		t.Error("expected unknown label, got empty string")
+	}
+}

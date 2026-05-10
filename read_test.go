@@ -607,3 +607,95 @@ func TestDefaultMaxReadSize(t *testing.T) {
 		t.Errorf("DefaultMaxReadSize = %d, want 100 MiB", DefaultMaxReadSize)
 	}
 }
+
+// --- ReadFirstLine edge cases ---
+
+func TestReadFirstLine_EmptyFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := ReadFirstLine(path)
+	if !errors.Is(err, ErrEmptyFile) {
+		t.Errorf("got %v, want ErrEmptyFile", err)
+	}
+}
+
+func TestReadFirstLine_NoNewline(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("only-line-no-newline"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := ReadFirstLine(path)
+	if err != nil {
+		t.Fatalf("ReadFirstLine: %v", err)
+	}
+	if got != "only-line-no-newline" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestReadFirstLine_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := ReadFirstLine(filepath.Join(dir, "missing"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestReadLines_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := ReadLines(filepath.Join(dir, "missing"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestOpenChunked_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, _, err := OpenChunked(filepath.Join(dir, "missing"), 64)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+// --- WithExpand error paths (NUL byte triggers expansion failure) ---
+
+func TestReadFile_ExpandError(t *testing.T) {
+	t.Parallel()
+	_, err := ReadFile("nul\x00here", WithExpand())
+	if err == nil {
+		t.Fatal("expected error from expansion of NUL-bearing path")
+	}
+}
+
+func TestReadFirstLine_ExpandError(t *testing.T) {
+	t.Parallel()
+	_, err := ReadFirstLine("nul\x00here", WithExpand())
+	if err == nil {
+		t.Fatal("expected error from expansion of NUL-bearing path")
+	}
+}
+
+func TestOpenLines_ExpandError(t *testing.T) {
+	t.Parallel()
+	_, _, err := OpenLines("nul\x00here", WithExpand())
+	if err == nil {
+		t.Fatal("expected error from expansion of NUL-bearing path")
+	}
+}
+
+func TestReadAt_ExpandError(t *testing.T) {
+	t.Parallel()
+	_, err := ReadAt("nul\x00here", 0, 4, WithExpand())
+	if err == nil {
+		t.Fatal("expected error from expansion of NUL-bearing path")
+	}
+}

@@ -376,3 +376,126 @@ func sameRealPath(t *testing.T, a, b string) bool {
 	}
 	return ra == rb
 }
+
+// --- FindUp / FindUpAll error paths ---
+
+func TestFindUp_BadGlob(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x"), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, _, err := FindUp("[", dir, WithStopAt(dir))
+	if err == nil {
+		t.Error("expected error for malformed glob")
+	}
+}
+
+func TestFindUpAll_BadGlob(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "x"), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := FindUpAll("[", dir, WithStopAt(dir))
+	if err == nil {
+		t.Error("expected error for malformed glob")
+	}
+}
+
+func TestFindUp_AbsError(t *testing.T) {
+	t.Parallel()
+	// On most platforms filepath.Abs doesn't fail for any string. This
+	// exercises matchInDir's read-fail path by giving FindUp a startDir
+	// whose ancestors include a missing component. ReadDir fails and
+	// matchInDir folds it to "no match", so the walk traverses cleanly.
+	_, ok, err := FindUp("anything", "/__definitely_does_not_exist_qwxz")
+	if err != nil {
+		t.Fatalf("FindUp: %v", err)
+	}
+	if ok {
+		t.Errorf("got ok=%v, want false on bogus tree", ok)
+	}
+}
+
+func TestFindUpAll_AbsError(t *testing.T) {
+	t.Parallel()
+	matches, err := FindUpAll("anything", "/__definitely_does_not_exist_qwxz")
+	if err != nil {
+		t.Fatalf("FindUpAll: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("got %v, want empty", matches)
+	}
+}
+
+func TestFindUpAll_StopAt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	matches, err := FindUpAll("doesnotexist", filepath.Join(dir, "a", "b"), WithStopAt(filepath.Join(dir, "a")))
+	if err != nil {
+		t.Fatalf("FindUpAll: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("got %v, want empty", matches)
+	}
+}
+
+// --- Find / FindByRegex / FindFunc misc ---
+
+func TestFind_BadPattern(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := Find(dir, "[")
+	if err == nil {
+		t.Fatal("expected error from bad glob")
+	}
+}
+
+func TestFindFunc_PredicateRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.dat"), []byte("y"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	got, err := FindFunc(dir, func(_ string, info os.FileInfo) bool {
+		return strings.HasSuffix(info.Name(), ".txt")
+	})
+	if err != nil {
+		t.Fatalf("FindFunc: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("got %d matches, want 1: %v", len(got), got)
+	}
+}
+
+func TestFindFunc_MissingRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := FindFunc(filepath.Join(dir, "missing"), func(string, os.FileInfo) bool { return true })
+	if err == nil {
+		t.Fatal("expected error for missing root")
+	}
+}
+
+func TestMatchInDir_BadPattern(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// "[" is an unmatched bracket; filepath.Match returns ErrBadPattern.
+	_, _, err := FindUp("[", dir)
+	if err == nil {
+		t.Error("expected error from bad glob")
+	}
+}

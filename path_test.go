@@ -3,6 +3,7 @@ package fs
 import (
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -481,5 +482,61 @@ func TestScanVarRef(t *testing.T) {
 			t.Errorf("scanVarRef(%q) = (%q, %d), want (%q, %d)",
 				c.in, name, n, c.wantName, c.wantN)
 		}
+	}
+}
+
+// --- Expand / Abs / EvalSymlinksWithin extras ---
+
+func TestEvalSymlinksWithin_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := EvalSymlinksWithin(dir, filepath.Join(dir, "missing"))
+	if err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
+func TestStem_EdgeCases(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"file.txt", "file"},
+		{"file.tar.gz", "file.tar"},
+		{"no-ext", "no-ext"},
+		{".hidden", ".hidden"},
+		{"/a/b/c.txt", "c"},
+		{"", "."},
+	}
+	for _, c := range cases {
+		if got := Stem(c.in); got != c.want {
+			t.Errorf("Stem(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAbs_ExpandError(t *testing.T) {
+	t.Parallel()
+	_, err := Abs("nul\x00here")
+	if err == nil {
+		t.Fatal("expected error from Abs on NUL-bearing path")
+	}
+}
+
+func TestExpand_UnknownUser(t *testing.T) {
+	t.Parallel()
+	_, err := Expand("~__definitely_no_such_user_4f7a__/foo")
+	if err == nil {
+		t.Fatal("expected error from Expand on unknown ~user")
+	}
+}
+
+func TestExpand_KnownUser(t *testing.T) {
+	t.Parallel()
+	// Look up the current user; ~current should successfully resolve.
+	u, err := user.Current()
+	if err != nil || u.Username == "" {
+		t.Skip("user.Current unavailable")
+	}
+	if _, err := Expand("~" + u.Username + "/x"); err != nil {
+		t.Errorf("Expand(~%s/x): %v", u.Username, err)
 	}
 }

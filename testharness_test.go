@@ -310,3 +310,30 @@ func TestWithTempEnv_RestoresClearedVar(t *testing.T) {
 		t.Errorf("after subtest got (%q, %v), want (set-by-outer, true)", got, ok)
 	}
 }
+
+// --- TestHarness happy-path method coverage ---
+
+func TestTestHarness_AllMethodsHappyPath(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	if h.Path("a/b/c") == "" {
+		t.Error("Path empty")
+	}
+	h.Mkdir("dir")
+	h.WriteString("file.txt", "x")
+	if string(h.Read("file.txt")) != "x" {
+		t.Error("read content mismatch")
+	}
+	if runtime.GOOS != "windows" {
+		h.Symlink("link", h.Path("file.txt"))
+	}
+	h.Remove("dir")
+}
+
+func TestTestHarness_PathEmpty(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	if h.Path("") == "" {
+		t.Error("Path('') should still return harness root")
+	}
+}

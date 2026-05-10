@@ -524,3 +524,269 @@ func TestWatcher_DebounceCoalescesBurst(t *testing.T) {
 		t.Error("debouncer emitted a second event during the burst window")
 	}
 }
+
+// --- Watcher input validation ---
+
+func TestNewWatcher_EmptyPath(t *testing.T) {
+	t.Parallel()
+	_, err := NewWatcher("")
+	if !errors.Is(err, ErrWatcherEmptyPath) {
+		t.Errorf("got %v, want ErrWatcherEmptyPath", err)
+	}
+}
+
+func TestNewWatcher_MissingPath(t *testing.T) {
+	t.Parallel()
+	_, err := NewWatcher(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("expected error from NewWatcher on missing path")
+	}
+}
+
+func TestNewLazyWatcher_EmptyPath(t *testing.T) {
+	t.Parallel()
+	_, err := NewLazyWatcher("")
+	if !errors.Is(err, ErrWatcherEmptyPath) {
+		t.Errorf("got %v, want ErrWatcherEmptyPath", err)
+	}
+}
+
+func TestNewLazyWatcher_OnNonExistentParent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no", "such", "dir", "f")
+	_, err := NewLazyWatcher(missing, WithPolling(pollInterval))
+	if err == nil {
+		t.Error("expected error: lazy still requires parent to exist")
+	}
+}
+
+func TestNewLazyWatcher_OnMissingTarget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "later")
+	w, err := NewLazyWatcher(target, WithPolling(time.Hour))
+	if err != nil {
+		t.Fatalf("NewLazyWatcher: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func TestNewDirWatcher_EmptyPath(t *testing.T) {
+	t.Parallel()
+	_, err := NewDirWatcher("")
+	if !errors.Is(err, ErrWatcherEmptyPath) {
+		t.Errorf("got %v, want ErrWatcherEmptyPath", err)
+	}
+}
+
+func TestNewDirWatcher_MissingPath(t *testing.T) {
+	t.Parallel()
+	_, err := NewDirWatcher(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("expected error from NewDirWatcher on missing path")
+	}
+}
+
+func TestNewDirWatcher_NotADirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	_, err := NewDirWatcher(path)
+	if !errors.Is(err, ErrNotDir) {
+		t.Errorf("got %v, want ErrNotDir", err)
+	}
+}
+
+func TestNewDirWatcher_NonRecursive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	w, err := NewDirWatcher(dir, WithPolling(time.Hour), WithRecursive(false))
+	if err != nil {
+		t.Fatalf("NewDirWatcher: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func TestNewDirWatcher_Recursive(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub", "deep"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	w, err := NewDirWatcher(dir, WithPolling(time.Hour), WithRecursive(true))
+	if err != nil {
+		t.Fatalf("NewDirWatcher: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func TestWatcher_NilContextSubscribe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	w, err := NewDirWatcher(dir, WithPolling(time.Second))
+	if err != nil {
+		t.Fatalf("NewDirWatcher: %v", err)
+	}
+	defer w.Close()
+	var nilCtx context.Context
+	_, err = w.Subscribe(nilCtx)
+	if !errors.Is(err, ErrWatcherNilContext) {
+		t.Errorf("got %v, want ErrWatcherNilContext", err)
+	}
+}
+
+// --- hasParentDir branch coverage ---
+
+func TestHasParentDir_Branches(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		child, parent string
+		want          bool
+	}{
+		{"/a", "/a", true},          // identity
+		{"/a/b", "/a", true},        // child of
+		{"/a/../etc", "/a", false},  // escape
+		{"/elsewhere", "/a", false}, // unrelated
+		{".sub", "/a", false},       // rel may start with `.`
+	}
+	for _, c := range cases {
+		if got := hasParentDir(c.child, c.parent); got != c.want {
+			t.Errorf("hasParentDir(%q, %q) = %v, want %v", c.child, c.parent, got, c.want)
+		}
+	}
+}
+
+// --- pollingBackend coverage ---
+
+func TestPollingBackend_DefaultInterval(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(0)
+	if b.interval != defaultWatcherPollingInterval {
+		t.Errorf("interval=%v, want %v", b.interval, defaultWatcherPollingInterval)
+	}
+	if err := b.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+func TestPollingBackend_DoubleClose(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(time.Hour)
+	if err := b.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
+func TestPollingBackend_DuplicateAdd(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(time.Hour)
+	defer b.Close()
+	dir := t.TempDir()
+	if err := b.AddPath(dir); err != nil {
+		t.Fatalf("first AddPath: %v", err)
+	}
+	if err := b.AddPath(dir); err != nil {
+		t.Errorf("dup AddPath: %v", err)
+	}
+}
+
+func TestPollingBackend_AddAfterClose(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(time.Hour)
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	err := b.AddPath(t.TempDir())
+	if !errors.Is(err, ErrWatcherClosed) {
+		t.Errorf("got %v, want ErrWatcherClosed", err)
+	}
+}
+
+func TestPollingBackend_StopAt(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(time.Millisecond)
+	defer b.Close()
+	dir := t.TempDir()
+	if err := b.AddPath(dir); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+	// Trigger child appearance + disappearance to exercise both paths.
+	child := filepath.Join(dir, "x")
+	if err := os.WriteFile(child, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	select {
+	case <-b.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no event for child create")
+	}
+	if err := os.Remove(child); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	select {
+	case <-b.Events():
+	case <-time.After(time.Second):
+		t.Fatal("no event for child remove")
+	}
+}
+
+func TestSnapshotPath_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snap := snapshotPath(filepath.Join(dir, "missing"))
+	if snap.exists {
+		t.Error("snapshot of missing path reports exists=true")
+	}
+}
+
+func TestDiffSnapshots_AllBranches(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		prev *pollSnapshot
+		curr *pollSnapshot
+		want WatchOp
+	}{
+		{"both-missing", &pollSnapshot{exists: false}, &pollSnapshot{exists: false}, 0},
+		{"create", &pollSnapshot{exists: false}, &pollSnapshot{exists: true}, WatchCreate},
+		{"remove", &pollSnapshot{exists: true}, &pollSnapshot{exists: false}, WatchRemove},
+		{"size-change",
+			&pollSnapshot{exists: true, size: 0, mode: 0o644},
+			&pollSnapshot{exists: true, size: 10, mode: 0o644},
+			WatchWrite},
+		{"perm-change",
+			&pollSnapshot{exists: true, mode: 0o644},
+			&pollSnapshot{exists: true, mode: 0o600},
+			WatchChmod},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := diffSnapshots(tc.prev, tc.curr)
+			if got&tc.want != tc.want {
+				t.Errorf("got %v, want bits %v set", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestListDirNames_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	got := listDirNames(filepath.Join(dir, "missing"))
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty", got)
+	}
+}

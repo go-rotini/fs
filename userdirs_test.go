@@ -252,3 +252,63 @@ func TestSystemStateDir_RejectsBadName(t *testing.T) {
 		t.Errorf("got %v, want ErrInvalidPath", err)
 	}
 }
+
+// --- AppXxxDir / SystemXxxDir invalid appName validation ---
+
+func TestAppConfigDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"", ".", "..", "a/b"} {
+		if _, err := AppConfigDir(name); !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("AppConfigDir(%q): got %v, want ErrInvalidPath", name, err)
+		}
+	}
+}
+
+func TestAppCacheDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := AppCacheDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestAppDataDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := AppDataDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestAppStateDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := AppStateDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestAppRuntimeDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := AppRuntimeDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestSystemConfigDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := SystemConfigDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestSystemDataDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := SystemDataDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestSystemStateDir_InvalidName(t *testing.T) {
+	t.Parallel()
+	if _, err := SystemStateDir(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("got %v, want ErrInvalidPath", err)
+	}
+}

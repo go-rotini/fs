@@ -658,6 +658,15 @@ func TestHasParentDir_Branches(t *testing.T) {
 		{"/a/../etc", "/a", false},  // escape
 		{"/elsewhere", "/a", false}, // unrelated
 		{".sub", "/a", false},       // rel may start with `.`
+
+		// Regression: filenames with a literal two-dot prefix are
+		// still legitimate children, not escapes. The old
+		// rel[0]/rel[1] heuristic wrongly treated these as escapes.
+		{"/a/..foo", "/a", true},       // file with two-dot prefix
+		{"/a/..foo/bar", "/a", true},   // nested child of two-dot dir
+		{"/a/.bashrc", "/a", true},     // dotfile
+		{"/a/..", "/a", false},         // explicit parent
+		{"/a/../sibling", "/a", false}, // sibling outside parent
 	}
 	for _, c := range cases {
 		if got := hasParentDir(c.child, c.parent); got != c.want {

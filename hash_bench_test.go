@@ -56,6 +56,6 @@ func BenchmarkHashWriter(b *testing.B) {
 		if _, err := h.Write(payload); err != nil {
 			b.Fatalf("Write: %v", err)
 		}
-		_ = h.Sum()
+		_ = h.Hex()
 	}
 }

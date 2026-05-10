@@ -67,10 +67,6 @@ const (
 	// ScaffoldPromptInteractive calls the [WithScaffoldPromptFunc]
 	// callback per conflict.
 	ScaffoldPromptInteractive
-	// ScaffoldMergeWithUserEdits is reserved for the post-v0.1
-	// three-way-merge implementation; passing it returns an error
-	// today.
-	ScaffoldMergeWithUserEdits
 )
 
 const (
@@ -83,11 +79,6 @@ const (
 // is selected without a prompt function provided via
 // [WithScaffoldPromptFunc].
 var ErrScaffoldPromptRequired = errors.New("fs: scaffold: prompt function required for PromptInteractive")
-
-// ErrScaffoldMergeUnsupported is returned by [ScaffoldApply] when
-// [ScaffoldMergeWithUserEdits] is selected — three-way merge is
-// scheduled for post-v0.1.
-var ErrScaffoldMergeUnsupported = errors.New("fs: scaffold: merge-with-user-edits is post-v0.1")
 
 // ErrScaffoldPromptUnsupported is returned when [WithScaffoldPromptFunc]
 // returns an action that isn't [ScaffoldActionSkip] /
@@ -109,9 +100,6 @@ var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflic
 // plan.
 func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([]ScaffoldAction, error) {
 	cfg := newScaffoldOptions(opts)
-	if cfg.onConflict == ScaffoldMergeWithUserEdits {
-		return nil, wrapPathError(opScaffoldPlan, dst, ErrScaffoldMergeUnsupported)
-	}
 	if cfg.onConflict == ScaffoldPromptInteractive && cfg.promptFunc == nil {
 		return nil, wrapPathError(opScaffoldPlan, dst, ErrScaffoldPromptRequired)
 	}
@@ -190,10 +178,6 @@ func decideAction(action *ScaffoldAction, cfg scaffoldOptions) {
 		// so dry-run shows the user what will be prompted.
 		action.Op = ScaffoldActionConflict
 		action.Reason = "exists; will prompt"
-	case ScaffoldMergeWithUserEdits:
-		// Already rejected at entry; defensive no-op.
-		action.Op = ScaffoldActionConflict
-		action.Reason = "merge unsupported"
 	}
 }
 

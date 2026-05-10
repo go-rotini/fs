@@ -98,7 +98,7 @@ func TestCopyFile_NoMtime(t *testing.T) {
 		t.Fatalf("Chtimes: %v", err)
 	}
 	before := time.Now().Add(-1 * time.Second)
-	if err := CopyFile(src, dst, WithMtime(false)); err != nil {
+	if err := CopyFile(src, dst, WithPreserveMtime(false)); err != nil {
 		t.Fatalf("CopyFile: %v", err)
 	}
 	info, err := os.Stat(dst)

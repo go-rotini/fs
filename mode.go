@@ -73,7 +73,7 @@ func EnsurePerm(path string, mode os.FileMode) error {
 //
 // Callers decide what to do — warn the user, refuse to load the
 // file, or repair via [Chmod] / [EnsurePerm]. Pairs with
-// [WriteFileSecret] (which writes 0o600) for end-to-end
+// `WriteFile(..., WithPerm(fs.Mode0600))` for end-to-end
 // secret-handling discipline.
 //
 // On Windows where POSIX permission bits don't apply, the result

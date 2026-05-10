@@ -53,8 +53,8 @@ func TestAcceptanceConfigSave(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "secrets.yaml")
 
-	if err := fs.WriteFileSecret(cfg, []byte("token: abc123\n")); err != nil {
-		t.Fatalf("WriteFileSecret: %v", err)
+	if err := fs.WriteFile(cfg, []byte("token: abc123\n"), fs.WithPerm(fs.Mode0600)); err != nil {
+		t.Fatalf("WriteFile (secret): %v", err)
 	}
 	info, _ := os.Stat(cfg)
 	if got := info.Mode().Perm(); got != 0o600 {
@@ -81,7 +81,7 @@ func TestAcceptanceConfigSave(t *testing.T) {
 
 // TestAcceptanceWalkSkipping — walk over a fixture with `.git`,
 // `node_modules`, and `.terraform` directories; each is pruned by
-// WithSkipNames.
+// WalkSkipNames.
 func TestAcceptanceWalkSkipping(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -103,7 +103,7 @@ func TestAcceptanceWalkSkipping(t *testing.T) {
 	err := fs.Walk(root, func(path string, _ os.DirEntry, _ error) error {
 		visited = append(visited, path)
 		return nil
-	}, fs.WithSkipNames([]string{".git", "node_modules", ".terraform"}))
+	}, fs.WalkSkipNames([]string{".git", "node_modules", ".terraform"}))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}

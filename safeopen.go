@@ -9,10 +9,22 @@ const (
 
 // OpenNoFollow opens path without following a symlink at the final
 // component. If the final component IS a symlink, the call returns
-// [ErrSymlinkLoop] (mapped from POSIX `ELOOP` or the equivalent
-// Windows reparse-point error). Defends against link-replace
-// attacks where an attacker swaps the target between a stat and an
-// open.
+// [ErrSymlinkLoop]. Defends against link-replace attacks where an
+// attacker swaps the target between a stat and an open.
+//
+// On POSIX this is implemented via `O_NOFOLLOW`, which atomically
+// fails the open with `ELOOP` when the final component is a
+// symbolic link.
+//
+// On Windows the implementation opens the path with
+// FILE_FLAG_OPEN_REPARSE_POINT and then inspects the resulting
+// handle's attributes; if FILE_ATTRIBUTE_REPARSE_POINT is set
+// (covers symbolic links, junctions, and mount points — every
+// link-like reparse Windows surfaces) the handle is closed and
+// [ErrSymlinkLoop] is returned. This is not strictly atomic the
+// way POSIX `O_NOFOLLOW` is, but the handle pins the inode that was
+// resolved at open time, so the attribute query reflects that inode,
+// not whatever sat at the path afterward.
 //
 // Intermediate components are still resolved normally — if `/a/b`
 // is a symlink and you open `/a/b/c`, the symlink at `b` is

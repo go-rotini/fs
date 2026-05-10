@@ -174,16 +174,6 @@ func TestScaffoldApply_PromptRequired(t *testing.T) {
 	}
 }
 
-func TestScaffoldApply_MergeUnsupported(t *testing.T) {
-	t.Parallel()
-	dst := t.TempDir()
-	err := ScaffoldApply(makeScaffoldSrc(), dst, scaffoldVars{Name: "n"},
-		WithScaffoldOnConflict(ScaffoldMergeWithUserEdits))
-	if !errors.Is(err, ErrScaffoldMergeUnsupported) {
-		t.Errorf("got %v, want ErrScaffoldMergeUnsupported", err)
-	}
-}
-
 func TestScaffoldApply_TemplateError(t *testing.T) {
 	t.Parallel()
 	src := fstest.MapFS{
@@ -344,16 +334,6 @@ func TestScaffoldExtract_PromptRequired(t *testing.T) {
 	err := ScaffoldExtract(srcV2, dst, WithScaffoldOnConflict(ScaffoldPromptInteractive))
 	if !errors.Is(err, ErrScaffoldPromptRequired) {
 		t.Errorf("got %v, want ErrScaffoldPromptRequired", err)
-	}
-}
-
-func TestScaffoldExtract_MergeUnsupported(t *testing.T) {
-	t.Parallel()
-	dst := t.TempDir()
-	src := fstest.MapFS{"a.txt": {Data: []byte("x")}}
-	err := ScaffoldExtract(src, dst, WithScaffoldOnConflict(ScaffoldMergeWithUserEdits))
-	if !errors.Is(err, ErrScaffoldMergeUnsupported) {
-		t.Errorf("got %v, want ErrScaffoldMergeUnsupported", err)
 	}
 }
 

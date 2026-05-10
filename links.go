@@ -71,9 +71,24 @@ func EvalSymlinks(path string) (string, error) {
 
 // isSymlinkLoop reports whether err looks like a symlink-loop error
 // from filepath.EvalSymlinks. POSIX surfaces ELOOP; filepath itself
-// has an internal hop-counter that returns the bare
-// `errors.New("EvalSymlinks: too many links")` sentinel — string-
-// matched here.
+// has an internal hop-counter that returns the unexported sentinel
+// `errors.New("EvalSymlinks: too many links")`.
+//
+// The string-match below is brittle: if the Go team ever renames the
+// internal message (it's a private implementation detail and they
+// are allowed to), this function silently fails to detect loops and
+// the caller sees the raw error rather than [ErrSymlinkLoop]. The
+// tripwire is [TestConformanceSymlinkLoopDetection] in
+// conformance_test.go — it constructs a real `a → b → a` loop and
+// asserts that EvalSymlinks → isSymlinkLoop returns
+// [ErrSymlinkLoop]. CI runs this on every supported Go version on
+// every supported platform; a stdlib message rename will surface
+// there before any user-visible regression.
+//
+// Once a public sentinel exists upstream (track:
+// https://github.com/golang/go — search "EvalSymlinks too many links"
+// in proposals), this function should switch to errors.Is against it
+// and drop the string match.
 func isSymlinkLoop(err error) bool {
 	if err == nil {
 		return false

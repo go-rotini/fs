@@ -123,7 +123,7 @@ func TestWriteFile_WithMkdirAll(t *testing.T) {
 	}
 }
 
-// --- WriteString / WriteFileSecret / WriteFileEnsure ---
+// --- WriteString + option composition ---
 
 func TestWriteString(t *testing.T) {
 	t.Parallel()
@@ -138,15 +138,18 @@ func TestWriteString(t *testing.T) {
 	}
 }
 
-func TestWriteFileSecret_Default0o600(t *testing.T) {
+// TestWriteFile_Secret0o600 covers the "writing a secrets file"
+// idiom: WriteFile with WithPerm(0o600). The standalone WriteFileSecret
+// helper was dropped in favor of this composition.
+func TestWriteFile_Secret0o600(t *testing.T) {
 	if runtime.GOOS == goosWindows {
 		t.Skip("Unix mode bits don't apply on Windows")
 	}
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
-	if err := WriteFileSecret(path, []byte("token")); err != nil {
-		t.Fatalf("WriteFileSecret: %v", err)
+	if err := WriteFile(path, []byte("token"), WithPerm(Mode0600)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != 0o600 {
@@ -154,12 +157,16 @@ func TestWriteFileSecret_Default0o600(t *testing.T) {
 	}
 }
 
-func TestWriteFileEnsure_CreatesParents(t *testing.T) {
+// TestWriteFile_EnsureCreatesParents covers the "create missing
+// parent directories before the write" idiom: WriteFile with
+// WithMkdirAll(true). The standalone WriteFileEnsure helper was
+// dropped in favor of this composition.
+func TestWriteFile_EnsureCreatesParents(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deep", "tree", "f")
-	if err := WriteFileEnsure(path, []byte("x")); err != nil {
-		t.Fatalf("WriteFileEnsure: %v", err)
+	if err := WriteFile(path, []byte("x"), WithMkdirAll(true)); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 	if !IsFile(path) {
 		t.Error("file not created")

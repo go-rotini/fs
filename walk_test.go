@@ -138,12 +138,12 @@ func TestWalk_SkipHidden(t *testing.T) {
 	}
 }
 
-// --- WithSkipNames ---
+// --- WalkSkipNames ---
 
 func TestWalk_SkipNames(t *testing.T) {
 	t.Parallel()
 	root := makeWalkFixture(t)
-	got, err := collectWalk(root, WithSkipNames([]string{"vendor", "deeper"}))
+	got, err := collectWalk(root, WalkSkipNames([]string{"vendor", "deeper"}))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -157,12 +157,12 @@ func TestWalk_SkipNames(t *testing.T) {
 	}
 }
 
-// --- WithSkipPatterns ---
+// --- WalkSkipPatterns ---
 
 func TestWalk_SkipPatterns(t *testing.T) {
 	t.Parallel()
 	root := makeWalkFixture(t)
-	got, err := collectWalk(root, WithSkipPatterns([]string{"*.txt", "*.go"}))
+	got, err := collectWalk(root, WalkSkipPatterns([]string{"*.txt", "*.go"}))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -173,14 +173,14 @@ func TestWalk_SkipPatterns(t *testing.T) {
 	}
 }
 
-// --- WithMaxDepth ---
+// --- WalkMaxDepth ---
 
 func TestWalk_MaxDepthZero(t *testing.T) {
 	t.Parallel()
 	root := makeWalkFixture(t)
 	// Default (n<=0) is unbounded. Verify by using n=1: only root +
 	// immediate children should be visited.
-	got, err := collectWalk(root, WithMaxDepth(1))
+	got, err := collectWalk(root, WalkMaxDepth(1))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestWalk_MaxDepthZero(t *testing.T) {
 	}
 }
 
-// --- WithErrorHandler ---
+// --- WalkErrorHandler ---
 
 func TestWalk_ErrorHandlerSwallow(t *testing.T) {
 	t.Parallel()
@@ -204,7 +204,7 @@ func TestWalk_ErrorHandlerSwallow(t *testing.T) {
 	err := Walk(missing, func(_ string, _ stdfs.DirEntry, _ error) error {
 		t.Error("fn should not be called for missing root")
 		return nil
-	}, WithErrorHandler(func(_ string, e error) error {
+	}, WalkErrorHandler(func(_ string, e error) error {
 		seenErr = e
 		return nil // swallow
 	}))
@@ -276,7 +276,7 @@ func TestWalk_FollowSymlinksMaxDepth(t *testing.T) {
 	err := Walk(root, func(p string, _ stdfs.DirEntry, _ error) error {
 		visits = append(visits, p)
 		return nil
-	}, WalkFollowSymlinks(true), WithMaxDepth(1))
+	}, WalkFollowSymlinks(true), WalkMaxDepth(1))
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestWalk_FollowSymlinksErrorHandlerSwallow(t *testing.T) {
 	dir := t.TempDir()
 	err := Walk(filepath.Join(dir, "missing"), func(string, stdfs.DirEntry, error) error {
 		return nil
-	}, WalkFollowSymlinks(true), WithErrorHandler(func(string, error) error { return nil }))
+	}, WalkFollowSymlinks(true), WalkErrorHandler(func(string, error) error { return nil }))
 	if err != nil {
 		t.Errorf("error-handler swallow: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestFind_HonorsSkipHidden(t *testing.T) {
 func TestFind_HonorsMaxDepth(t *testing.T) {
 	t.Parallel()
 	root := makeWalkFixture(t)
-	got, err := Find(root, "*.go", WithMaxDepth(1))
+	got, err := Find(root, "*.go", WalkMaxDepth(1))
 	if err != nil {
 		t.Fatalf("Find: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestWalk_FollowSymlinks_ErrorHandlerSwallowsStatError(t *testing.T) {
 	}
 	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
 		return nil
-	}, WalkFollowSymlinks(true), WithErrorHandler(func(_ string, _ error) error { return nil }))
+	}, WalkFollowSymlinks(true), WalkErrorHandler(func(_ string, _ error) error { return nil }))
 	if err != nil {
 		t.Errorf("Walk: %v", err)
 	}

@@ -121,36 +121,39 @@ func HashCompare(path, expected string, algo HashAlgo) error {
 }
 
 // HashingWriter is an [io.Writer] that computes a running hash of
-// every byte written through it. [Sum] returns the hex digest of
-// what's been written so far; [Reset] clears the running state.
-type HashingWriter interface {
-	io.Writer
-	// Sum returns the hex-encoded digest of every byte written since
-	// the last [Reset] (or since construction).
-	Sum() string
-	// Reset clears the running state.
-	Reset()
+// every byte written through it. [HashingWriter.Hex] returns the
+// hex digest of what's been written so far; [HashingWriter.Reset]
+// clears the running state.
+//
+// The type is concrete rather than an interface because there is
+// exactly one implementation; callers who want abstraction can
+// declare a one-method interface at their use site (the Go-idiomatic
+// "accept interfaces, return concrete types" pattern).
+type HashingWriter struct {
+	h hash.Hash
 }
 
-// HashWriter returns a [HashingWriter] for algo. The typical use is
-// to fold a hash computation into a copy operation:
+// HashWriter returns a fresh [*HashingWriter] for algo. The typical
+// use is to fold a hash computation into a copy operation:
 //
 //	h := fs.HashWriter(fs.HashSHA256)
 //	if _, err := io.Copy(io.MultiWriter(dst, h), src); err != nil { ... }
-//	digest := h.Sum()
-func HashWriter(algo HashAlgo) HashingWriter {
-	return &hashingWriter{h: newHasher(algo)}
-}
-
-type hashingWriter struct {
-	h hash.Hash
+//	digest := h.Hex()
+func HashWriter(algo HashAlgo) *HashingWriter {
+	return &HashingWriter{h: newHasher(algo)}
 }
 
 // Write writes p into the underlying hash. The error return is for
 // [io.Writer] conformance only — [hash.Hash.Write] never errors.
-func (w *hashingWriter) Write(p []byte) (int, error) {
+func (w *HashingWriter) Write(p []byte) (int, error) {
 	return w.h.Write(p)
 }
 
-func (w *hashingWriter) Sum() string { return hex.EncodeToString(w.h.Sum(nil)) }
-func (w *hashingWriter) Reset()      { w.h.Reset() }
+// Hex returns the hex-encoded digest of every byte written since
+// the last [HashingWriter.Reset] (or since construction). Named Hex
+// rather than Sum so it doesn't shadow [hash.Hash.Sum], which has a
+// different signature and returns bytes rather than a hex string.
+func (w *HashingWriter) Hex() string { return hex.EncodeToString(w.h.Sum(nil)) }
+
+// Reset clears the running state.
+func (w *HashingWriter) Reset() { w.h.Reset() }

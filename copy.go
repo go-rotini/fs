@@ -34,10 +34,10 @@ func WithFollowSymlinks(b bool) CopyOption {
 	return func(o *copyOptions) { o.followSymlinks = b }
 }
 
-// WithMtime preserves the source modification time on the
+// WithPreserveMtime preserves the source modification time on the
 // destination. Default true. Symlinks themselves do not have their
 // mtime preserved (the stdlib doesn't expose lutimes).
-func WithMtime(b bool) CopyOption {
+func WithPreserveMtime(b bool) CopyOption {
 	return func(o *copyOptions) { o.preserveMtime = b }
 }
 
@@ -114,12 +114,12 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	defer sf.Close()
 
 	dstDir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dstDir, filepath.Base(dst)+".tmp.*")
+	tmp, err := osCreateTemp(dstDir, filepath.Base(dst)+".tmp.*")
 	if err != nil {
 		return wrapPathError(opCopyFile, dst, err)
 	}
 	tmpPath := tmp.Name()
-	cleanupTmp := func() { _ = os.Remove(tmpPath) }
+	cleanupTmp := func() { _ = osRemove(tmpPath) } //nolint:errcheck // best-effort cleanup of an already-failed write
 
 	if _, cerr := io.Copy(tmp, hookedReader{sf}); cerr != nil {
 		closeQuietly(tmp)
@@ -307,7 +307,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 		if cerr := CopyDir(src, dst, opts...); cerr != nil {
 			return cerr
 		}
-		if rerr := os.RemoveAll(src); rerr != nil {
+		if rerr := osRemoveAll(src); rerr != nil {
 			return wrapPathError(opMove, src, rerr)
 		}
 		return nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	stdfs "io/fs"
 	"strings"
+	"syscall"
 )
 
 // unknownLabel is the canonical string returned by stringer-style
@@ -250,6 +251,8 @@ func normalizeCause(cause error) error {
 		return fmt.Errorf("%w: %w", ErrAlreadyExists, cause)
 	case errors.Is(cause, stdfs.ErrPermission):
 		return fmt.Errorf("%w: %w", ErrPermission, cause)
+	case errors.Is(cause, syscall.EXDEV):
+		return fmt.Errorf("%w: %w", ErrCrossDevice, cause)
 	default:
 		return cause
 	}

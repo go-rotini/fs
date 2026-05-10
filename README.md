@@ -74,8 +74,8 @@ if err := fs.WriteFile("/etc/myapp/config.yaml", []byte("port: 8080\n")); err !=
     log.Fatal(err)
 }
 
-// Secrets get 0o600.
-if err := fs.WriteFileSecret("/etc/myapp/token", []byte(token)); err != nil {
+// Secrets: pass WithPerm(0o600) for owner-only.
+if err := fs.WriteFile("/etc/myapp/token", []byte(token), fs.WithPerm(fs.Mode0600)); err != nil {
     log.Fatal(err)
 }
 ```
@@ -127,7 +127,7 @@ err := fs.Walk(root, func(path string, d fs.DirEntry, err error) error {
     }
     fmt.Println(path)
     return nil
-}, fs.WithSkipNames([]string{".git", "node_modules", ".terraform"}))
+}, fs.WalkSkipNames([]string{".git", "node_modules", ".terraform"}))
 ```
 
 ### Watch a config file

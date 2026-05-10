@@ -8,14 +8,30 @@ import (
 	"syscall"
 )
 
-// openNoFollow opens path with FILE_FLAG_OPEN_REPARSE_POINT so a
-// reparse point (symlink, junction) at the final component is
-// returned as the reparse point itself rather than transparently
-// followed. The Go flag bits are translated to Win32 access /
+// openNoFollow opens path while refusing a reparse point at the
+// final component. The implementation passes FILE_FLAG_OPEN_REPARSE_POINT
+// so CreateFile returns a handle to the reparse point itself rather
+// than transparently following it, then queries the handle's
+// attributes and refuses any FILE_ATTRIBUTE_REPARSE_POINT (covers
+// symbolic links, junctions, and mount points — all forms of
+// "link-like" reparse Windows surfaces).
+//
+// On a match, the handle is closed and [ErrSymlinkLoop] is
+// returned, matching the POSIX O_NOFOLLOW semantics documented on
+// [OpenNoFollow]. The Go flag bits are translated to Win32 access /
 // disposition via the same mapping the stdlib uses. perm is
 // accepted for cross-platform signature symmetry but Win32
 // CreateFile uses NTFS ACLs rather than POSIX mode bits — perm has
 // no effect.
+//
+// Note: this is not race-free. Between CreateFile succeeding and
+// GetFileInformationByHandle running, the file COULD in principle be
+// swapped — but the handle we hold pins the *original* inode so the
+// attribute we read is the attribute of the file we opened, not the
+// post-swap file. The remaining race is purely "the attacker swaps
+// a real file in for a symlink between the open and the attribute
+// query", in which case we'd refuse a now-real file; that's a false
+// positive, not a security hole.
 func openNoFollow(path string, flag int, _ os.FileMode) (*os.File, error) {
 	pathp, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
@@ -57,6 +73,18 @@ func openNoFollow(path string, flag int, _ os.FileMode) (*os.File, error) {
 	if err != nil {
 		return nil, wrapPathError(opOpenNoFollow, path, err)
 	}
+
+	// Refuse reparse points (symlinks, junctions, mount points).
+	var info syscall.ByHandleFileInformation
+	if ierr := syscall.GetFileInformationByHandle(handle, &info); ierr != nil {
+		_ = syscall.CloseHandle(handle)
+		return nil, wrapPathError(opOpenNoFollow, path, ierr)
+	}
+	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		_ = syscall.CloseHandle(handle)
+		return nil, wrapPathError(opOpenNoFollow, path, ErrSymlinkLoop)
+	}
+
 	return os.NewFile(uintptr(handle), filepath.Base(path)), nil
 }
 

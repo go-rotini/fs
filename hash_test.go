@@ -181,8 +181,8 @@ func TestHashWriter_StreamMatchesHash(t *testing.T) {
 	if _, err := io.Copy(hw, f); err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
-	if hw.Sum() != abcSHA256 {
-		t.Errorf("stream sum = %s, want %s", hw.Sum(), abcSHA256)
+	if hw.Hex() != abcSHA256 {
+		t.Errorf("stream sum = %s, want %s", hw.Hex(), abcSHA256)
 	}
 }
 
@@ -216,8 +216,8 @@ func TestHashWriter_TeeWithMultiWriter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hash: %v", err)
 	}
-	if hw.Sum() != want {
-		t.Errorf("streaming sum diverged from on-disk: %s vs %s", hw.Sum(), want)
+	if hw.Hex() != want {
+		t.Errorf("streaming sum diverged from on-disk: %s vs %s", hw.Hex(), want)
 	}
 }
 
@@ -229,14 +229,14 @@ func TestHashWriter_Reset(t *testing.T) {
 	}
 	hw.Reset()
 	// After reset, an empty hash should produce algo's empty digest.
-	if hw.Sum() != emptyMD5 {
-		t.Errorf("after Reset, Sum = %s, want %s", hw.Sum(), emptyMD5)
+	if hw.Hex() != emptyMD5 {
+		t.Errorf("after Reset, Sum = %s, want %s", hw.Hex(), emptyMD5)
 	}
 	if _, err := hw.Write([]byte("abc")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if hw.Sum() != abcMD5 {
-		t.Errorf("after Reset+abc, Sum = %s, want %s", hw.Sum(), abcMD5)
+	if hw.Hex() != abcMD5 {
+		t.Errorf("after Reset+abc, Sum = %s, want %s", hw.Hex(), abcMD5)
 	}
 }
 

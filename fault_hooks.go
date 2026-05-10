@@ -21,18 +21,20 @@ var (
 	// File-open / mkdir / rename / chmod / chtimes / remove / stat
 	// are direct stdlib functions; the package's writers and copy
 	// helpers route through these vars.
-	osOpenFile = os.OpenFile
-	osOpen     = os.Open
-	osRename   = os.Rename
-	osChmod    = os.Chmod
-	osChtimes  = os.Chtimes
-	osStat     = os.Stat
-	osLstat    = os.Lstat
-	osMkdirAll = os.MkdirAll
-	osSymlink  = os.Symlink
-	osLink     = os.Link
-	osReadlink = os.Readlink
-	osRemove   = os.Remove
+	osOpenFile   = os.OpenFile
+	osOpen       = os.Open
+	osRename     = os.Rename
+	osChmod      = os.Chmod
+	osChtimes    = os.Chtimes
+	osStat       = os.Stat
+	osLstat      = os.Lstat
+	osMkdirAll   = os.MkdirAll
+	osSymlink    = os.Symlink
+	osLink       = os.Link
+	osReadlink   = os.Readlink
+	osRemove     = os.Remove
+	osRemoveAll  = os.RemoveAll
+	osCreateTemp = os.CreateTemp
 
 	// Method-value hooks for *os.File. The signatures match the
 	// stdlib method values: e.g., (*os.File).Sync has signature

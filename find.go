@@ -7,9 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
-	"strings"
-	"sync"
 )
 
 // FindOption configures the find-up family ([FindUp], [FindUpAll],
@@ -178,12 +175,13 @@ func matchInDir(dir, pattern string) (string, error) {
 // `package.json`, `Cargo.toml`; override with [WithProjectMarkers]).
 // Errors with [ErrNotFound] when the walk exhausts without a match.
 //
-// Results are memoized per-process. The cache key includes
-// abs(startDir), the marker set, the stopAt boundary, and
-// maxAncestors — same inputs always return the same result without
-// re-walking the filesystem. Cache entries are never invalidated;
-// long-lived processes that re-arrange project layouts on disk
-// should not rely on this helper picking up the change.
+// Every call walks the filesystem; no caching is performed. The
+// per-call cost is bounded by [WithMaxAncestors] (default 32 stat
+// calls in the worst case). Callers that hit this hot in a loop —
+// typically long-running daemons that resolve thousands of paths —
+// should cache the result themselves with whatever invalidation
+// policy fits the embedding application; a process-global cache
+// here cannot know when a project layout changes underneath it.
 func ProjectRoot(startDir string, opts ...FindOption) (string, error) {
 	cfg := newFindOptions(opts)
 	abs, err := filepath.Abs(startDir)
@@ -192,18 +190,10 @@ func ProjectRoot(startDir string, opts ...FindOption) (string, error) {
 	}
 	abs = filepath.Clean(abs)
 
-	key := projectRootKey(abs, cfg)
-	if v, ok := projectRootCache.Load(key); ok {
-		if cached, ok := v.(string); ok {
-			return cached, nil
-		}
-	}
-
 	cur := abs
 	for range cfg.maxAncestors {
 		for _, marker := range cfg.projectMarkers {
 			if Exists(filepath.Join(cur, marker)) {
-				projectRootCache.Store(key, cur)
 				return cur, nil
 			}
 		}
@@ -217,24 +207,6 @@ func ProjectRoot(startDir string, opts ...FindOption) (string, error) {
 		cur = parent
 	}
 	return "", wrapPathError(opProjectRoot, startDir, ErrNotFound)
-}
-
-var projectRootCache sync.Map
-
-// projectRootKey builds a deterministic cache key. The marker list is
-// sorted so the same set in different orders maps to the same key.
-func projectRootKey(abs string, cfg findOptions) string {
-	markers := slices.Clone(cfg.projectMarkers)
-	slices.Sort(markers)
-	var b strings.Builder
-	b.WriteString(abs)
-	b.WriteByte('|')
-	b.WriteString(strings.Join(markers, "\x00"))
-	b.WriteByte('|')
-	b.WriteString(cfg.stopAt)
-	b.WriteByte('|')
-	b.WriteString(strconv.Itoa(cfg.maxAncestors))
-	return b.String()
 }
 
 // FirstExisting returns the first path in paths that exists. Useful
@@ -256,9 +228,9 @@ func FirstExisting(paths []string) (string, bool) {
 // root is absolute; relative-to-cwd otherwise. The root entry itself
 // is included if its basename matches.
 //
-// Honors all [WalkOption]s ([WalkSkipHidden], [WithSkipNames],
-// [WithSkipPatterns], [WithMaxDepth], [WalkFollowSymlinks],
-// [WithErrorHandler]).
+// Honors all [WalkOption]s ([WalkSkipHidden], [WalkSkipNames],
+// [WalkSkipPatterns], [WalkMaxDepth], [WalkFollowSymlinks],
+// [WalkErrorHandler]).
 func Find(root, pattern string, opts ...WalkOption) ([]string, error) {
 	return findInternal(root, opFind, opts, func(d stdfs.DirEntry, _ string) (bool, error) {
 		ok, err := filepath.Match(pattern, d.Name())

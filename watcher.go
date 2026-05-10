@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,12 +29,6 @@ var (
 	// ErrWatcherClosed is returned by [(*Watcher).Subscribe] when the
 	// watcher has already been closed.
 	ErrWatcherClosed = errors.New("fs: watcher: closed")
-
-	// ErrWatcherUnsupportedOS is returned when no native backend is
-	// available and polling cannot be used either. In practice the
-	// package always succeeds with the polling fallback, so this
-	// sentinel is reserved for future use.
-	ErrWatcherUnsupportedOS = errors.New("fs: watcher: native backend unavailable on this platform — use WithPolling")
 )
 
 // Watcher monitors one path (file or directory) for changes. The
@@ -342,16 +337,23 @@ func (w *Watcher) shouldEmit(path string) bool {
 	return filepath.Base(path) == w.basename && filepath.Dir(path) == w.parentDir
 }
 
-// hasParentDir reports whether child lives under parent.
+// hasParentDir reports whether child lives under parent. A child
+// equal to parent counts as inside; a child that resolves to ".." or
+// a sibling does not. Filenames that incidentally start with two
+// dots (e.g., "..foo") are NOT treated as escapes — only a "..\n"
+// segment terminated by the path separator (or standalone "..") is.
 func hasParentDir(child, parent string) bool {
 	rel, err := filepath.Rel(parent, child)
 	if err != nil {
 		return false
 	}
-	if rel == "." || rel == ".." {
-		return rel == "."
+	if rel == "." {
+		return true
 	}
-	return rel[0] != '.' || (len(rel) >= 2 && rel[1] != '.')
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 func (w *Watcher) fanOut(ev WatchEvent) {

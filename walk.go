@@ -47,22 +47,22 @@ func WalkSkipHidden(b bool) WalkOption {
 	return func(o *walkOptions) { o.skipHidden = b }
 }
 
-// WithSkipNames skips entries whose basename exactly matches any
+// WalkSkipNames skips entries whose basename exactly matches any
 // element of names. Skipping a directory prunes its subtree.
-func WithSkipNames(names []string) WalkOption {
+func WalkSkipNames(names []string) WalkOption {
 	return func(o *walkOptions) { o.skipNames = slices.Clone(names) }
 }
 
-// WithSkipPatterns skips entries whose basename matches any of the
+// WalkSkipPatterns skips entries whose basename matches any of the
 // [filepath.Match] glob patterns. Skipping a directory prunes its
 // subtree.
-func WithSkipPatterns(patterns []string) WalkOption {
+func WalkSkipPatterns(patterns []string) WalkOption {
 	return func(o *walkOptions) { o.skipPatterns = slices.Clone(patterns) }
 }
 
-// WithMaxDepth bounds recursion. The root is depth 0; n=1 means root
+// WalkMaxDepth bounds recursion. The root is depth 0; n=1 means root
 // + immediate children. n<=0 (default) is unbounded.
-func WithMaxDepth(n int) WalkOption {
+func WalkMaxDepth(n int) WalkOption {
 	return func(o *walkOptions) { o.maxDepth = n }
 }
 
@@ -77,10 +77,10 @@ func WalkFollowSymlinks(b bool) WalkOption {
 	return func(o *walkOptions) { o.followSymlinks = b }
 }
 
-// WithErrorHandler intercepts per-entry errors during the walk.
+// WalkErrorHandler intercepts per-entry errors during the walk.
 // Return nil to continue, [filepath.SkipDir] to skip the parent, or
 // any non-nil error to abort.
-func WithErrorHandler(fn func(path string, err error) error) WalkOption {
+func WalkErrorHandler(fn func(path string, err error) error) WalkOption {
 	return func(o *walkOptions) { o.errorHandler = fn }
 }
 
@@ -91,11 +91,11 @@ const opWalk = "walk"
 // and uses a custom recursive walker that tracks resolved real paths
 // when symlinks are followed.
 //
-// Filter options ([WalkSkipHidden], [WithSkipNames],
-// [WithSkipPatterns]) prune subtrees: when a directory matches a
+// Filter options ([WalkSkipHidden], [WalkSkipNames],
+// [WalkSkipPatterns]) prune subtrees: when a directory matches a
 // skip rule, the entire subtree is omitted.
 //
-// [WithMaxDepth] bounds recursion. [WithErrorHandler] intercepts
+// [WalkMaxDepth] bounds recursion. [WalkErrorHandler] intercepts
 // per-entry errors so a single unreadable directory doesn't abort
 // the walk.
 func Walk(root string, fn WalkFunc, opts ...WalkOption) error {

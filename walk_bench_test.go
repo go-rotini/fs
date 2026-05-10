@@ -73,7 +73,7 @@ func BenchmarkWalk_SkipNames(b *testing.B) {
 	for b.Loop() {
 		if err := Walk(root, func(_ string, _ stdfs.DirEntry, err error) error {
 			return err
-		}, WithSkipNames([]string{".git", "node_modules", ".terraform"})); err != nil {
+		}, WalkSkipNames([]string{".git", "node_modules", ".terraform"})); err != nil {
 			b.Fatalf("Walk: %v", err)
 		}
 	}
@@ -112,7 +112,7 @@ func BenchmarkWalk_MaxDepth(b *testing.B) {
 	for b.Loop() {
 		if err := Walk(root, func(_ string, _ stdfs.DirEntry, err error) error {
 			return err
-		}, WithMaxDepth(10)); err != nil {
+		}, WalkMaxDepth(10)); err != nil {
 			b.Fatalf("Walk: %v", err)
 		}
 	}

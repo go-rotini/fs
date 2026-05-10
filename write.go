@@ -122,8 +122,10 @@ func resolveWritePath(path string, _ writeOptions) string { return path }
 // WriteFile writes data to path atomically (write-temp + rename).
 // Default mode 0o644 for new files; existing files preserve their
 // mode unless [WithPerm] is set. Errors if the parent directory
-// doesn't exist (use [WriteFileEnsure] or [WithMkdirAll] to create
-// it).
+// doesn't exist; pass [WithMkdirAll] to create it.
+//
+// For files containing secrets (tokens, keys), pass
+// `WithPerm(fs.Mode0600)` so the result is owner-only.
 func WriteFile(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
 	return doWriteFile(path, data, cfg)
@@ -132,25 +134,6 @@ func WriteFile(path string, data []byte, opts ...WriteOption) error {
 // WriteString is shorthand for WriteFile(path, []byte(s), opts...).
 func WriteString(path, s string, opts ...WriteOption) error {
 	return WriteFile(path, []byte(s), opts...)
-}
-
-// WriteFileSecret is [WriteFile] with mode 0o600 (owner-only
-// read/write). Use for files containing tokens, keys, or other
-// sensitive data.
-func WriteFileSecret(path string, data []byte, opts ...WriteOption) error {
-	cfg := newWriteOptions(opts)
-	if !cfg.hasPerm {
-		cfg.perm = Mode0600
-		cfg.hasPerm = true
-	}
-	return doWriteFile(path, data, cfg)
-}
-
-// WriteFileEnsure is [WriteFile] with [WithMkdirAll] true.
-func WriteFileEnsure(path string, data []byte, opts ...WriteOption) error {
-	cfg := newWriteOptions(opts)
-	cfg.mkdirAll = true
-	return doWriteFile(path, data, cfg)
 }
 
 // WriteFileExclusive writes data to path with O_CREATE|O_EXCL

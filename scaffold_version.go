@@ -27,9 +27,6 @@ import (
 // replace user edits when the source version changes.
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
-	if cfg.onConflict == ScaffoldMergeWithUserEdits {
-		return wrapPathError(opScaffoldExtract, dst, ErrScaffoldMergeUnsupported)
-	}
 
 	hash, err := scaffoldHashFS(src)
 	if err != nil {
@@ -131,8 +128,6 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 				}
 			case ScaffoldOverwriteAll:
 				// fall through to write
-			case ScaffoldMergeWithUserEdits:
-				return wrapPathError(opScaffoldExtract, dstPath, ErrScaffoldMergeUnsupported)
 			}
 		}
 

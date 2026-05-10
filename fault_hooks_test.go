@@ -45,6 +45,8 @@ type faultyHooks struct {
 	origLink        func(string, string) error
 	origReadlink    func(string) (string, error)
 	origRemove      func(string) error
+	origRemoveAll   func(string) error
+	origCreateTemp  func(dir, pattern string) (*os.File, error)
 	origFileSync    func(*os.File) error
 	origFileClose   func(*os.File) error
 	origFileWrite   func(*os.File, []byte) (int, error)
@@ -70,6 +72,8 @@ func newFaultyHooks(t *testing.T) *faultyHooks {
 		origLink:        osLink,
 		origReadlink:    osReadlink,
 		origRemove:      osRemove,
+		origRemoveAll:   osRemoveAll,
+		origCreateTemp:  osCreateTemp,
 		origFileSync:    fileSync,
 		origFileClose:   fileClose,
 		origFileWrite:   fileWrite,
@@ -92,6 +96,8 @@ func (h *faultyHooks) restore() {
 	osLink = h.origLink
 	osReadlink = h.origReadlink
 	osRemove = h.origRemove
+	osRemoveAll = h.origRemoveAll
+	osCreateTemp = h.origCreateTemp
 	fileSync = h.origFileSync
 	fileClose = h.origFileClose
 	fileWrite = h.origFileWrite

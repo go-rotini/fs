@@ -272,6 +272,17 @@ func TestNormalizeCause_Permission(t *testing.T) {
 	}
 }
 
+func TestNormalizeCause_EXDEV(t *testing.T) {
+	t.Parallel()
+	got := normalizeCause(syscall.EXDEV)
+	if !errors.Is(got, ErrCrossDevice) {
+		t.Error("normalizeCause(EXDEV) should match ErrCrossDevice")
+	}
+	if !errors.Is(got, syscall.EXDEV) {
+		t.Error("normalizeCause(EXDEV) should still match syscall.EXDEV")
+	}
+}
+
 func TestNormalizeCause_Unrecognized(t *testing.T) {
 	t.Parallel()
 	other := errors.New("unrelated")

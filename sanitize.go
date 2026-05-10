@@ -13,13 +13,18 @@ import (
 //   - Trailing dots and spaces (Windows trims them silently, leading
 //     to surprising path resolution)
 //
-// If the cleaned name matches a Windows reserved name (CON, PRN,
-// AUX, NUL, COM1–COM9, LPT1–LPT9), regardless of extension or case,
-// `_` is appended. An empty result falls back to `_`.
+// If the cleaned stem matches a Windows reserved device name (CON,
+// PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), regardless of case or
+// extension, an underscore is inserted IMMEDIATELY AFTER the stem
+// (before any extension): "CON" → "CON_", "CON.txt" → "CON_.txt".
+// This ensures the result no longer parses as a reserved device name
+// on Windows — Windows recognizes the device by stem, so suffixing
+// the whole filename ("CON.txt_") leaves the file still reserved.
 //
-// SanitizeFilename does NOT validate length — Windows MAX_PATH (260)
-// and component-length limits are filesystem-dependent; callers
-// constrain those separately if they matter.
+// An empty cleaned result falls back to `_`. SanitizeFilename does
+// NOT validate length — Windows MAX_PATH (260) and component-length
+// limits are filesystem-dependent; callers constrain those
+// separately if they matter.
 func SanitizeFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
@@ -37,10 +42,16 @@ func SanitizeFilename(name string) string {
 	if out == "" {
 		return "_"
 	}
-	if IsReservedName(out) {
-		out += "_"
+	if !IsReservedName(out) {
+		return out
 	}
-	return out
+	// Reserved-stem rewrite: insert "_" before the last dot, or
+	// append if there is no dot. Defends against Windows treating
+	// "CON.txt_" as the CON device.
+	if dot := strings.LastIndex(out, "."); dot > 0 {
+		return out[:dot] + "_" + out[dot:]
+	}
+	return out + "_"
 }
 
 // IsReservedName reports whether name (or its base before the last

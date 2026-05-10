@@ -5,6 +5,7 @@ import (
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -69,19 +70,26 @@ func EvalSymlinks(path string) (string, error) {
 }
 
 // isSymlinkLoop reports whether err looks like a symlink-loop error
-// from filepath.EvalSymlinks. The stdlib uses the system's ELOOP
-// (POSIX) or returns a wrapped *PathError with a "too many links" /
-// "too many symbolic links" message.
+// from filepath.EvalSymlinks. POSIX surfaces ELOOP; filepath itself
+// has an internal hop-counter that returns the bare
+// `errors.New("EvalSymlinks: too many links")` sentinel — string-
+// matched here.
 func isSymlinkLoop(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, syscall.ELOOP) {
 		return true
 	}
-	// EvalSymlinks doesn't always wrap ELOOP — it has its own hop
-	// counter. Match its sentinel by string when no errno is wrapped.
+	// filepath's internal sentinel is unexported; match by message.
+	if strings.Contains(err.Error(), "too many links") {
+		return true
+	}
+	// Some platforms wrap ELOOP inside a *fs.PathError without
+	// errors.Is matching directly. Walk the chain.
 	var pe *stdfs.PathError
 	if errors.As(err, &pe) && pe.Err != nil {
-		msg := pe.Err.Error()
-		if msg == "too many links" {
+		if errors.Is(pe.Err, syscall.ELOOP) {
 			return true
 		}
 	}

@@ -48,11 +48,11 @@ func TestSanitizeFilename_ReservedSuffixed(t *testing.T) {
 	}{
 		{"CON", "CON_"},
 		{"con", "con_"},
-		{"CON.txt", "CON.txt_"},
+		{"CON.txt", "CON_.txt"},
 		{"COM1", "COM1_"},
-		{"com9.log", "com9.log_"},
+		{"com9.log", "com9_.log"},
 		{"LPT3", "LPT3_"},
-		{"lpt3.txt", "lpt3.txt_"},
+		{"lpt3.txt", "lpt3_.txt"},
 	}
 	for _, c := range cases {
 		got := SanitizeFilename(c.in)

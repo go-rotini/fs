@@ -26,8 +26,9 @@ const (
 )
 
 const (
-	opChmod      = "chmod"
-	opEnsurePerm = "ensureperm"
+	opChmod            = "chmod"
+	opEnsurePerm       = "ensureperm"
+	opWarnInsecurePerm = "warninsecureperm"
 )
 
 // Chmod wraps [os.Chmod] with the package's error envelope. The mode
@@ -61,4 +62,30 @@ func EnsurePerm(path string, mode os.FileMode) error {
 		return wrapPathError(opEnsurePerm, path, err)
 	}
 	return nil
+}
+
+// WarnInsecurePerm reports whether path's mode permits more access
+// than expected. Returns insecure=true when actual has any
+// permission bit set that isn't in expected — e.g., expected=0o600,
+// actual=0o644 surfaces the surplus group/other read bits as
+// insecure=true. Permission bits LESS permissive than expected are
+// not flagged (a 0o400 file is fine when expected=0o600).
+//
+// Callers decide what to do — warn the user, refuse to load the
+// file, or repair via [Chmod] / [EnsurePerm]. Pairs with
+// [WriteFileSecret] (which writes 0o600) for end-to-end
+// secret-handling discipline.
+//
+// On Windows where POSIX permission bits don't apply, the result
+// reflects the limited bits Go's [os.FileMode] surfaces; callers
+// should treat it as advisory.
+func WarnInsecurePerm(path string, expected os.FileMode) (insecure bool, actual os.FileMode, err error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return false, 0, wrapPathError(opWarnInsecurePerm, path, statErr)
+	}
+	actual = info.Mode().Perm()
+	want := expected.Perm()
+	insecure = (actual &^ want) != 0
+	return insecure, actual, nil
 }

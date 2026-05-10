@@ -114,3 +114,77 @@ func TestEnsurePerm_IgnoresNonPermBits(t *testing.T) {
 		t.Errorf("perm = %o, want 0600", info.Mode().Perm())
 	}
 }
+
+// --- WarnInsecurePerm ---
+
+func TestWarnInsecurePerm_Insecure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	insecure, actual, err := WarnInsecurePerm(path, Mode0600)
+	if err != nil {
+		t.Fatalf("WarnInsecurePerm: %v", err)
+	}
+	if !insecure {
+		t.Error("0o644 should be flagged when 0o600 is expected")
+	}
+	if actual != 0o644 {
+		t.Errorf("actual = %o, want 0644", actual)
+	}
+}
+
+func TestWarnInsecurePerm_Secure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	insecure, _, err := WarnInsecurePerm(path, Mode0600)
+	if err != nil {
+		t.Fatalf("WarnInsecurePerm: %v", err)
+	}
+	if insecure {
+		t.Error("0o600 should not be flagged when 0o600 is expected")
+	}
+}
+
+func TestWarnInsecurePerm_LessPermissiveOK(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX perms only")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("x"), 0o400); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	insecure, _, err := WarnInsecurePerm(path, Mode0600)
+	if err != nil {
+		t.Fatalf("WarnInsecurePerm: %v", err)
+	}
+	if insecure {
+		t.Error("0o400 (less permissive than 0o600) should not be flagged")
+	}
+}
+
+func TestWarnInsecurePerm_Missing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, _, err := WarnInsecurePerm(filepath.Join(dir, "missing"), Mode0600)
+	if err == nil {
+		t.Error("expected error for missing path")
+	}
+}

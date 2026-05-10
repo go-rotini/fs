@@ -179,6 +179,11 @@ var (
 	// doesn't expose (e.g., birth time on Linux without statx, owner
 	// on Windows).
 	ErrNotSupported = errors.New("fs: not supported on this platform")
+
+	// ErrInvalidByteSize is returned by [ParseBytes] / [ParseBytesStrict]
+	// when the input is empty, has no numeric prefix, or has an
+	// unrecognized unit suffix.
+	ErrInvalidByteSize = errors.New("fs: invalid byte size")
 )
 
 // FormatError renders err into a human-readable string. *MultiError

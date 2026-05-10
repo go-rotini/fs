@@ -24,3 +24,41 @@ const (
 	// containing secrets.
 	Mode0700 os.FileMode = 0o700
 )
+
+const (
+	opChmod      = "chmod"
+	opEnsurePerm = "ensureperm"
+)
+
+// Chmod wraps [os.Chmod] with the package's error envelope. The mode
+// argument is interpreted by the OS — only the permission bits
+// (`os.ModePerm`) are honored on POSIX, and on Windows only the
+// read-only bit changes meaningfully.
+func Chmod(path string, mode os.FileMode) error {
+	if err := os.Chmod(path, mode); err != nil {
+		return wrapPathError(opChmod, path, err)
+	}
+	return nil
+}
+
+// EnsurePerm chmods path to mode if the current permission bits
+// don't already match. A path that already has the desired mode is
+// a no-op (no syscall, no error). Useful in idempotent setup
+// routines.
+//
+// Only the permission bits (`os.ModePerm`) are compared; type bits
+// (directory, symlink, etc.) on the existing inode are ignored.
+func EnsurePerm(path string, mode os.FileMode) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return wrapPathError(opEnsurePerm, path, err)
+	}
+	want := mode & os.ModePerm
+	if info.Mode().Perm() == want {
+		return nil
+	}
+	if err := os.Chmod(path, want); err != nil {
+		return wrapPathError(opEnsurePerm, path, err)
+	}
+	return nil
+}

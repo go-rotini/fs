@@ -108,7 +108,6 @@ func WithBackup(suffix string) WriteOption {
 // Operation labels for *PathError.Op on write-layer errors.
 const (
 	opWrite     = "write"
-	opMkdirAll  = "mkdirall"
 	opAppend    = "append"
 	opRename    = "rename"
 	opOpenWrite = "openwrite"

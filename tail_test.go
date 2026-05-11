@@ -372,9 +372,9 @@ func TestTail_NotifyRotation(t *testing.T) {
 		defer cancel()
 
 		var (
-			mu        sync.Mutex
-			notified  bool
-			lines     []string
+			mu       sync.Mutex
+			notified bool
+			lines    []string
 		)
 		done := make(chan struct{})
 		go func() {

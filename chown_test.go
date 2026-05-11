@@ -19,6 +19,16 @@ func TestChownRecursive_WindowsReturnsNotSupported(t *testing.T) {
 	}
 }
 
+func TestChownRecursive_MissingRoot(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows returns ErrNotSupported before walk")
+	}
+	if err := ChownRecursive(filepath.Join(t.TempDir(), "missing"), -1, -1); err == nil {
+		t.Error("expected error for missing root")
+	}
+}
+
 func TestChownRecursive_PosixNoOpChange(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

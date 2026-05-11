@@ -463,6 +463,46 @@ func TestCappedWriter_DisabledCap(t *testing.T) {
 
 // --- Create-side filter ---
 
+func TestCreateArchive_CreateFilterSkipsRegularFile(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		t.Skip("test exercises a POSIX symlink in the source tree")
+	}
+	src := makeTreeFixture(t)
+
+	// Add a symlink so tarWalkHandler exercises its readlink path.
+	if err := os.Symlink("a.txt", filepath.Join(src, "alias")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "out.tar")
+	// Exclude only the regular file a.txt; this hits the
+	// `return nil` (non-dir skip) branch in tarWalkHandler.
+	if err := CreateArchiveFile(archivePath, src,
+		WithArchiveCreateFilter(func(path string, _ os.FileInfo) bool {
+			return filepath.Base(path) != "a.txt"
+		}),
+	); err != nil {
+		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+
+	dst := t.TempDir()
+	if err := ExtractArchiveFile(archivePath, dst); err != nil {
+		t.Fatalf("ExtractArchiveFile: %v", err)
+	}
+	if Exists(filepath.Join(dst, "a.txt")) {
+		t.Error("filtered regular file appeared in archive")
+	}
+	// Symlink should survive.
+	info, err := os.Lstat(filepath.Join(dst, "alias"))
+	if err != nil {
+		t.Fatalf("Lstat alias: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("alias did not round-trip as a symlink")
+	}
+}
+
 func TestCreateArchive_CreateFilter(t *testing.T) {
 	t.Parallel()
 	src := makeTreeFixture(t)

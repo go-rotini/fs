@@ -358,6 +358,70 @@ func TestTail_LineLongerThanCapIsTruncated(t *testing.T) {
 	}
 }
 
+func TestTail_NotifyRotation(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "log")
+		if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		const poll = 10 * time.Millisecond
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		var (
+			mu        sync.Mutex
+			notified  bool
+			lines     []string
+		)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for line, err := range Tail(ctx, path, WithTailPollInterval(poll), WithTailNotifyRotation()) {
+				mu.Lock()
+				if errors.Is(err, ErrTailRotated) {
+					notified = true
+				} else if err == nil {
+					lines = append(lines, line)
+				}
+				mu.Unlock()
+			}
+		}()
+
+		synctest.Wait()
+
+		// Trigger rotation.
+		if err := os.Rename(path, path+".1"); err != nil {
+			t.Fatalf("Rename: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("post\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile new: %v", err)
+		}
+
+		// Advance the bubble until Tail processes the rotation.
+		for range 5 {
+			time.Sleep(poll)
+			synctest.Wait()
+		}
+
+		mu.Lock()
+		gotNotified := notified
+		gotLines := append([]string(nil), lines...)
+		mu.Unlock()
+
+		if !gotNotified {
+			t.Error("WithTailNotifyRotation did not yield ErrTailRotated")
+		}
+		if len(gotLines) == 0 || gotLines[len(gotLines)-1] != "post" {
+			t.Errorf("post-rotation lines = %v; want last = post", gotLines)
+		}
+		cancel()
+		<-done
+	})
+}
+
 func TestTail_BufferSizeAndPollClamping(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

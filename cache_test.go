@@ -367,3 +367,207 @@ func (m *mockClock) Now() time.Time {
 	defer m.mu.Unlock()
 	return m.t
 }
+
+func TestCache_GetWithError(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+
+	// Miss on a fresh cache: ok=false, err=nil.
+	if v, ok, err := c.GetWithError("missing"); v != nil || ok || err != nil {
+		t.Errorf("miss: (v,ok,err) = (%v,%v,%v); want (nil,false,nil)", v, ok, err)
+	}
+
+	// Hit after Set.
+	if err := c.Set("k", []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	v, ok, err := c.GetWithError("k")
+	if err != nil {
+		t.Fatalf("GetWithError after Set: err=%v", err)
+	}
+	if !ok || string(v) != "v" {
+		t.Errorf("hit = (%q,%v); want (v,true)", v, ok)
+	}
+
+	// After Close, GetWithError surfaces ErrCacheClosed.
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, _, err := c.GetWithError("k"); !errors.Is(err, ErrCacheClosed) {
+		t.Errorf("GetWithError after Close err=%v; want ErrCacheClosed", err)
+	}
+}
+
+func TestCache_Entries(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+
+	for i := 0; i < 4; i++ {
+		if err := c.Set(fmt.Sprintf("k%d", i), []byte("vv")); err != nil {
+			t.Fatalf("Set %d: %v", i, err)
+		}
+	}
+
+	count := 0
+	seen := map[string]struct{}{}
+	for e := range c.Entries() {
+		count++
+		if e.HashedKey == "" {
+			t.Errorf("entry %d: empty HashedKey", count)
+		}
+		if e.Size <= 0 {
+			t.Errorf("entry %d: Size=%d; want >0", count, e.Size)
+		}
+		if e.ModTime.IsZero() {
+			t.Errorf("entry %d: zero ModTime", count)
+		}
+		seen[e.HashedKey] = struct{}{}
+	}
+	if count != 4 || len(seen) != 4 {
+		t.Errorf("count=%d unique=%d; want 4,4", count, len(seen))
+	}
+
+	// Iteration on a closed cache yields nothing.
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	closedCount := 0
+	for range c.Entries() {
+		closedCount++
+	}
+	if closedCount != 0 {
+		t.Errorf("closed iter yielded %d; want 0", closedCount)
+	}
+}
+
+func TestCache_EntriesBreakStopsIteration(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	for i := 0; i < 5; i++ {
+		_ = c.Set(fmt.Sprintf("k%d", i), []byte("x"))
+	}
+	yielded := 0
+	for range c.Entries() {
+		yielded++
+		break
+	}
+	if yielded != 1 {
+		t.Errorf("yielded=%d; want 1 before break", yielded)
+	}
+}
+
+func TestCacheHashFromPath(t *testing.T) {
+	t.Parallel()
+	dir := "/tmp/cache"
+	// Shard layout: <dir>/ab/cdef.bin
+	got := cacheHashFromPath(dir, filepath.Join(dir, "ab", "cdef.bin"))
+	if got != "abcdef" {
+		t.Errorf("got=%q; want abcdef", got)
+	}
+
+	// Path outside baseDir.
+	if cacheHashFromPath(dir, "/elsewhere/file.bin") == "" {
+		t.Error("expected something for relative-able path")
+	}
+
+	// Single-segment path (no shard).
+	if got := cacheHashFromPath(dir, filepath.Join(dir, "lone.bin")); got != "lone" {
+		t.Errorf("single-segment got=%q; want lone", got)
+	}
+}
+
+func TestCache_SetClosedRejected(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := c.Set("k", []byte("v")); !errors.Is(err, ErrCacheClosed) {
+		t.Errorf("err=%v; want ErrCacheClosed", err)
+	}
+}
+
+func TestCache_PurgeRecreatesDir(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	_ = c.Set("k", []byte("v"))
+	if err := c.Purge(); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	// Directory still exists and is usable.
+	if _, err := os.Stat(c.dir); err != nil {
+		t.Errorf("dir missing after Purge: %v", err)
+	}
+	if err := c.Set("k2", []byte("v")); err != nil {
+		t.Errorf("Set after Purge: %v", err)
+	}
+}
+
+func TestCache_StatsClosedRejected(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	_ = c.Close()
+	if _, err := c.Stats(); !errors.Is(err, ErrCacheClosed) {
+		t.Errorf("err=%v; want ErrCacheClosed", err)
+	}
+}
+
+func TestCache_DeleteClosedRejected(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	_ = c.Close()
+	if err := c.Delete("k"); !errors.Is(err, ErrCacheClosed) {
+		t.Errorf("err=%v; want ErrCacheClosed", err)
+	}
+}
+
+func TestCache_NewCacheSweepsOldVersions(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+
+	// Pre-create a sibling that should be swept.
+	if err := os.MkdirAll(filepath.Join(base, "old-v"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "old-v", "stale.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := NewCache(base, WithCacheVersion("new-v")); err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "old-v")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old-v not swept; stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "new-v")); err != nil {
+		t.Errorf("new-v missing: %v", err)
+	}
+}
+
+func TestCache_WalkEntriesEmpty(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t)
+	stats, err := c.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Entries != 0 || stats.Bytes != 0 {
+		t.Errorf("empty cache stats = %+v; want zeroes", stats)
+	}
+}
+
+func TestIsValidVersion(t *testing.T) {
+	t.Parallel()
+	good := []string{"v1", "v1.0.0", "snapshot_2026", "a-b-c", "X9"}
+	for _, v := range good {
+		if !isValidVersion(v) {
+			t.Errorf("isValidVersion(%q) = false; want true", v)
+		}
+	}
+	bad := []string{"", ".", "..", "with space", "slash/x", "back\\slash", "tab\there", "x\x00null", "emoji😀"}
+	for _, v := range bad {
+		if isValidVersion(v) {
+			t.Errorf("isValidVersion(%q) = true; want false", v)
+		}
+	}
+}

@@ -61,6 +61,48 @@ func TestProjectType_Empty(t *testing.T) {
 	}
 }
 
+func TestRegisterProjectKind(t *testing.T) {
+	// Not parallel: RegisterProjectKind mutates package-global state.
+	const customKind ProjectKind = "test-only-bazel"
+	t.Cleanup(func() {
+		projectMarkersMu.Lock()
+		filtered := projectMarkers[:0]
+		for _, m := range projectMarkers {
+			if m.kind != customKind {
+				filtered = append(filtered, m)
+			}
+		}
+		projectMarkers = filtered
+		projectMarkersMu.Unlock()
+	})
+
+	// Empty / no-op inputs are safely ignored.
+	RegisterProjectKind("", "WORKSPACE")
+	RegisterProjectKind(customKind)
+	RegisterProjectKind(customKind, "")
+
+	// Real registration is picked up by ProjectType.
+	RegisterProjectKind(customKind, "BAZEL.bzl")
+	// Duplicate registration is deduplicated.
+	RegisterProjectKind(customKind, "BAZEL.bzl")
+
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "BAZEL.bzl"), "")
+	got, err := ProjectType(root)
+	if err != nil {
+		t.Fatalf("ProjectType: %v", err)
+	}
+	count := 0
+	for _, k := range got {
+		if k == customKind {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("custom-kind matches = %d; want 1 (dedupe should prevent doubles)", count)
+	}
+}
+
 func equalProjectKinds(a, b []ProjectKind) bool {
 	if len(a) != len(b) {
 		return false

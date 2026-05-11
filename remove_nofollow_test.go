@@ -55,6 +55,19 @@ func TestRemoveAllNoFollow_MissingPathOK(t *testing.T) {
 	}
 }
 
+func TestRemoveAllNoFollow_SingleFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "single.txt")
+	mustWrite(t, file, "x")
+	if err := RemoveAllNoFollow(file); err != nil {
+		t.Fatalf("RemoveAllNoFollow: %v", err)
+	}
+	if Exists(file) {
+		t.Error("file not removed")
+	}
+}
+
 func TestRemoveAllNoFollow_RemovesNestedTree(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

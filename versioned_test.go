@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -253,6 +254,73 @@ func TestWriteFileVersioned_EmptyPathRejected(t *testing.T) {
 	t.Parallel()
 	if _, err := WriteFileVersioned("/nonexistent-root-XYZ123/nope/path", []byte("data")); err == nil {
 		t.Error("expected error for unwritable path")
+	}
+}
+
+func TestRestoreVersion_RespectsMaxBytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "backup.bin")
+	dst := filepath.Join(dir, "live.bin")
+	body := []byte("0123456789")
+	if err := os.WriteFile(src, body, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Cap below file size: restore must fail with ErrFileTooLarge.
+	err := RestoreVersion(dst, src, WithVersionsMaxBytes(5))
+	if !errors.Is(err, ErrFileTooLarge) {
+		t.Errorf("err = %v; want ErrFileTooLarge", err)
+	}
+
+	// Generous cap succeeds.
+	if err := RestoreVersion(dst, src, WithVersionsMaxBytes(1<<20)); err != nil {
+		t.Errorf("RestoreVersion: %v", err)
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != string(body) {
+		t.Errorf("restored content = %q; want %q", got, body)
+	}
+}
+
+func TestVersionedConfigDefaults(t *testing.T) {
+	t.Parallel()
+	// Zero-value option that clears perm/maxBytes/clock to test the
+	// post-loop normalization branches.
+	cfg := newVersionedConfig([]VersionedOption{
+		func(c *versionedConfig) {
+			c.perm = 0
+			c.maxBytes = 0
+			c.nowFn = nil
+		},
+	})
+	if cfg.perm != 0o644 {
+		t.Errorf("perm = %v; want 0o644 (default)", cfg.perm)
+	}
+	if cfg.maxBytes != 100*1024*1024 {
+		t.Errorf("maxBytes = %d; want default 100MiB", cfg.maxBytes)
+	}
+	if cfg.nowFn == nil {
+		t.Error("nowFn should default to time.Now")
+	}
+}
+
+func TestListVersions_MissingDir(t *testing.T) {
+	t.Parallel()
+	versions, err := ListVersions(filepath.Join(t.TempDir(), "absent", "missing.txt"))
+	if err != nil {
+		t.Errorf("ListVersions on missing dir: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("versions = %v; want empty", versions)
+	}
+}
+
+func TestRestoreVersion_MissingSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := RestoreVersion(filepath.Join(dir, "live"), filepath.Join(dir, "missing")); err == nil {
+		t.Error("expected error for missing source")
 	}
 }
 

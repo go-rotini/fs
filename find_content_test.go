@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,37 @@ func TestFindByContentRegex(t *testing.T) {
 	}
 	if len(matches) != 2 {
 		t.Errorf("matches = %d; want 2: %+v", len(matches), matches)
+	}
+}
+
+func TestFindByContent_MaxSizeOption(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// A "large" file the small cap should skip.
+	big := strings.Repeat("hit\n", 200) // 800 bytes
+	mustWrite(t, filepath.Join(root, "big.txt"), big)
+	// A "small" file that fits.
+	mustWrite(t, filepath.Join(root, "small.txt"), "hit\n")
+
+	// With a 10-byte cap, big.txt is skipped; small.txt remains.
+	matches, err := FindByContent(root, "hit", WithFindByContentMaxSize(10))
+	if err != nil {
+		t.Fatalf("FindByContent: %v", err)
+	}
+	for _, m := range matches {
+		if filepath.Base(m.Path) == "big.txt" {
+			t.Errorf("big.txt was scanned despite size cap")
+		}
+	}
+	if len(matches) != 1 || filepath.Base(matches[0].Path) != "small.txt" {
+		t.Errorf("matches = %+v; want one match in small.txt", matches)
+	}
+}
+
+func TestFindByContentRegex_NilRejected(t *testing.T) {
+	t.Parallel()
+	if _, err := FindByContentRegex(t.TempDir(), nil); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
 	}
 }
 

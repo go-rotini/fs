@@ -379,6 +379,73 @@ func TestLock_ConcurrentTryLockExactlyOneWins(t *testing.T) {
 	}
 }
 
+func TestLockHandle_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var h *LockHandle
+	if err := h.Release(); err != nil {
+		t.Errorf("nil.Release() = %v; want nil", err)
+	}
+	if pid := h.PID(); pid != 0 {
+		t.Errorf("nil.PID() = %d; want 0", pid)
+	}
+}
+
+func TestWithLock_AcquireErrorBypassesFn(t *testing.T) {
+	t.Parallel()
+	called := false
+	err := WithLock("", func() error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+	if called {
+		t.Error("fn must not run when Lock acquire fails")
+	}
+}
+
+func TestPIDLock_FingerprintCallbackInvoked(t *testing.T) {
+	t.Parallel()
+	p := lockPath(t)
+
+	calls := 0
+	h, err := PIDLock(p, WithPIDLockFingerprint(func(_ int) string {
+		calls++
+		return "fp-v1"
+	}))
+	if err != nil {
+		t.Fatalf("PIDLock: %v", err)
+	}
+	defer func() { _ = h.Release() }()
+
+	if calls == 0 {
+		t.Error("fingerprint fn was not invoked")
+	}
+
+	content, _ := os.ReadFile(p)
+	if !strings.Contains(string(content), "fp-v1") {
+		t.Errorf("lockfile content %q does not include fingerprint", content)
+	}
+}
+
+func TestPidAlive_NonPositivePID(t *testing.T) {
+	t.Parallel()
+	if pidAlive(0) {
+		t.Error("pidAlive(0) = true; want false")
+	}
+	if pidAlive(-1) {
+		t.Error("pidAlive(-1) = true; want false")
+	}
+}
+
+func TestPIDLock_EmptyPathRejected(t *testing.T) {
+	t.Parallel()
+	if _, err := PIDLock(""); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+}
+
 func TestParsePIDFile(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

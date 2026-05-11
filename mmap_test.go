@@ -58,6 +58,27 @@ func TestMmap_CloseIdempotent(t *testing.T) {
 	}
 }
 
+func TestMmap_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var m *Mapping
+	if d := m.Data(); d != nil {
+		t.Errorf("nil.Data() = %v; want nil", d)
+	}
+	if n := m.Len(); n != 0 {
+		t.Errorf("nil.Len() = %d; want 0", n)
+	}
+	if err := m.Close(); err != nil {
+		t.Errorf("nil.Close() = %v; want nil", err)
+	}
+}
+
+func TestMmap_MissingPath(t *testing.T) {
+	t.Parallel()
+	if _, err := Mmap(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("expected error for missing path")
+	}
+}
+
 func TestMmap_DirRejected(t *testing.T) {
 	t.Parallel()
 	if _, err := Mmap(t.TempDir()); !errors.Is(err, ErrIsDir) {

@@ -80,6 +80,48 @@ func TestWorkspaceRoots_Pnpm(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRoots_MalformedPackageJSON(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// Invalid JSON: WorkspaceRoots should silently report no members
+	// for this manifest (other manifests, if any, are still checked).
+	mustWrite(t, filepath.Join(root, "package.json"), "{not json")
+	got, err := WorkspaceRoots(root)
+	if err != nil {
+		t.Fatalf("WorkspaceRoots: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got = %+v; want empty for malformed package.json", got)
+	}
+}
+
+func TestWorkspaceRoots_PackageJSONNoWorkspacesField(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "package.json"), `{"name":"foo"}`)
+	got, err := WorkspaceRoots(root)
+	if err != nil {
+		t.Fatalf("WorkspaceRoots: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got = %+v; want empty when workspaces field absent", got)
+	}
+}
+
+func TestWorkspaceRoots_PackageJSONMalformedWorkspacesField(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	// workspaces is neither array nor packages object: silently empty.
+	mustWrite(t, filepath.Join(root, "package.json"), `{"workspaces":42}`)
+	got, err := WorkspaceRoots(root)
+	if err != nil {
+		t.Fatalf("WorkspaceRoots: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got = %+v; want empty for unparseable workspaces value", got)
+	}
+}
+
 func TestWorkspaceRoots_None(t *testing.T) {
 	t.Parallel()
 	got, err := WorkspaceRoots(t.TempDir())

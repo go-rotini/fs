@@ -327,6 +327,276 @@ func TestApply_CreateRejectsExistingFile(t *testing.T) {
 	}
 }
 
+func TestApply_WithApplyNoMkdir_RejectsMissingDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "absent-journal")
+
+	p := NewPlan().Create(filepath.Join(dir, "out"), []byte("x"), 0o644)
+	err := Apply(p, jdir, WithApplyNoMkdir())
+	if !errors.Is(err, ErrNotDir) {
+		t.Errorf("err=%v; want ErrNotDir", err)
+	}
+}
+
+func TestApply_WithApplyNoMkdir_AcceptsExistingDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+	if err := os.MkdirAll(filepath.Join(jdir, journalBackupsDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	p := NewPlan().Create(filepath.Join(dir, "out"), []byte("x"), 0o644)
+	if err := Apply(p, jdir, WithApplyNoMkdir()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}
+
+func TestApply_RollbackRestoresUpdateContents(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "data.txt")
+	jdir := filepath.Join(dir, "journal")
+	if err := os.WriteFile(target, []byte("v1"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	p := NewPlan().Update(target, []byte("v2"), 0o644)
+	if err := Apply(p, jdir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := Rollback(jdir); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "v1" {
+		t.Errorf("rollback content = %q; want v1", got)
+	}
+}
+
+func TestRollback_NoJournalRejected(t *testing.T) {
+	t.Parallel()
+	if err := Rollback(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("expected error for missing journal")
+	}
+}
+
+func TestResume_NoJournalRejected(t *testing.T) {
+	t.Parallel()
+	if err := Resume(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("expected error for missing journal")
+	}
+}
+
+func TestApply_DeleteRollbackRestoresFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "doomed.txt")
+	jdir := filepath.Join(dir, "journal")
+	if err := os.WriteFile(target, []byte("alive"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := Apply(NewPlan().Delete(target), jdir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if Exists(target) {
+		t.Fatal("Delete didn't remove")
+	}
+	if err := Rollback(jdir); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "alive" {
+		t.Errorf("restored content = %q; want alive", got)
+	}
+}
+
+func TestApply_DeleteMissingPathIsNoop(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+	missing := filepath.Join(dir, "never-existed")
+
+	if err := Apply(NewPlan().Delete(missing), jdir); err != nil {
+		t.Errorf("Apply Delete on missing: %v", err)
+	}
+}
+
+func TestApplyTransient_DeleteAndRename(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(a, []byte("contents"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	p := NewPlan().Rename(a, b).Delete(b)
+	if err := ApplyTransient(p); err != nil {
+		t.Fatalf("ApplyTransient: %v", err)
+	}
+	if Exists(a) || Exists(b) {
+		t.Error("a or b still exists after Rename then Delete")
+	}
+}
+
+func TestApply_RenameOverExistingDestination(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+	jdir := filepath.Join(dir, "journal")
+	if err := os.WriteFile(src, []byte("src"), 0o644); err != nil {
+		t.Fatalf("seed src: %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("dst"), 0o644); err != nil {
+		t.Fatalf("seed dst: %v", err)
+	}
+
+	// Rename src → dst (dst already exists; rename overwrites and a
+	// backup of dst's previous content is recorded).
+	if err := Apply(NewPlan().Rename(src, dst), jdir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, _ := os.ReadFile(dst)
+	if string(got) != "src" {
+		t.Errorf("dst after rename = %q; want src", got)
+	}
+	// Rollback should put both files back.
+	if err := Rollback(jdir); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	gotSrc, _ := os.ReadFile(src)
+	gotDst, _ := os.ReadFile(dst)
+	if string(gotSrc) != "src" {
+		t.Errorf("src after rollback = %q; want src", gotSrc)
+	}
+	if string(gotDst) != "dst" {
+		t.Errorf("dst after rollback = %q; want dst", gotDst)
+	}
+}
+
+func TestBackupBeforeWrite_DirectoryRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := backupBeforeWrite(dir, subdir, 0); !errors.Is(err, ErrIsDir) {
+		t.Errorf("err = %v; want ErrIsDir", err)
+	}
+}
+
+func TestBackupBeforeWrite_EmptyJournalDirIsNoop(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := backupBeforeWrite("", target, 0); err != nil {
+		t.Errorf("backupBeforeWrite('') = %v; want nil", err)
+	}
+}
+
+func TestApply_RenameMissingSource(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+	missing := filepath.Join(dir, "missing.txt")
+	dst := filepath.Join(dir, "dst.txt")
+
+	p := NewPlan().Rename(missing, dst)
+	if err := Apply(p, jdir); err == nil {
+		t.Error("expected error renaming missing source")
+	}
+}
+
+func TestApply_UnknownActionRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+
+	// Construct a plan with an out-of-range action.
+	p := &Plan{Ops: []PlanOp{{Action: PlanAction(99), Path: filepath.Join(dir, "x")}}}
+	if err := Apply(p, jdir); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+}
+
+func TestRollback_UnknownActionRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+	if err := os.MkdirAll(filepath.Join(jdir, journalBackupsDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Seed the journal with one completed unknown-action op.
+	j := &journal{
+		Plan:      Plan{Ops: []PlanOp{{Action: PlanAction(99), Path: filepath.Join(dir, "x")}}},
+		Completed: 1,
+	}
+	if err := savePlanFile(jdir, j); err != nil {
+		t.Fatalf("savePlanFile: %v", err)
+	}
+	if err := saveProgress(jdir, j); err != nil {
+		t.Fatalf("saveProgress: %v", err)
+	}
+	if err := Rollback(jdir); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+}
+
+func TestApplyTransient_DeleteMissingIsNoop(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := NewPlan().Delete(filepath.Join(dir, "missing.txt"))
+	if err := ApplyTransient(p); err != nil {
+		t.Errorf("ApplyTransient: %v", err)
+	}
+}
+
+func TestApply_UpdateNoPriorContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "new.txt")
+	jdir := filepath.Join(dir, "journal")
+
+	// Update on a non-existent file works (backup is a no-op because
+	// the source doesn't exist).
+	if err := Apply(NewPlan().Update(target, []byte("first"), 0o644), jdir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "first" {
+		t.Errorf("content = %q; want first", got)
+	}
+}
+
+func TestApply_RollbackEmptyJournalIsNoop(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	jdir := filepath.Join(dir, "journal")
+
+	// Apply an empty plan (no ops).
+	if err := Apply(NewPlan(), jdir); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := Rollback(jdir); err != nil {
+		t.Errorf("Rollback of empty journal: %v", err)
+	}
+}
+
+func TestLoadJournal_MissingFiles(t *testing.T) {
+	t.Parallel()
+	// Empty journal dir: load fails because plan.json is missing.
+	if _, err := loadJournal(t.TempDir()); err == nil {
+		t.Error("expected error loading empty journal")
+	}
+}
+
 func TestPlanAction_String(t *testing.T) {
 	t.Parallel()
 	cases := map[PlanAction]string{

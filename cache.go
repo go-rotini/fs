@@ -362,8 +362,22 @@ type CacheEntry struct {
 }
 
 // Entries returns an iterator over every stored cache entry. Order
-// is unspecified. The iteration is a snapshot — entries added or
-// removed concurrently with iteration may or may not be visible.
+// is unspecified.
+//
+// The iteration walks the cache directory ONCE up-front to build a
+// snapshot of (path, mtime, size) tuples, then yields each entry
+// from the snapshot. Consequences:
+//
+//   - Entries added after iteration begins are NOT visible.
+//   - Entries deleted during iteration are still yielded; the
+//     yielded ModTime / Size reflect their pre-deletion values.
+//   - Per-entry Size / ModTime are read at snapshot-build time;
+//     concurrent rewrites won't update them mid-iteration.
+//
+// This is a deliberate trade-off — a stable snapshot is more useful
+// for admin sweeps ("purge entries older than 30d") than a moving
+// view would be. Callers needing a moving view should call Entries
+// again after each sweep cycle.
 //
 // Returns nil after Close.
 func (c *Cache) Entries() iter.Seq[CacheEntry] {

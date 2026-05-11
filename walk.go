@@ -27,6 +27,13 @@ type walkOptions struct {
 	followSymlinks bool
 	errorHandler   func(path string, err error) error
 	gitignore      *Gitignore
+
+	// findContentMaxSize is read only by [findByContentImpl]; it
+	// lives on walkOptions so [WithFindByContentMaxSize] can be a
+	// [WalkOption] and the find-by-content surface stays a single
+	// typed variadic. Zero means "use the default cap inside
+	// findByContentImpl."
+	findContentMaxSize int64
 }
 
 func newWalkOptions(opts []WalkOption) walkOptions {

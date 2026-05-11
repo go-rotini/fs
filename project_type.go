@@ -66,18 +66,30 @@ var (
 //
 // Safe to call from any goroutine. Registrations are additive — they
 // don't replace built-in markers — and persist for the lifetime of
-// the process.
+// the process. Duplicate (kind, marker) pairs are deduplicated so
+// calling RegisterProjectKind twice with the same arguments doesn't
+// inflate the marker table or produce duplicate match results from
+// [ProjectType].
 func RegisterProjectKind(kind ProjectKind, markers ...string) {
 	if kind == "" || len(markers) == 0 {
 		return
 	}
 	projectMarkersMu.Lock()
 	defer projectMarkersMu.Unlock()
+	existing := make(map[projectMarker]struct{}, len(projectMarkers))
+	for _, m := range projectMarkers {
+		existing[m] = struct{}{}
+	}
 	for _, m := range markers {
 		if m == "" {
 			continue
 		}
-		projectMarkers = append(projectMarkers, projectMarker{file: m, kind: kind})
+		candidate := projectMarker{file: m, kind: kind}
+		if _, dup := existing[candidate]; dup {
+			continue
+		}
+		existing[candidate] = struct{}{}
+		projectMarkers = append(projectMarkers, candidate)
 	}
 }
 

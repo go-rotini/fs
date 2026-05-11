@@ -12,9 +12,14 @@ import (
 
 const (
 	opPlanApply    = "plan.apply"
-	opPlanResume   = "plan.resume"
 	opPlanRollback = "plan.rollback"
 	opPlanJournal  = "plan.journal"
+
+	// journalLockFilename is the sibling lockfile [Apply] / [Resume]
+	// / [Rollback] acquire for the duration of their work. Serializes
+	// concurrent same-journal callers (within a process and across
+	// processes) so the rollback chain stays correct.
+	journalLockFilename = ".lock"
 
 	// journalPlanFilename holds the immutable plan written at the
 	// start of Apply. Read-only during the apply; consulted by Resume
@@ -158,9 +163,9 @@ func (p *Plan) Diff() string {
 	for i, op := range p.Ops {
 		switch op.Action {
 		case PlanActionCreate:
-			fmt.Fprintf(&b, "%d. %s %s (%d bytes, mode %v)\n", i+1, planActionLabelCreate, op.Path, len(op.Data), op.Perm)
+			fmt.Fprintf(&b, "%d. %s %s (%d bytes, mode %#o)\n", i+1, planActionLabelCreate, op.Path, len(op.Data), uint32(op.Perm.Perm()))
 		case PlanActionUpdate:
-			fmt.Fprintf(&b, "%d. %s %s (%d bytes, mode %v)\n", i+1, planActionLabelUpdate, op.Path, len(op.Data), op.Perm)
+			fmt.Fprintf(&b, "%d. %s %s (%d bytes, mode %#o)\n", i+1, planActionLabelUpdate, op.Path, len(op.Data), uint32(op.Perm.Perm()))
 		case PlanActionDelete:
 			fmt.Fprintf(&b, "%d. %s %s\n", i+1, planActionLabelDelete, op.Path)
 		case PlanActionRename:
@@ -236,10 +241,10 @@ var errSchemaMismatch = errors.New("fs: plan: journal schema mismatch")
 // back; the journal records progress so the caller can decide
 // whether to [Rollback] or [Resume].
 //
-// Concurrency: Apply, [Resume], and [Rollback] perform no internal
-// locking. Callers driving the same journalDir from multiple
-// goroutines or processes must serialize externally (e.g., via
-// [Lock] on a sibling lockfile). Independent journals are
+// Concurrency: Apply, [Resume], and [Rollback] acquire an advisory
+// [Lock] on `<journalDir>/.lock` for the duration of their work, so
+// concurrent same-journal callers (within a process or across
+// processes) serialize automatically. Independent journals are
 // independent — running two Applies against unrelated journalDirs
 // concurrently is safe.
 func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
@@ -248,18 +253,24 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	}
 	cfg := newApplyConfig(opts)
 
-	planPath := filepath.Join(journalDir, journalPlanFilename)
-	legacyPath := filepath.Join(journalDir, journalLegacyFilename)
-	if Exists(planPath) || Exists(legacyPath) {
-		return wrapPathError(opPlanApply, journalDir, ErrAlreadyExists)
-	}
-
 	if cfg.mkdirParents {
 		if err := MkdirAll(filepath.Join(journalDir, journalBackupsDir), 0o755); err != nil {
 			return err
 		}
 	} else if !IsDir(journalDir) {
 		return wrapPathError(opPlanApply, journalDir, ErrNotDir)
+	}
+
+	release, err := acquireJournalLock(journalDir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	planPath := filepath.Join(journalDir, journalPlanFilename)
+	legacyPath := filepath.Join(journalDir, journalLegacyFilename)
+	if Exists(planPath) || Exists(legacyPath) {
+		return wrapPathError(opPlanApply, journalDir, ErrAlreadyExists)
 	}
 
 	j := journal{Plan: *p}
@@ -272,11 +283,29 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	return resumeJournal(journalDir, &j, cfg)
 }
 
+// acquireJournalLock acquires the per-journal advisory lock that
+// serializes Apply / Resume / Rollback against the same journalDir.
+// Returns a release closure (idempotent) that the caller defers.
+func acquireJournalLock(journalDir string) (func(), error) {
+	lockPath := filepath.Join(journalDir, journalLockFilename)
+	h, err := Lock(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = h.Release() }, nil //nolint:errcheck // best-effort release; the Apply / Resume / Rollback return value is what callers care about
+}
+
 // Resume continues a previously-interrupted apply from its journal.
 // If the apply already completed, Resume is a no-op and returns nil.
 // See [Apply] for the concurrency contract.
 func Resume(journalDir string, opts ...ApplyOption) error {
 	cfg := newApplyConfig(opts)
+
+	release, err := acquireJournalLock(journalDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	j, err := loadJournal(journalDir)
 	if err != nil {
@@ -295,6 +324,12 @@ func Resume(journalDir string, opts ...ApplyOption) error {
 // See [Apply] for the concurrency contract.
 func Rollback(journalDir string, opts ...ApplyOption) error {
 	_ = newApplyConfig(opts)
+
+	release, err := acquireJournalLock(journalDir)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	j, err := loadJournal(journalDir)
 	if err != nil {
@@ -334,8 +369,41 @@ func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 	return saveProgress(journalDir, j)
 }
 
+// ApplyTransient runs the plan in-memory, with no on-disk journal,
+// no backup snapshots, and no resume/rollback support. The first
+// op's failure surfaces as the return; subsequent ops are skipped.
+//
+// Use this when you want [Apply]'s sequenced execution semantics
+// without the journal overhead — e.g., a simple multi-file write
+// where rollback isn't meaningful, or a CLI `--apply` mode whose
+// failure recovery is "the user re-runs after fixing the issue."
+//
+// For executions that must be resumable or reversible, use [Apply]
+// against a journal directory.
+//
+// Concurrency: ApplyTransient has no internal locking (no journal
+// to coordinate against). Concurrent calls against the same plan
+// against distinct targets are safe; concurrent calls touching the
+// same on-disk files race exactly as the underlying [WriteFile] /
+// [os.Remove] / [os.Rename] would.
+func ApplyTransient(p *Plan, opts ...ApplyOption) error {
+	if p == nil {
+		return wrapPathError(opPlanApply, "", ErrInvalidPath)
+	}
+	cfg := newApplyConfig(opts)
+	for i, op := range p.Ops {
+		if err := applyOp("", op, i, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // applyOp executes a single PlanOp and records any backup data the
 // inverse will need.
+//
+// When journalDir is empty (e.g., [ApplyTransient]), backup recording
+// is skipped — the op is performed but no rollback state is kept.
 func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 	if cfg.mkdirParents && (op.Action == PlanActionCreate || op.Action == PlanActionUpdate || op.Action == PlanActionRename) {
 		if err := MkdirAll(filepath.Dir(op.Path), 0o755); err != nil {
@@ -424,7 +492,13 @@ func rollbackOp(journalDir string, op PlanOp, step int) error {
 // journal's backups/<step> dir. If path doesn't exist, it's a no-op.
 // The backup is stored with the same basename so rollback can locate
 // it.
+//
+// When journalDir is empty (the [ApplyTransient] path), backup
+// recording is skipped entirely.
 func backupBeforeWrite(journalDir, path string, step int) error {
+	if journalDir == "" {
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) {

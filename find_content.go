@@ -31,91 +31,55 @@ type ContentMatch struct {
 	Text string
 }
 
-// findContentConfig holds per-search options not covered by
-// [WalkOption]. Lives in this file rather than the walk options to
-// keep the FindByContent surface self-contained.
-type findContentConfig struct {
-	maxFileSize int64
-}
-
-// FindByContentOption configures [FindByContent] / [FindByContentRegex].
-// Distinct from [WalkOption] so walk filters and content-search
-// knobs can be passed without ambiguity.
-type FindByContentOption func(*findContentConfig)
-
 // WithFindByContentMaxSize caps the size of files [FindByContent]
 // will scan. Files larger than n are skipped (no match). Pass 0 or
 // negative to use the default cap (100 MiB).
-func WithFindByContentMaxSize(n int64) FindByContentOption {
-	return func(c *findContentConfig) {
+//
+// Returned as a [WalkOption] so callers pass it alongside other walk
+// filters; only [FindByContent] / [FindByContentRegex] read the
+// value. Setting it on a plain [Walk] is a no-op.
+func WithFindByContentMaxSize(n int64) WalkOption {
+	return func(o *walkOptions) {
 		if n > 0 {
-			c.maxFileSize = n
+			o.findContentMaxSize = n
 		}
 	}
-}
-
-// findContentOptions partitions a mixed opts slice into walk and
-// content-search options. Used so callers can pass either form to
-// the variadic API.
-type findContentOptions struct {
-	walk    []WalkOption
-	content []FindByContentOption
 }
 
 // FindByContent walks root looking for files whose contents contain
 // substr. Returns one [ContentMatch] per matching line (so a single
 // file with N matches contributes N entries to the result).
 //
-// Pass [WalkOption] values (e.g., [WalkSkipPatterns]) to scope the
-// walk, and [FindByContentOption] values (e.g.,
-// [WithFindByContentMaxSize]) to tune content-search behavior. Both
-// kinds can be mixed in the variadic list.
+// Pass any [WalkOption] to scope the walk or tune content-search
+// behavior (e.g., [WalkSkipPatterns], [WithWalkGitignore],
+// [WithFindByContentMaxSize]).
 //
 // Binary detection: lines containing a NUL byte are skipped silently,
 // matching `grep --binary-files=without-match` behavior. Files larger
 // than the configured size cap (default 100 MiB) are skipped.
-func FindByContent(root, substr string, opts ...any) ([]ContentMatch, error) {
+func FindByContent(root, substr string, opts ...WalkOption) ([]ContentMatch, error) {
 	if substr == "" {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	parsed := partitionFindContentOptions(opts)
-	return findByContentImpl(root, parsed, func(line string) bool {
+	return findByContentImpl(root, opts, func(line string) bool {
 		return strings.Contains(line, substr)
 	})
 }
 
 // FindByContentRegex is the regex variant of [FindByContent].
 // re.MatchString is used per line.
-func FindByContentRegex(root string, re *regexp.Regexp, opts ...any) ([]ContentMatch, error) {
+func FindByContentRegex(root string, re *regexp.Regexp, opts ...WalkOption) ([]ContentMatch, error) {
 	if re == nil {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	parsed := partitionFindContentOptions(opts)
-	return findByContentImpl(root, parsed, re.MatchString)
+	return findByContentImpl(root, opts, re.MatchString)
 }
 
-// partitionFindContentOptions splits a mixed variadic into walk +
-// content option lists. Unknown types are silently ignored — the
-// `any` parameter is the only way to accept two unrelated option
-// types in one variadic without forcing a wrapper struct on every
-// caller. Any future option-type unification can replace this.
-func partitionFindContentOptions(opts []any) findContentOptions {
-	var out findContentOptions
-	for _, o := range opts {
-		switch v := o.(type) {
-		case WalkOption:
-			out.walk = append(out.walk, v)
-		case FindByContentOption:
-			out.content = append(out.content, v)
-		}
-	}
-	return out
-}
-
-func findByContentImpl(root string, parsed findContentOptions, pred func(string) bool) ([]ContentMatch, error) {
-	cfg := findContentConfig{maxFileSize: findContentDefaultMaxFileSize}
-	for _, opt := range parsed.content {
-		opt(&cfg)
+func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) ([]ContentMatch, error) {
+	cfg := newWalkOptions(opts)
+	maxFileSize := cfg.findContentMaxSize
+	if maxFileSize <= 0 {
+		maxFileSize = findContentDefaultMaxFileSize
 	}
 
 	var matches []ContentMatch
@@ -130,7 +94,7 @@ func findByContentImpl(root string, parsed findContentOptions, pred func(string)
 		if ierr != nil {
 			return ierr //nolint:wrapcheck // outer Walk wraps via *PathError
 		}
-		if !info.Mode().IsRegular() || info.Size() > cfg.maxFileSize {
+		if !info.Mode().IsRegular() || info.Size() > maxFileSize {
 			return nil
 		}
 
@@ -161,7 +125,7 @@ func findByContentImpl(root string, parsed findContentOptions, pred func(string)
 			}
 		}
 		return nil
-	}, parsed.walk...)
+	}, opts...)
 	if err != nil {
 		return nil, err
 	}

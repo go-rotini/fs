@@ -253,6 +253,64 @@ func TestApply_NilPlanRejected(t *testing.T) {
 	}
 }
 
+func TestApplyTransient_RunsOpsWithoutJournal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out", "hello.txt")
+
+	p := NewPlan().Create(target, []byte("hi"), 0o644)
+	if err := ApplyTransient(p); err != nil {
+		t.Fatalf("ApplyTransient: %v", err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != "hi" {
+		t.Errorf("content = %q; want hi", got)
+	}
+	// No journal subdirs should be created anywhere under dir.
+	dirents, _ := os.ReadDir(dir)
+	for _, e := range dirents {
+		if e.IsDir() && e.Name() == journalBackupsDir {
+			t.Errorf("ApplyTransient leaked a %q dir", journalBackupsDir)
+		}
+	}
+}
+
+func TestApplyTransient_NilPlanRejected(t *testing.T) {
+	t.Parallel()
+	if err := ApplyTransient(nil); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+}
+
+func TestApplyTransient_StopsAtFirstError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pre := filepath.Join(dir, "pre.txt")
+	if err := os.WriteFile(pre, []byte("here"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Plan: create A (works), create pre (fails — exists), create B
+	// (skipped). After the call, A exists, B does not.
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	p := NewPlan().
+		Create(a, []byte("a"), 0o644).
+		Create(pre, []byte("nope"), 0o644).
+		Create(b, []byte("b"), 0o644)
+
+	err := ApplyTransient(p)
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Errorf("err = %v; want ErrAlreadyExists", err)
+	}
+	if !Exists(a) {
+		t.Error("first op should have run")
+	}
+	if Exists(b) {
+		t.Error("third op should not have run after the error")
+	}
+}
+
 func TestApply_CreateRejectsExistingFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -36,6 +36,9 @@ type WalkParallelFunc func(path string, e stdfs.DirEntry) error
 // fn calls run to completion; new fn calls and new directory reads
 // are skipped after cancel.
 //
+// ctx must not be nil. Pass [context.Background] for an unbounded
+// walk. Following stdlib convention, a nil ctx panics.
+//
 // Symlinks are NOT followed. The parallel walker re-implements only
 // the most common case from [Walk]; callers needing symlink-follow,
 // max-depth, or gitignore filtering should compose [Walk] (single-
@@ -45,8 +48,6 @@ type WalkParallelFunc func(path string, e stdfs.DirEntry) error
 // workers pop the front, directory reads push the back. This avoids
 // the bounded-channel deadlock that a fixed-size buffer suffers when
 // any directory has more children than the buffer can hold.
-//
-//nolint:contextcheck // we derive stopCtx via context.WithCancel(ctx) on line ~70; contextcheck doesn't see the local-var chain
 func WalkParallel(ctx context.Context, root string, fn WalkParallelFunc, workers int) error {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
@@ -61,25 +62,32 @@ func WalkParallel(ctx context.Context, root string, fn WalkParallelFunc, workers
 	q.push(parallelJob{path: root, info: stdfs.FileInfoToDirEntry(info)})
 
 	state := &parallelState{q: q}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	// Stop the workers when ctx is canceled.
 	stopCtx, stopCancel := context.WithCancel(ctx)
 	defer stopCancel()
-	go func() {
+
+	// Watcher and workers ride separate WaitGroups: workers exit
+	// when the queue drains; the watcher exits when stopCtx fires.
+	// On the happy path, we wait for workers, then explicitly cancel
+	// stopCtx so the watcher wakes, then wait for it. This makes
+	// shutdown airtight — every goroutine launched by WalkParallel
+	// has exited by the time WalkParallel returns.
+	var watcherWG sync.WaitGroup
+	watcherWG.Go(func() {
 		<-stopCtx.Done()
 		q.shutdown()
-	}()
+	})
 
-	var wg sync.WaitGroup
+	var workersWG sync.WaitGroup
 	for range workers {
-		wg.Go(func() {
+		workersWG.Go(func() {
 			parallelWorker(state, fn)
 		})
 	}
-	wg.Wait()
+	workersWG.Wait()
+	stopCancel()
+	watcherWG.Wait()
 
 	state.mu.Lock()
 	err = state.firstErr

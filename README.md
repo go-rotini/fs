@@ -54,7 +54,6 @@ Requires Go 1.26 or later.
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 
@@ -90,20 +89,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Follow a log file with rotation handling.
-	_ = fs.WriteFile(dir+"/app.log", []byte("first line\n"))
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		for line, err := range fs.Tail(ctx, dir+"/app.log") {
-			if err != nil {
-				return
-			}
-			fmt.Println("tail:", line)
-		}
-	}()
-	cancel()
+	// Discover the project root from any subdirectory.
+	if root, err := fs.ProjectRoot(dir); err == nil {
+		fmt.Println("project root:", root)
+	}
 }
 ```
+
+For follow-style log reading with rotation handling, see [`ExampleTail`](https://pkg.go.dev/github.com/go-rotini/fs#example-Tail).
 
 ## Documentation
 

@@ -3,6 +3,7 @@ package fs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -196,6 +197,12 @@ func FuzzGitignore(f *testing.F) {
 		"trailing/",
 		" leading-space",
 		"a\nb",
+		// Adversarial: many `**` segments should be refused by the
+		// parser (P16 cap). Seed both at-cap and over-cap so the
+		// fuzzer can explore the boundary.
+		"**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/x",
+		"**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/x",
+		"**/**/**/" + strings.Repeat("**/", 30) + "x",
 	}
 	for _, s := range seeds {
 		f.Add(s)

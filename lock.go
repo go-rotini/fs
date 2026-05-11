@@ -183,8 +183,14 @@ type pidLockConfig struct {
 // WithPIDLockFingerprint adds a stronger stale-lock check on top of
 // the bare PID-alive probe. The callback maps a PID to a string the
 // caller treats as a process identity — typically the process's
-// start time from /proc/<pid>/stat (Linux), kinfo_proc.ki_start
-// (BSD), or GetProcessTimes (Windows).
+// start time.
+//
+// The package's [ProcessStartTime] is the canonical argument:
+//
+//	h, err := fs.PIDLock(path, fs.WithPIDLockFingerprint(func(pid int) string {
+//	    s, _ := fs.ProcessStartTime(pid)
+//	    return s
+//	}))
 //
 // On acquire, fn(os.Getpid()) is written next to the PID in the
 // lockfile. On stale-detection, the recorded fingerprint is compared
@@ -196,7 +202,10 @@ type pidLockConfig struct {
 //
 // fn must be safe for concurrent use. fn returning "" disables the
 // fingerprint check for that PID (treated as "no fingerprint
-// available, defer to the bare alive probe").
+// available, defer to the bare alive probe"). This makes the helper
+// safe to wrap around [ProcessStartTime], whose error path returns
+// an empty string — the lock then degrades to PID-alive semantics
+// instead of refusing acquire.
 func WithPIDLockFingerprint(fn func(pid int) string) PIDLockOption {
 	return func(c *pidLockConfig) {
 		c.fingerprint = fn

@@ -32,6 +32,14 @@ func discardLogger() *slog.Logger {
 // the default discard logger. Safe to call from any goroutine; the
 // swap is atomic.
 //
+// Sensitive data note: package debug records include caller-supplied
+// paths — log filenames (Rotator), cache keys' hashed-path locations
+// (Cache), and per-op target paths (Apply, including ones that name
+// secret files like ssh keys). Install a logger only after deciding
+// whether your handler is allowed to see those paths; route to an
+// audit sink or redact via a custom [slog.Handler] when callers will
+// be untrusted.
+//
 // The watcher takes a per-instance logger via its [WithLogger]
 // option (which predates this hook) and is not affected.
 func SetLogger(l *slog.Logger) {

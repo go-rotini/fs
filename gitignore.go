@@ -8,7 +8,16 @@ import (
 	"strings"
 )
 
-const opLoadGitignore = "loadgitignore"
+const (
+	opLoadGitignore = "loadgitignore"
+
+	// maxGitignoreDoubleStar caps how many `**` segments a single
+	// pattern may contain. `matchSegments` is O(n^k) in k = `**`
+	// count, so an adversarial pattern with many `**`s against a
+	// deep path triggers exponential blowup. `git` itself caps near
+	// 16; the package matches that.
+	maxGitignoreDoubleStar = 16
+)
 
 // Gitignore is a compiled set of `.gitignore`-style ignore rules.
 // Match reports whether a path is ignored. The matcher implements
@@ -158,6 +167,19 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 	}
 
 	p.segments = strings.Split(line, "/")
+
+	// Refuse patterns with so many `**` segments that matching
+	// blows up exponentially. matchSegments tries every position
+	// for each `**`; with k of them the search space is O(n^k).
+	doubleStars := 0
+	for _, seg := range p.segments {
+		if seg == "**" {
+			doubleStars++
+		}
+	}
+	if doubleStars > maxGitignoreDoubleStar {
+		return gitignorePattern{}, false
+	}
 	return p, true
 }
 

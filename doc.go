@@ -19,13 +19,28 @@
 //
 // The fs package is a single flat root for production code — watcher,
 // lock, cache, rotator, plan, archive, scaffold, gitignore, mmap, and
-// disk-info helpers all live in the same package. The whole production
-// surface has zero non-stdlib runtime imports AND does not import
-// [testing]. Where the package reaches for platform-native syscalls
-// (flock / LockFileEx for the lock helpers; mmap / MapViewOfFile for
-// the memory-map helpers; the native watcher backends are a planned
-// follow-up — see Stability), it does so directly through stdlib's
-// [syscall] package — no third-party wrappers.
+// disk-info helpers all live in the same package. The production
+// surface has zero non-stdlib runtime imports except for one
+// narrowly-scoped exception (below) AND does not import [testing].
+// Where the package reaches for platform-native syscalls (flock /
+// LockFileEx for the lock helpers; mmap / MapViewOfFile for the
+// memory-map helpers; the native watcher backends are a planned
+// follow-up — see Stability), it does so through stdlib's [syscall]
+// package or the documented [golang.org/x/sys] exception.
+//
+// # The x/sys exception
+//
+// [golang.org/x/sys/windows] is imported by exactly one Windows-only
+// file ([mmap_windows.go]) to access typed `Handle` / `CreateFileMapping`
+// / `MapViewOfFile` / `UnmapViewOfFile` wrappers around `kernel32.dll`.
+// `x/sys` is Go-team-maintained, MIT-licensed, has zero non-stdlib
+// transitive deps, and is treated by the broader Go ecosystem as
+// "extended stdlib" for syscall ergonomics. The exception is scoped
+// strictly to platform-syscall files; no public API surface leaks
+// `x/sys` types. The same exception applies to future Windows /
+// Linux / BSD syscall surfaces where `x/sys` carries a wrapper that
+// is materially safer than hand-rolling `syscall.Syscall6` against a
+// DLL proc.
 //
 // The one sub-package is [github.com/go-rotini/fs/fstest], which
 // holds the test helpers (`TestHarness`, `MockFS`, `WithTempEnv`,

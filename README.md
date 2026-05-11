@@ -96,8 +96,6 @@ func main() {
 }
 ```
 
-For follow-style log reading with rotation handling, see [`ExampleTail`](https://pkg.go.dev/github.com/go-rotini/fs#example-Tail).
-
 ## Documentation
 
 Full API reference is available on [pkg.go.dev](https://pkg.go.dev/github.com/go-rotini/fs).

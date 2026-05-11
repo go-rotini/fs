@@ -43,7 +43,7 @@ const (
 func (o ScaffoldActionOp) String() string {
 	switch o {
 	case ScaffoldActionCreate:
-		return "create"
+		return planActionLabelCreate
 	case ScaffoldActionSkip:
 		return "skip"
 	case ScaffoldActionOverwrite:

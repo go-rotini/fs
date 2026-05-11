@@ -18,7 +18,7 @@ func ExampleNewRotator() {
 	r, err := fs.NewRotator(logfile,
 		fs.WithRotateMaxBytes(10),
 		fs.WithRotateKeep(3),
-		fs.WithRotateCompress(),
+		fs.WithRotateCompress(true),
 	)
 	if err != nil {
 		return

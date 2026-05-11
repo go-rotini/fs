@@ -171,3 +171,98 @@ func FuzzMagic(f *testing.F) {
 		}
 	})
 }
+
+// FuzzGitignore drives [parseGitignoreLine] with adversarial input.
+// The parser is forgiving by design — comments, blank lines, leading
+// `!`, trailing `/`, embedded `**` — so the invariant we check is
+// "no panic" plus "no panic on subsequent .matches() call against
+// a small set of representative path inputs".
+func FuzzGitignore(f *testing.F) {
+	seeds := []string{
+		"",
+		"#",
+		"# comment",
+		"\n",
+		"*.log",
+		"!important.log",
+		"/anchored",
+		"node_modules/",
+		"a/**/b",
+		"a/?/b",
+		"foo.[abc]",
+		"with space",
+		"with\ttab",
+		`back\slash`,
+		"trailing/",
+		" leading-space",
+		"a\nb",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	probes := []string{"", "/", ".", "foo", "foo/bar", "a/b/c", "node_modules/x"}
+	f.Fuzz(func(t *testing.T, input string) {
+		p, ok := parseGitignoreLine(input)
+		if !ok {
+			return
+		}
+		for _, probe := range probes {
+			_ = p.matches(probe)
+		}
+	})
+}
+
+// FuzzGoWork drives [parseGoWork] with arbitrary file contents.
+// Invariant: no panic.
+func FuzzGoWork(f *testing.F) {
+	seeds := []string{
+		"",
+		"go 1.22\n",
+		"go 1.22\nuse ./a\n",
+		"go 1.22\nuse (\n./a\n./b\n)\n",
+		"// comment\nuse ./x",
+		"use", // truncated
+		"use (",
+		"use (\n",
+		`use "./quoted"`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "go.work")
+		if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		_, _ = parseGoWork(path)
+	})
+}
+
+// FuzzPnpmWorkspaces drives [parsePnpmWorkspaces] with arbitrary
+// YAML-ish input. Invariant: no panic. The parser is intentionally
+// strict — unsupported YAML features return an error rather than
+// silently empty.
+func FuzzPnpmWorkspaces(f *testing.F) {
+	seeds := []string{
+		"",
+		"packages:\n  - 'a'\n  - \"b\"\n",
+		"packages:\n  - packages/*\n",
+		"# comment\npackages:\n  - x\n",
+		"packages: [a, b]", // unsupported inline form
+		"foo:\nbar:\npackages:\n  - x\n",
+		"packages:\n  - 'a'\npackages:\n  - 'b'", // duplicate key
+		"packages:\n  not-a-list-item",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "pnpm-workspace.yaml")
+		if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		_, _ = parsePnpmWorkspaces(path, dir)
+	})
+}

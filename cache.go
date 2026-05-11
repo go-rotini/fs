@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
+	"iter"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -202,29 +204,53 @@ func (c *Cache) Close() error {
 // so callers can write the idiomatic compute-on-miss form without
 // error plumbing. The entry on disk is deleted if it was expired.
 func (c *Cache) Get(key string) (value []byte, ok bool) {
+	value, ok, _ = c.getInternal(key) //nolint:errcheck // Get is the miss-as-bool variant; use GetWithError to see the error
+	return value, ok
+}
+
+// GetWithError is the error-surfacing variant of [Cache.Get]. ok is
+// true on a hit; ok is false either because the entry was missing /
+// expired (err nil) OR because reading it failed (err non-nil).
+// Callers that need to distinguish "real miss" from "broken storage"
+// should prefer this over Get. Both forms have identical semantics
+// on success.
+func (c *Cache) GetWithError(key string) (value []byte, ok bool, err error) {
+	return c.getInternal(key)
+}
+
+// getInternal is the shared body of Get / GetWithError. Returns
+// (nil, false, nil) on miss, (nil, false, err) on a read failure,
+// (data, true, nil) on hit.
+func (c *Cache) getInternal(key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
-		return nil, false
+		return nil, false, wrapPathError(opCacheGet, key, ErrCacheClosed)
 	}
 
 	path := c.entryPath(key)
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, wrapPathError(opCacheGet, path, err)
 	}
 	if c.cfg.ttl > 0 {
 		if c.cfg.nowFn().Sub(info.ModTime()) >= c.cfg.ttl {
 			_ = os.Remove(path)
-			return nil, false
+			return nil, false, nil
 		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, wrapPathError(opCacheGet, path, err)
 	}
-	return data, true
+	return data, true, nil
 }
 
 // Set writes value to the cache under key, replacing any existing
@@ -316,6 +342,71 @@ func (c *Cache) Stats() (CacheStats, error) {
 	return CacheStats{Entries: len(entries), Bytes: total}, nil
 }
 
+// CacheEntry describes one stored entry by its on-disk metadata.
+// The original key is intentionally not surfaced: keys are
+// SHA-256-hashed before storage and the package does not maintain a
+// reverse index. Callers that need to address entries by name should
+// track their own key set externally; [Cache.Entries] is for sweeping
+// by size/age (e.g., "purge entries older than 30 days").
+type CacheEntry struct {
+	// HashedKey is the hex-encoded SHA-256 of the original key.
+	// Stable across processes for the same key.
+	HashedKey string
+
+	// Size is the entry's value size in bytes.
+	Size int64
+
+	// ModTime is the entry's last-write time, which the cache also
+	// uses for TTL accounting.
+	ModTime time.Time
+}
+
+// Entries returns an iterator over every stored cache entry. Order
+// is unspecified. The iteration is a snapshot — entries added or
+// removed concurrently with iteration may or may not be visible.
+//
+// Returns nil after Close.
+func (c *Cache) Entries() iter.Seq[CacheEntry] {
+	return func(yield func(CacheEntry) bool) {
+		c.mu.Lock()
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return
+		}
+		entries, _, err := c.walkEntries()
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !yield(CacheEntry{
+				HashedKey: cacheHashFromPath(c.dir, e.path),
+				Size:      e.size,
+				ModTime:   e.mtime,
+			}) {
+				return
+			}
+		}
+	}
+}
+
+// cacheHashFromPath reconstructs the hashed key (concatenated shard
+// + filename minus the .bin extension) from a stored entry's path.
+// Returns "" if the path doesn't match the expected layout.
+func cacheHashFromPath(baseDir, entryPath string) string {
+	rel, err := filepath.Rel(baseDir, entryPath)
+	if err != nil {
+		return ""
+	}
+	rel = filepath.ToSlash(rel)
+	rel = strings.TrimSuffix(rel, cacheEntryExt)
+	// Expected: "<shard>/<rest>". Collapse the separator.
+	if shard, rest, ok := strings.Cut(rel, "/"); ok {
+		return shard + rest
+	}
+	return rel
+}
+
 // entryPath maps key to its on-disk file path:
 //
 //	<dir>/<hashhex[:2]>/<hashhex[2:]>.bin
@@ -389,6 +480,8 @@ func (c *Cache) evictIfOverBudget() error {
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].mtime.Before(entries[j].mtime)
 	})
+	evicted := 0
+	freed := int64(0)
 	for _, e := range entries {
 		if total <= c.cfg.maxBytes {
 			break
@@ -397,6 +490,11 @@ func (c *Cache) evictIfOverBudget() error {
 			return wrapPathError(opCacheSet, e.path, rerr)
 		}
 		total -= e.size
+		evicted++
+		freed += e.size
+	}
+	if evicted > 0 {
+		logger().Debug("fs.cache: evicted entries", "count", evicted, "freed_bytes", freed, "dir", c.dir)
 	}
 	return nil
 }

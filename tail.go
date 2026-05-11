@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// ErrTailRotated is yielded by [Tail]'s iterator each time it
+// detects a rotation (rename-style or in-place truncation) and
+// reopens the underlying file — but only when the caller opts in
+// via [WithTailNotifyRotation]. By default rotation is transparent.
+//
+// The yield is `(zero-value-string, ErrTailRotated)`; the iterator
+// continues afterwards. Callers who pattern-match on this can log
+// "log file rotated" or flush partial state. errors.Is recognizes
+// it.
+var ErrTailRotated = errors.New("fs: tail: file rotated")
+
 const (
 	opTail = "tail"
 
@@ -64,17 +75,30 @@ func WithTailBufferSize(n int) TailOption {
 	}
 }
 
+// WithTailNotifyRotation makes [Tail] yield ("", [ErrTailRotated])
+// once each time it detects a rotation and reopens the file. Off
+// by default — rotations are transparent unless the caller asks.
+func WithTailNotifyRotation() TailOption {
+	return func(c *tailConfig) {
+		c.notifyRotation = true
+	}
+}
+
 // tailConfig holds Tail's normalized options.
 type tailConfig struct {
-	fromStart    bool
-	pollInterval time.Duration
-	bufSize      int
+	fromStart      bool
+	pollInterval   time.Duration
+	bufSize        int
+	notifyRotation bool
 }
 
 // Tail returns an iterator over lines appended to path. The iterator
 // starts at EOF (or at offset 0 if [WithTailFromStart] is set) and
 // blocks until new content is written, the file is rotated, or ctx
 // is canceled.
+//
+// ctx must not be nil. Pass [context.Background] for an indefinite
+// tail. Following stdlib convention, a nil ctx panics on first poll.
 //
 // Rotation handling: between reads, [Tail] stats path and compares
 // the result against the held file descriptor via [os.SameFile]. If
@@ -122,15 +146,8 @@ func Tail(ctx context.Context, path string, opts ...TailOption) iter.Seq2[string
 }
 
 // runTail is the iterator body, split out so it isn't nested 5 deep
-// inside Tail's closure. ctx is the caller-supplied context (or a
-// background context derived from Tail when the caller passed nil).
-//
-//nolint:contextcheck // ctx is the caller-supplied iteration scope; no derived context needed
+// inside Tail's closure.
 func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string, error) bool) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	f, info, err := openTailFile(path, cfg.fromStart)
 	if err != nil {
 		yield("", err)
@@ -140,6 +157,13 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 
 	reader := bufio.NewReaderSize(f, cfg.bufSize)
 	var partial strings.Builder
+
+	// One reusable timer drives the poll loop. We never observe its
+	// channel before resetting, so the standard NewTimer pattern
+	// (stop+drain on early exit) keeps zero goroutines and timers
+	// outstanding regardless of how the iterator terminates.
+	timer := time.NewTimer(cfg.pollInterval)
+	defer timer.Stop()
 
 	for {
 		// Drain whatever's currently readable. We stop at EOF inside
@@ -154,10 +178,17 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 		}
 
 		// Sleep until the next poll or ctx-cancel.
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(cfg.pollInterval)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(cfg.pollInterval):
+		case <-timer.C:
 		}
 
 		// Detect rotation/truncation. If detected, swap f + reader and
@@ -174,6 +205,9 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 			info = newInfo
 			reader = bufio.NewReaderSize(f, cfg.bufSize)
 			partial.Reset()
+			if cfg.notifyRotation && !yield("", ErrTailRotated) {
+				return
+			}
 		}
 	}
 }

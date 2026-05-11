@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 const (
@@ -17,9 +16,28 @@ const (
 	opPlanRollback = "plan.rollback"
 	opPlanJournal  = "plan.journal"
 
-	// journalFilename is the JSON state file at the root of every
-	// journal directory. Holds the original plan + per-step progress.
-	journalFilename = "journal.json"
+	// journalPlanFilename holds the immutable plan written at the
+	// start of Apply. Read-only during the apply; consulted by Resume
+	// + Rollback. Kept separate from the progress file so the
+	// per-step rewrite cost stays O(progress-record-size) rather than
+	// O(plan-size).
+	journalPlanFilename = "plan.json"
+
+	// journalProgressFilename holds the per-step progress counter
+	// (and the Finalized flag). Tiny — typically <100 bytes — so the
+	// rewrite cost is negligible regardless of plan size.
+	journalProgressFilename = "progress.json"
+
+	// journalLegacyFilename was the v0.1.0-dev combined plan +
+	// progress file. Apply now rejects an existing journal containing
+	// only this file as already-claimed; the rejection's error
+	// message tells the caller to remove and start over.
+	journalLegacyFilename = "journal.json"
+
+	// journalSchemaVersion records the on-disk schema version so
+	// future format changes can refuse to resume incompatible
+	// journals. (Addresses R1.)
+	journalSchemaVersion = 1
 
 	// journalBackupsDir is the subdirectory holding pre-apply
 	// snapshots of each modified path. Indexed by step number.
@@ -173,19 +191,41 @@ func WithApplyNoMkdir() ApplyOption {
 	}
 }
 
-// journal is the on-disk record of an in-progress or completed apply.
-// Serialized as journal.json under the user-supplied journal dir.
+// journal is the in-memory view of an in-progress or completed
+// apply. Persisted across two files under journalDir:
+//
+//   - plan.json     — immutable plan, written once on Apply.
+//   - progress.json — Completed + Finalized + Schema, rewritten per
+//     step.
+//
+// Splitting the files keeps the per-step rewrite cost independent of
+// plan size — a plan with megabyte-sized Data payloads doesn't
+// re-serialize the payloads on every successful op.
+//
+// Wire format note: PlanOp.Data is a []byte, which Go's [encoding/json]
+// serializes as base64-encoded strings — a ~33% inflation. For plans
+// holding mostly text/config payloads the inflation is negligible.
+// Plans whose ops carry many megabytes of binary data should expect
+// the on-disk plan.json to be ~1.33× the in-memory payload size.
 type journal struct {
-	Plan      Plan `json:"plan"`
-	Completed int  `json:"completed"` // number of ops fully applied
-	Finalized bool `json:"finalized"` // true once Apply returned nil
+	Plan      Plan `json:"-"`
+	Completed int  `json:"completed"`
+	Finalized bool `json:"finalized"`
+	Schema    int  `json:"schema"`
 }
 
-// applyMu serializes concurrent Apply/Resume/Rollback against the
-// same journal within a single process. Cross-process coordination
-// would require a lockfile; for v0.1 we document that callers must
-// serialize externally.
-var applyMu sync.Mutex
+// planFile is the on-disk shape of plan.json — just the plan.
+type planFile struct {
+	Plan   Plan `json:"plan"`
+	Schema int  `json:"schema"`
+}
+
+// errSchemaMismatch is returned by [loadJournal] when the on-disk
+// schema version doesn't match [journalSchemaVersion]. Wrapped in a
+// [*PathError] at the call site so callers can errors.Is against
+// either this sentinel or [stdfs.ErrNotExist] when distinguishing
+// "stale journal" from "no journal".
+var errSchemaMismatch = errors.New("fs: plan: journal schema mismatch")
 
 // Apply runs the plan, writing a journal under journalDir so an
 // interrupted apply can be resumed. journalDir must be an empty or
@@ -195,16 +235,22 @@ var applyMu sync.Mutex
 // On any per-op failure, Apply returns the error without rolling
 // back; the journal records progress so the caller can decide
 // whether to [Rollback] or [Resume].
+//
+// Concurrency: Apply, [Resume], and [Rollback] perform no internal
+// locking. Callers driving the same journalDir from multiple
+// goroutines or processes must serialize externally (e.g., via
+// [Lock] on a sibling lockfile). Independent journals are
+// independent — running two Applies against unrelated journalDirs
+// concurrently is safe.
 func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, journalDir, ErrInvalidPath)
 	}
 	cfg := newApplyConfig(opts)
 
-	applyMu.Lock()
-	defer applyMu.Unlock()
-
-	if Exists(filepath.Join(journalDir, journalFilename)) {
+	planPath := filepath.Join(journalDir, journalPlanFilename)
+	legacyPath := filepath.Join(journalDir, journalLegacyFilename)
+	if Exists(planPath) || Exists(legacyPath) {
 		return wrapPathError(opPlanApply, journalDir, ErrAlreadyExists)
 	}
 
@@ -217,7 +263,10 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	}
 
 	j := journal{Plan: *p}
-	if err := saveJournal(journalDir, &j); err != nil {
+	if err := savePlanFile(journalDir, &j); err != nil {
+		return err
+	}
+	if err := saveProgress(journalDir, &j); err != nil {
 		return err
 	}
 	return resumeJournal(journalDir, &j, cfg)
@@ -225,11 +274,9 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 
 // Resume continues a previously-interrupted apply from its journal.
 // If the apply already completed, Resume is a no-op and returns nil.
+// See [Apply] for the concurrency contract.
 func Resume(journalDir string, opts ...ApplyOption) error {
 	cfg := newApplyConfig(opts)
-
-	applyMu.Lock()
-	defer applyMu.Unlock()
 
 	j, err := loadJournal(journalDir)
 	if err != nil {
@@ -245,11 +292,9 @@ func Resume(journalDir string, opts ...ApplyOption) error {
 // order. Each op's stored backup is used to restore the original
 // state. After successful rollback, the journal directory is left in
 // place (callers can [os.RemoveAll] it explicitly).
+// See [Apply] for the concurrency contract.
 func Rollback(journalDir string, opts ...ApplyOption) error {
 	_ = newApplyConfig(opts)
-
-	applyMu.Lock()
-	defer applyMu.Unlock()
 
 	j, err := loadJournal(journalDir)
 	if err != nil {
@@ -261,7 +306,7 @@ func Rollback(journalDir string, opts ...ApplyOption) error {
 			return rerr
 		}
 		j.Completed = i
-		if serr := saveJournal(journalDir, j); serr != nil {
+		if serr := saveProgress(journalDir, j); serr != nil {
 			return serr
 		}
 	}
@@ -271,17 +316,22 @@ func Rollback(journalDir string, opts ...ApplyOption) error {
 // resumeJournal is the shared body of Apply and Resume: iterate ops
 // starting at j.Completed, perform each, persist progress.
 func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
+	log := logger()
 	for i := j.Completed; i < len(j.Plan.Ops); i++ {
-		if err := applyOp(journalDir, j.Plan.Ops[i], i, cfg); err != nil {
+		op := j.Plan.Ops[i]
+		log.Debug("fs.plan: applying op", "step", i, "action", op.Action.String(), "path", op.Path)
+		if err := applyOp(journalDir, op, i, cfg); err != nil {
+			log.Debug("fs.plan: op failed", "step", i, "error", err)
 			return err
 		}
 		j.Completed = i + 1
-		if err := saveJournal(journalDir, j); err != nil {
+		if err := saveProgress(journalDir, j); err != nil {
 			return err
 		}
 	}
 	j.Finalized = true
-	return saveJournal(journalDir, j)
+	log.Debug("fs.plan: finalized", "ops", len(j.Plan.Ops), "journal", journalDir)
+	return saveProgress(journalDir, j)
 }
 
 // applyOp executes a single PlanOp and records any backup data the
@@ -430,27 +480,60 @@ func restoreFromBackup(journalDir, path string, step int) error {
 	return nil
 }
 
-// saveJournal atomically writes the journal state to disk.
-func saveJournal(journalDir string, j *journal) error {
+// savePlanFile writes plan.json once at Apply start. The file is
+// then immutable — Apply / Resume / Rollback only read it.
+func savePlanFile(journalDir string, j *journal) error {
+	pf := planFile{Plan: j.Plan, Schema: journalSchemaVersion}
+	data, err := json.MarshalIndent(pf, "", "  ")
+	if err != nil {
+		return wrapPathError(opPlanJournal, journalDir, err)
+	}
+	target := filepath.Join(journalDir, journalPlanFilename)
+	return WriteFile(target, data, WithPerm(0o644))
+}
+
+// saveProgress rewrites progress.json after each successful op (and
+// once more on Finalize). Tiny payload — Completed + Finalized +
+// Schema.
+func saveProgress(journalDir string, j *journal) error {
+	j.Schema = journalSchemaVersion
 	data, err := json.MarshalIndent(j, "", "  ")
 	if err != nil {
 		return wrapPathError(opPlanJournal, journalDir, err)
 	}
-	target := filepath.Join(journalDir, journalFilename)
+	target := filepath.Join(journalDir, journalProgressFilename)
 	return WriteFile(target, data, WithPerm(0o644))
 }
 
-// loadJournal reads the journal.json at journalDir.
+// loadJournal reads plan.json + progress.json from journalDir.
+// Returns the merged journal. Refuses to resume on schema mismatch.
 func loadJournal(journalDir string) (*journal, error) {
-	target := filepath.Join(journalDir, journalFilename)
-	data, err := os.ReadFile(target)
+	planPath := filepath.Join(journalDir, journalPlanFilename)
+	planData, err := os.ReadFile(planPath)
 	if err != nil {
-		return nil, wrapPathError(opPlanJournal, target, err)
+		return nil, wrapPathError(opPlanJournal, planPath, err)
+	}
+	var pf planFile
+	if uerr := json.Unmarshal(planData, &pf); uerr != nil {
+		return nil, wrapPathError(opPlanJournal, planPath, uerr)
+	}
+	if pf.Schema != journalSchemaVersion {
+		return nil, wrapPathError(opPlanJournal, planPath, fmt.Errorf("%w: file=%d package=%d", errSchemaMismatch, pf.Schema, journalSchemaVersion))
+	}
+
+	progressPath := filepath.Join(journalDir, journalProgressFilename)
+	progressData, err := os.ReadFile(progressPath)
+	if err != nil {
+		return nil, wrapPathError(opPlanJournal, progressPath, err)
 	}
 	var j journal
-	if uerr := json.Unmarshal(data, &j); uerr != nil {
-		return nil, wrapPathError(opPlanJournal, target, uerr)
+	if uerr := json.Unmarshal(progressData, &j); uerr != nil {
+		return nil, wrapPathError(opPlanJournal, progressPath, uerr)
 	}
+	if j.Schema != journalSchemaVersion {
+		return nil, wrapPathError(opPlanJournal, progressPath, fmt.Errorf("%w: file=%d package=%d", errSchemaMismatch, j.Schema, journalSchemaVersion))
+	}
+	j.Plan = pf.Plan
 	return &j, nil
 }
 

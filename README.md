@@ -12,13 +12,13 @@ quality standards as `go-rotini/yaml`, `go-rotini/toml`,
 
 ## Status
 
-🚧 **v0.1.0 surface complete; watching is polling-only.** Every
-phase-1-through-26 feature is implemented and tested **except** the
-watcher's platform-native event delivery: inotify (Linux), kqueue
-(macOS/BSD), and `ReadDirectoryChangesW` (Windows) are scheduled as a
-post-v0.1 follow-up. In the interim every watcher uses the polling
-backend (`os.Lstat` in a loop, 1-second default interval). The
-polling backend is correct on every platform but has the latency
+🚧 **v0.1.0 — feature-complete except for native watcher backends.**
+Every Phase 1–35 feature is implemented and tested. The one rough
+edge: the watcher's platform-native event delivery (inotify on Linux,
+kqueue on macOS/BSD, `ReadDirectoryChangesW` on Windows) is scheduled
+for a follow-up minor release. In the interim every watcher uses the
+polling backend (`os.Lstat` in a loop, 1-second default interval).
+The polling backend is correct on every platform but has the latency
 profile and mtime-resolution limits you'd expect from polling — see
 `doc.go`'s Pitfalls section. Callers who need sub-second event
 delivery today should hold off; callers who reload a config file or
@@ -31,24 +31,27 @@ template tree on save are well served by the polling backend.
 - Cross-platform from day one: Linux / macOS / Windows in CI; FreeBSD
   builds and vets clean.
 - **Zero non-stdlib runtime dependencies, no `testing` import** — the
-  production surface (watcher, archive, scaffold, disk-info, post-v0.1
-  lock helpers) lives in one flat root. Importing `github.com/go-rotini/fs`
-  does **not** pull stdlib's `testing` package — or its global
-  `-test.*` flag registration — into your binary. Test helpers
-  (`TestHarness`, `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT`)
-  live in [`github.com/go-rotini/fs/fstest`](https://pkg.go.dev/github.com/go-rotini/fs/fstest)
+  production surface (watcher, archive, scaffold, disk-info, lock,
+  cache, tail-follow, log rotation, versioned backups, transactional
+  plan/apply, gitignore, mmap, and the Tier-B helpers) lives in one
+  flat root. Importing `github.com/go-rotini/fs` does **not** pull
+  stdlib's `testing` package — or its global `-test.*` flag
+  registration — into your binary. Test helpers (`TestHarness`,
+  `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT`) live in
+  [`github.com/go-rotini/fs/fstest`](https://pkg.go.dev/github.com/go-rotini/fs/fstest)
   so callers opt into the `testing` dependency only in their `_test.go`
-  files. Platform-native syscall paths (flock / `LockFileEx` for the
-  post-v0.1 lock helpers; inotify / kqueue / `ReadDirectoryChangesW`
-  for the post-v0.1 native watcher backends) are reached directly
-  through stdlib's `syscall` package — no third-party wrappers.
+  files. Platform-native syscall paths (flock / `LockFileEx` for locks;
+  mmap / `MapViewOfFile` for memory maps; future inotify / kqueue /
+  `ReadDirectoryChangesW` for native watcher backends) are reached
+  directly through stdlib's `syscall` package — no third-party wrappers.
 - **Safe-by-default**: atomic writes via temp+rename, bounded reads
   (default 100 MiB), idempotent removal, mode preservation on
   overwrite, archive extraction confined via `MustBeChildOf`.
 - Atomic-rename-aware file watching with multi-subscriber broadcast
   and 75 ms trailing-edge debouncing. v0.1 ships the polling backend
   only (1 s default interval, configurable); platform-native
-  inotify / kqueue / `ReadDirectoryChangesW` are post-v0.1.
+  inotify / kqueue / `ReadDirectoryChangesW` are scheduled for a
+  follow-up release.
 - Find-up project discovery (`FindUp`, `ProjectRoot`), XDG-aware user
   directories, hidden / pattern walk filtering, and path-safety
   primitives (`IsSubpath`, `MustBeChildOf`, `EvalSymlinksWithin`).
@@ -249,15 +252,35 @@ Per-feature option types are scoped (`ReadOption`, `WriteOption`,
 `ArchiveExtractOption`, `ScaffoldOption`) so IDE autocomplete points
 to the right knobs.
 
-## Known gaps (post-v0.1 roadmap)
+## Roadmap & scope
 
-The following ship in the fs package post-v0.1 (not as sub-packages):
-file locking via `flock`/`LockFileEx`, namespaced caches with TTL/LRU,
-tail-follow with rotation handling, log rotation, versioned backups,
-transactional plan/apply, `.gitignore` parser. The watcher's
-platform-native backends (inotify / kqueue / `ReadDirectoryChangesW`)
-are also scheduled as follow-ups; the polling fallback covers
-correctness in the interim.
+Scheduled for a follow-up minor release:
+
+- **Native watcher backends** — inotify (Linux), kqueue (macOS/BSD),
+  and `ReadDirectoryChangesW` (Windows). The polling fallback covers
+  correctness in the interim.
+- **Tier-B helpers deliberately deferred to v0.2 or later** — umask
+  helpers, xattrs (Linux/macOS/FreeBSD `getxattr`/`setxattr` and
+  Windows alternate-data-streams), sparse/preallocate helpers
+  (`Preallocate`, `SparseSeek`, `FileHoles`), reflink/copy-on-write
+  (`CopyReflink` on btrfs/XFS/APFS/ReFS), bind-mount / overlay
+  structured introspection on Linux, and `MoveToTrash` (freedesktop
+  / `NSWorkspace` / `SHFileOperation`). Each requires dedicated
+  cross-platform design work.
+
+Deliberately out of scope (would violate the zero-non-stdlib-runtime-
+deps mandate):
+
+- **Compression codecs `.zst` / `.xz` / `.lz4`** — stdlib ships
+  `compress/gzip` and `compress/bzip2` only; non-stdlib codecs are
+  not shipped. `tar.gz` and `zip` cover the overwhelming majority of
+  CLI archive needs.
+- **POSIX ACLs** — `acl_get_file` / `acl_set_file` are not in Go's
+  `syscall` package; surfacing them would require a third-party cgo
+  binding or hand-rolling each platform's ABI.
+- **`O_DIRECT` helper** — block-aligned I/O is niche enough for CLI
+  tooling that callers needing it can pass `syscall.O_DIRECT` to
+  `OpenNoFollow` directly.
 
 ## Contributing
 

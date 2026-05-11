@@ -191,7 +191,7 @@ func TestRotator_Compression(t *testing.T) {
 
 	r, err := NewRotator(path,
 		WithRotateMaxBytes(5),
-		WithRotateCompress(),
+		WithRotateCompress(true),
 	)
 	if err != nil {
 		t.Fatalf("NewRotator: %v", err)

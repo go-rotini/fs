@@ -147,7 +147,14 @@ func parseNpmWorkspaces(path, root string) ([]string, error) {
 }
 
 // parsePnpmWorkspaces extracts member globs from a
-// pnpm-workspace.yaml. Only the `packages:` list form is supported.
+// pnpm-workspace.yaml.
+//
+// Supported subset: the `packages:` list form with `- "glob"` entries.
+// A file that uses YAML features outside this subset (inline maps,
+// anchors, multi-line strings, multiple top-level keys other than
+// `packages:`) is rejected with [errPnpmWorkspaceUnsupported] rather
+// than silently returning empty — the package would rather fail
+// loudly than silently miss workspace members.
 func parsePnpmWorkspaces(path, root string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -155,25 +162,52 @@ func parsePnpmWorkspaces(path, root string) ([]string, error) {
 	}
 	var globs []string
 	inPackages := false
+	sawPackagesKey := false
 	for line := range strings.SplitSeq(string(data), "\n") {
-		trim := strings.TrimSpace(line)
+		// Strip trailing comments (preserve the leading content).
+		rawTrim := strings.TrimRight(line, "\r")
+		trim := strings.TrimSpace(rawTrim)
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
 		}
+
+		// Top-level (non-indented) keys reset the packages section.
+		isIndented := rawTrim != trim
+		if !isIndented {
+			inPackages = false
+		}
+
 		if trim == "packages:" {
+			if sawPackagesKey {
+				return nil, errPnpmWorkspaceUnsupported
+			}
+			sawPackagesKey = true
 			inPackages = true
 			continue
 		}
+		// An inline-map `packages: [a, b]` or anchor form is not
+		// supported — fail loudly so callers see the gap rather than
+		// silently empty workspace roots.
+		if strings.HasPrefix(trim, "packages:") {
+			return nil, errPnpmWorkspaceUnsupported
+		}
+
 		if inPackages {
 			if !strings.HasPrefix(trim, "- ") {
-				inPackages = false
-				continue
+				// A non-list-item line inside packages: is malformed.
+				// Quietly tolerate a fully-indented blank or comment
+				// (handled above) but reject substantive lines.
+				return nil, errPnpmWorkspaceUnsupported
 			}
 			globs = append(globs, unquote(strings.TrimSpace(trim[2:])))
 		}
 	}
 	return expandGlobsInRoot(root, globs), nil
 }
+
+// errPnpmWorkspaceUnsupported flags YAML features the package's
+// hand-rolled parser doesn't handle.
+var errPnpmWorkspaceUnsupported = errors.New("fs: workspace: pnpm-workspace.yaml uses unsupported YAML feature (only `packages:` list form is supported)")
 
 // expandGlobsInRoot turns relative glob patterns into absolute paths
 // by joining with root and feeding through [Glob].

@@ -1,7 +1,9 @@
 package fs
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestWalkParallel_VisitsEveryEntry(t *testing.T) {
@@ -24,7 +27,7 @@ func TestWalkParallel_VisitsEveryEntry(t *testing.T) {
 		mu      sync.Mutex
 		visited []string
 	)
-	err := WalkParallel(root, func(path string, _ stdfs.DirEntry) error {
+	err := WalkParallel(t.Context(), root, func(path string, _ stdfs.DirEntry) error {
 		rel, _ := filepath.Rel(root, path)
 		mu.Lock()
 		visited = append(visited, filepath.ToSlash(rel))
@@ -50,7 +53,7 @@ func TestWalkParallel_PropagatesError(t *testing.T) {
 
 	want := errors.New("boom")
 	var hits atomic.Int32
-	err := WalkParallel(root, func(path string, _ stdfs.DirEntry) error {
+	err := WalkParallel(t.Context(), root, func(path string, _ stdfs.DirEntry) error {
 		if filepath.Base(path) == "a.txt" {
 			hits.Add(1)
 			return want
@@ -67,7 +70,7 @@ func TestWalkParallel_PropagatesError(t *testing.T) {
 
 func TestWalkParallel_MissingRoot(t *testing.T) {
 	t.Parallel()
-	if err := WalkParallel(filepath.Join(t.TempDir(), "nope"), func(_ string, _ stdfs.DirEntry) error { return nil }, 1); err == nil {
+	if err := WalkParallel(t.Context(), filepath.Join(t.TempDir(), "nope"), func(_ string, _ stdfs.DirEntry) error { return nil }, 1); err == nil {
 		t.Error("expected error for missing root")
 	}
 }
@@ -77,7 +80,7 @@ func TestWalkParallel_DefaultWorkers(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "a.txt"), "a")
 	var count atomic.Int32
-	err := WalkParallel(root, func(_ string, _ stdfs.DirEntry) error {
+	err := WalkParallel(t.Context(), root, func(_ string, _ stdfs.DirEntry) error {
 		count.Add(1)
 		return nil
 	}, 0)
@@ -86,6 +89,57 @@ func TestWalkParallel_DefaultWorkers(t *testing.T) {
 	}
 	if count.Load() != 2 { // root dir + one file
 		t.Errorf("count = %d; want 2", count.Load())
+	}
+}
+
+// TestWalkParallel_SingleWorkerLargeFanOut verifies the post-P1 fix:
+// workers=1 with a directory wider than any old channel buffer must
+// not deadlock. With the slice-queue queue, the worker drains the
+// queue progressively as it processes each child.
+func TestWalkParallel_SingleWorkerLargeFanOut(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	const fanOut = 200
+	for i := range fanOut {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("f%03d.txt", i)), "x")
+	}
+
+	var count atomic.Int32
+	err := WalkParallel(t.Context(), root, func(_ string, _ stdfs.DirEntry) error {
+		count.Add(1)
+		return nil
+	}, 1)
+	if err != nil {
+		t.Fatalf("WalkParallel: %v", err)
+	}
+	if count.Load() != int32(fanOut+1) { // root + N files
+		t.Errorf("count = %d; want %d", count.Load(), fanOut+1)
+	}
+}
+
+// TestWalkParallel_ContextCancel verifies that an externally-cancelled
+// context terminates the walk promptly.
+func TestWalkParallel_ContextCancel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for i := range 100 {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("f%03d.txt", i)), "x")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // pre-cancel
+
+	done := make(chan error, 1)
+	go func() {
+		done <- WalkParallel(ctx, root, func(_ string, _ stdfs.DirEntry) error {
+			return nil
+		}, 4)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WalkParallel did not terminate after ctx cancel")
 	}
 }
 

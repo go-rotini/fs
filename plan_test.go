@@ -209,8 +209,11 @@ func TestResume_PicksUpFromInterruptedApply(t *testing.T) {
 		t.Fatalf("MkdirAll journal: %v", err)
 	}
 	j := journal{Plan: *p, Completed: 0}
-	if err := saveJournal(jdir, &j); err != nil {
-		t.Fatalf("saveJournal: %v", err)
+	if err := savePlanFile(jdir, &j); err != nil {
+		t.Fatalf("savePlanFile: %v", err)
+	}
+	if err := saveProgress(jdir, &j); err != nil {
+		t.Fatalf("saveProgress: %v", err)
 	}
 
 	// Stage 2: Resume should complete the apply.

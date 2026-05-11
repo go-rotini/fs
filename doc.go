@@ -1,8 +1,10 @@
 // Package fs is a CLI-focused filesystem helpers library: atomic writes,
 // safe reads, path resolution, cross-platform user-directory lookup,
 // directory walking, file watching, archive extraction, scaffolding,
-// disk-info, and the dozens of small operations a CLI tool repeatedly
-// needs to get right.
+// disk-info, advisory file locking, dir-backed caching, log rotation,
+// tail-follow with rotation handling, versioned backups, transactional
+// plan/apply, gitignore-aware walks, and the dozens of small operations
+// a CLI tool repeatedly needs to get right.
 //
 // The package is a layer on top of stdlib's [os], [io/fs], and
 // [path/filepath] that turns the most common CLI operations into
@@ -16,13 +18,14 @@
 // # Zero third-party dependencies
 //
 // The fs package is a single flat root for production code — watcher,
-// lock, archive, scaffold, and disk-info helpers all live in the same
-// package. The whole production surface has zero non-stdlib runtime
-// imports AND does not import [testing]. Where the package reaches
-// for platform-native syscalls (flock / LockFileEx for the post-v0.1
-// lock helpers; inotify / kqueue / ReadDirectoryChangesW for the
-// post-v0.1 native watcher backends), it does so directly through
-// stdlib's [syscall] package — no third-party wrappers.
+// lock, cache, rotator, plan, archive, scaffold, gitignore, mmap, and
+// disk-info helpers all live in the same package. The whole production
+// surface has zero non-stdlib runtime imports AND does not import
+// [testing]. Where the package reaches for platform-native syscalls
+// (flock / LockFileEx for the lock helpers; mmap / MapViewOfFile for
+// the memory-map helpers; the native watcher backends are a planned
+// follow-up — see Stability), it does so directly through stdlib's
+// [syscall] package — no third-party wrappers.
 //
 // The one sub-package is [github.com/go-rotini/fs/fstest], which
 // holds the test helpers (`TestHarness`, `MockFS`, `WithTempEnv`,
@@ -112,9 +115,12 @@
 //
 // The public API is stable starting at v0.1.0. New features may arrive
 // in minor releases; breaking changes are reserved for major version
-// bumps. The post-v0.1 roadmap includes the native watcher backends
-// (inotify / kqueue / ReadDirectoryChangesW), lock helpers, caching
-// helpers, tail-follow, log rotation, versioned backups, transactional
-// plan/apply, and a .gitignore parser — all in the fs package (the
-// only sub-package is fstest for test helpers).
+// bumps. Items still on the roadmap for a later minor release: the
+// platform-native watcher backends (inotify on Linux, kqueue on
+// macOS/BSD, ReadDirectoryChangesW on Windows — today every Watcher
+// uses the polling fallback) and the Tier-C items recorded in the
+// package's design doc (umask helpers, xattrs, sparse/preallocate,
+// reflink, MoveToTrash, bind-mount introspection). All future additions
+// land in the fs package itself; the only sub-package is fstest for
+// test helpers.
 package fs

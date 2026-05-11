@@ -382,22 +382,50 @@ func TestLock_ConcurrentTryLockExactlyOneWins(t *testing.T) {
 func TestParsePIDFile(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		in   string
-		want int
+		in              string
+		wantPID         int
+		wantFingerprint string
 	}{
-		{"123", 123},
-		{"123\n", 123},
-		{"  456  \n", 456},
-		{"789 extra metadata", 789},
-		{"", 0},
-		{"   ", 0},
-		{"abc", 0},
-		{"-1", 0},
-		{"0", 0},
+		{"123", 123, ""},
+		{"123\n", 123, ""},
+		{"  456  \n", 456, ""},
+		{"789 fp-abc", 789, "fp-abc"},
+		{"789 fp-abc\n", 789, "fp-abc"},
+		{"789 multi word fingerprint", 789, "multi word fingerprint"},
+		{"", 0, ""},
+		{"   ", 0, ""},
+		{"abc", 0, ""},
+		{"-1", 0, ""},
+		{"0", 0, ""},
 	}
 	for _, c := range cases {
-		if got := parsePIDFile([]byte(c.in)); got != c.want {
-			t.Errorf("parsePIDFile(%q) = %d; want %d", c.in, got, c.want)
+		gotPID, gotFP := parsePIDFile([]byte(c.in))
+		if gotPID != c.wantPID || gotFP != c.wantFingerprint {
+			t.Errorf("parsePIDFile(%q) = (%d, %q); want (%d, %q)", c.in, gotPID, gotFP, c.wantPID, c.wantFingerprint)
 		}
+	}
+}
+
+func TestPIDLock_FingerprintRejectsRecycledPID(t *testing.T) {
+	t.Parallel()
+	p := lockPath(t)
+
+	// Seed: write a lockfile that records the current PID with a
+	// fingerprint of "original". The new acquire is configured with
+	// a fingerprint function that returns "changed" — simulating a
+	// PID-recycle scenario where the PID is alive (true, we are
+	// alive) but is a *different* process from the one recorded.
+	if err := os.WriteFile(p, fmt.Appendf(nil, "%d original\n", os.Getpid()), 0o644); err != nil {
+		t.Fatalf("WriteFile seed: %v", err)
+	}
+
+	h, err := PIDLock(p, WithPIDLockFingerprint(func(_ int) string { return "changed" }))
+	if h == nil {
+		t.Fatalf("PIDLock returned nil handle; err=%v", err)
+	}
+	defer func() { _ = h.Release() }()
+
+	if !errors.Is(err, ErrStaleLock) {
+		t.Errorf("err = %v; want ErrStaleLock (fingerprint mismatch should reclaim)", err)
 	}
 }

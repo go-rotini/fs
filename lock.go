@@ -83,14 +83,14 @@ type LockHandle struct {
 // Advisory only: cooperating processes must agree to call Lock to see
 // each other's locks. Direct file reads/writes ignore the lock.
 func Lock(path string) (*LockHandle, error) {
-	return acquireLock(path, lockKindExclusive, 0)
+	return acquireLock(path, lockKindExclusive)
 }
 
 // LockShared acquires a shared (read) advisory lock on path. Multiple
 // concurrent shared holders are allowed; shared and exclusive locks
 // are mutually exclusive. Blocks until the lock is available.
 func LockShared(path string) (*LockHandle, error) {
-	return acquireLock(path, lockKindShared, 0)
+	return acquireLock(path, lockKindShared)
 }
 
 // TryLock attempts to acquire an exclusive lock on path without
@@ -98,7 +98,7 @@ func LockShared(path string) (*LockHandle, error) {
 // nil) when the lock is held by another holder. Any other error is
 // returned as-is (handle nil, ok false).
 func TryLock(path string) (*LockHandle, bool, error) {
-	h, err := acquireLock(path, lockKindExclusiveNoBlock, 0)
+	h, err := acquireLock(path, lockKindExclusiveNoBlock)
 	switch {
 	case err == nil:
 		return h, true, nil
@@ -119,7 +119,7 @@ func TryLock(path string) (*LockHandle, bool, error) {
 func LockTimeout(path string, d time.Duration) (*LockHandle, error) {
 	deadline := time.Now().Add(d)
 	for {
-		h, err := acquireLock(path, lockKindExclusiveNoBlock, 0)
+		h, err := acquireLock(path, lockKindExclusiveNoBlock)
 		if err == nil {
 			return h, nil
 		}
@@ -173,46 +173,96 @@ func IsLocked(path string) bool {
 	return false
 }
 
+// PIDLockOption configures [PIDLock].
+type PIDLockOption func(*pidLockConfig)
+
+type pidLockConfig struct {
+	fingerprint func(pid int) string
+}
+
+// WithPIDLockFingerprint adds a stronger stale-lock check on top of
+// the bare PID-alive probe. The callback maps a PID to a string the
+// caller treats as a process identity — typically the process's
+// start time from /proc/<pid>/stat (Linux), kinfo_proc.ki_start
+// (BSD), or GetProcessTimes (Windows).
+//
+// On acquire, fn(os.Getpid()) is written next to the PID in the
+// lockfile. On stale-detection, the recorded fingerprint is compared
+// against fn(recordedPID) — a mismatch means the PID is alive but
+// belongs to a different process (the original holder died and the
+// OS recycled the PID), and the lock is reclaimed. Without this
+// option, a PID-recycle attack passes the "PID alive" check; with
+// it, the attack is rejected as stale.
+//
+// fn must be safe for concurrent use. fn returning "" disables the
+// fingerprint check for that PID (treated as "no fingerprint
+// available, defer to the bare alive probe").
+func WithPIDLockFingerprint(fn func(pid int) string) PIDLockOption {
+	return func(c *pidLockConfig) {
+		c.fingerprint = fn
+	}
+}
+
 // PIDLock writes the calling process's PID to path and acquires an
 // exclusive lock on it. The lockfile content is the textual PID
-// followed by a newline.
+// followed by a newline, plus an optional fingerprint (see
+// [WithPIDLockFingerprint]).
 //
 // Stale-lock detection: if path already exists, [PIDLock] reads the
 // recorded PID. If the recorded PID is alive (probed via
 // [os.FindProcess] + signal-0 ping on POSIX; OpenProcess on Windows)
-// AND the lock is still held by it, [PIDLock] blocks waiting for the
-// lock as a normal [Lock] would. If the recorded PID is dead — or no
-// process exists at that PID — [PIDLock] truncates the file, writes
-// the caller's PID, and returns the handle wrapped with
-// [ErrStaleLock] (informational; the handle is fully valid).
+// AND its fingerprint (if any) matches, [PIDLock] blocks waiting for
+// the lock as a normal [Lock] would. Otherwise (PID dead, or PID
+// alive but fingerprint changed indicating PID recycle), [PIDLock]
+// overwrites the file with the caller's PID and returns the handle
+// wrapped with [ErrStaleLock] (informational; the handle is fully
+// valid).
 //
 // Returns the handle and a nil error on a clean acquisition. Returns
 // the handle and a wrapped [ErrStaleLock] on a reclaimed stale lock.
 // Returns nil and an error on any acquire failure.
-func PIDLock(path string) (*LockHandle, error) {
+func PIDLock(path string, opts ...PIDLockOption) (*LockHandle, error) {
+	cfg := pidLockConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	const myPID = -1 // sentinel meaning "use os.Getpid() at write time"
 	staleReclaimed := false
 
 	if existing, readErr := os.ReadFile(path); readErr == nil {
-		recordedPID := parsePIDFile(existing)
-		if recordedPID > 0 && pidAlive(recordedPID) {
-			// Owner is alive; fall through to normal blocking acquire.
-			// We deliberately do NOT short-circuit return-busy here:
-			// callers asked PIDLock(path); they want to either acquire
-			// it (if the holder finishes) or block until they can.
-			_ = recordedPID
-		} else if recordedPID > 0 {
-			// Stale: the PID died without releasing the lock. POSIX
-			// flock auto-releases on process exit, so the OS lock is
-			// already gone — we just need to overwrite the stale PID
-			// content. Windows likewise releases when the holder's
-			// process handle is collected. Mark staleness for the
-			// returned error.
-			staleReclaimed = true
+		recordedPID, recordedFingerprint := parsePIDFile(existing)
+		if recordedPID > 0 {
+			alive := pidAlive(recordedPID)
+			fingerprintOK := true
+			if alive && cfg.fingerprint != nil && recordedFingerprint != "" {
+				current := cfg.fingerprint(recordedPID)
+				if current != "" && current != recordedFingerprint {
+					fingerprintOK = false
+				}
+			}
+			if alive && fingerprintOK {
+				// Owner is alive (and fingerprint matches when set);
+				// fall through to normal blocking acquire.
+				_ = recordedPID
+			} else {
+				// Stale: PID dead, or PID alive but fingerprint
+				// changed indicating PID recycle. Mark staleness for
+				// the returned error.
+				staleReclaimed = true
+			}
 		}
 	}
 
-	h, err := acquireLock(path, lockKindExclusive, myPID)
+	pidWriter := func(f *os.File, pid int) error {
+		fp := ""
+		if cfg.fingerprint != nil {
+			fp = cfg.fingerprint(pid)
+		}
+		return writePIDContent(f, pid, fp)
+	}
+
+	h, err := acquireLockWithWriter(path, lockKindExclusive, myPID, pidWriter)
 	if err != nil {
 		return nil, err
 	}
@@ -291,11 +341,18 @@ var errLockBusy = errors.New("fs: lock: busy")
 var errInvalidLockKind = errors.New("fs: lock: invalid lock kind")
 
 // acquireLock opens (or creates) the lockfile at path and acquires
-// the requested lock kind. If writePID > 0 OR writePID == -1 (sentinel
-// meaning "use os.Getpid"), the file is truncated and the PID is
-// written after acquisition (so the contents always reflect the
-// current holder).
-func acquireLock(path string, kind lockKind, writePID int) (*LockHandle, error) {
+// the requested lock kind. Used by Lock / LockShared / TryLock /
+// LockTimeout, which don't write a PID into the file. PIDLock uses
+// [acquireLockWithWriter] directly.
+func acquireLock(path string, kind lockKind) (*LockHandle, error) {
+	return acquireLockWithWriter(path, kind, 0, nil)
+}
+
+// acquireLockWithWriter is the customizable variant used by [PIDLock]
+// when a fingerprint or other extension must be recorded alongside
+// the PID. writer is invoked once with the open file + resolved PID
+// after the OS lock has been acquired.
+func acquireLockWithWriter(path string, kind lockKind, writePID int, writer func(f *os.File, pid int) error) (*LockHandle, error) {
 	if path == "" {
 		return nil, wrapPathError(opLock, path, ErrInvalidPath)
 	}
@@ -323,7 +380,7 @@ func acquireLock(path string, kind lockKind, writePID int) (*LockHandle, error) 
 		if pid == -1 {
 			pid = os.Getpid()
 		}
-		if perr := writePIDContent(f, pid); perr != nil {
+		if perr := writer(f, pid); perr != nil {
 			_ = unlockFile(f) //nolint:errcheck // best-effort cleanup of an already-failed acquire
 			_ = f.Close()
 			return nil, wrapPathError(opPIDLock, path, perr)
@@ -334,41 +391,49 @@ func acquireLock(path string, kind lockKind, writePID int) (*LockHandle, error) 
 	return h, nil
 }
 
-// writePIDContent truncates f and writes "<pid>\n" starting at offset
-// zero. Used by [PIDLock] to record the holder's PID.
-func writePIDContent(f *os.File, pid int) error {
+// writePIDContent truncates f and writes "<pid>[ <fingerprint>]\n"
+// starting at offset zero. Used by [PIDLock] to record the holder's
+// identity. The fingerprint is optional; pass "" to record PID only.
+func writePIDContent(f *os.File, pid int, fingerprint string) error {
 	if err := f.Truncate(0); err != nil {
 		return err //nolint:wrapcheck // wrapped by caller
 	}
 	if _, err := f.Seek(0, 0); err != nil {
 		return err //nolint:wrapcheck // wrapped by caller
 	}
-	content := strconv.Itoa(pid) + "\n"
+	content := strconv.Itoa(pid)
+	if fingerprint != "" {
+		content += " " + fingerprint
+	}
+	content += "\n"
 	if _, err := f.WriteString(content); err != nil {
 		return err //nolint:wrapcheck // wrapped by caller
 	}
 	return f.Sync() //nolint:wrapcheck // wrapped by caller
 }
 
-// parsePIDFile extracts the PID stored at the start of a PIDLock
-// file. Returns 0 for any malformed input (empty, non-numeric,
-// negative). Tolerates trailing whitespace / newlines / extra
-// content.
-func parsePIDFile(content []byte) int {
+// parsePIDFile extracts the PID + optional fingerprint stored at the
+// start of a PIDLock file. Returns (0, "") for any malformed input.
+// Format: "<pid>\n" or "<pid> <fingerprint>\n".
+func parsePIDFile(content []byte) (pid int, fingerprint string) {
 	s := strings.TrimSpace(string(content))
 	if s == "" {
-		return 0
+		return 0, ""
 	}
-	// Take the first whitespace-delimited token so a future caller
-	// that adds metadata after the PID doesn't break us.
-	if idx := strings.IndexAny(s, " \t\r\n"); idx >= 0 {
+	// First line only.
+	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {
 		s = s[:idx]
 	}
-	pid, err := strconv.Atoi(s)
-	if err != nil || pid <= 0 {
-		return 0
+	pidStr := s
+	if idx := strings.IndexAny(s, " \t"); idx >= 0 {
+		pidStr = s[:idx]
+		fingerprint = strings.TrimSpace(s[idx+1:])
 	}
-	return pid
+	parsed, err := strconv.Atoi(pidStr)
+	if err != nil || parsed <= 0 {
+		return 0, ""
+	}
+	return parsed, fingerprint
 }
 
 // pidAlive reports whether a process with the given PID is currently

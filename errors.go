@@ -24,6 +24,12 @@ type PathError struct {
 }
 
 // Error renders as "fs: <op> <path>: <cause>".
+//
+// The render format is part of the public API: callers can rely on
+// the "fs: " prefix and on the order of op / path / cause. Format
+// changes are reserved for major version bumps (v1 → v2). For
+// programmatic inspection use the Op / Path / Cause fields rather
+// than parsing the string.
 func (e *PathError) Error() string {
 	if e == nil {
 		return "fs: path error"

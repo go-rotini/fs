@@ -47,10 +47,11 @@ type VersionInfo struct {
 type VersionedOption func(*versionedConfig)
 
 type versionedConfig struct {
-	keep   int
-	maxAge time.Duration
-	perm   os.FileMode
-	nowFn  func() time.Time
+	keep     int
+	maxAge   time.Duration
+	perm     os.FileMode
+	maxBytes int64
+	nowFn    func() time.Time
 }
 
 // WithVersionsKeep retains the n most recent versions and removes
@@ -88,6 +89,16 @@ func WithVersionsClock(now func() time.Time) VersionedOption {
 	}
 }
 
+// WithVersionsMaxBytes caps the byte size [RestoreVersion] will read
+// from a backup file into memory. Default 100 MiB. Restoring a file
+// larger than the cap fails with [ErrFileTooLarge]; raise this if
+// you genuinely need to restore very large backups.
+func WithVersionsMaxBytes(n int64) VersionedOption {
+	return func(c *versionedConfig) {
+		c.maxBytes = n
+	}
+}
+
 // WriteFileVersioned writes data to path atomically. If path already
 // exists, its current contents are first renamed to
 // "<path>.bak.<timestamp>" so the prior version is preserved.
@@ -112,7 +123,10 @@ func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (back
 	}
 
 	if Exists(path) {
-		backup = uniqueVersionedName(path, cfg)
+		backup, err = uniqueVersionedName(path, cfg)
+		if err != nil {
+			return "", wrapPathError(opWriteVersioned, path, err)
+		}
 		if rerr := os.Rename(path, backup); rerr != nil {
 			return "", wrapPathError(opWriteVersioned, path, rerr)
 		}
@@ -131,7 +145,7 @@ func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (back
 // ListVersions returns the on-disk backup versions of path, newest
 // first. Returns an empty slice if path has no backups. Returns nil
 // + error if the directory containing path cannot be read.
-func ListVersions(path string, _ ...VersionedOption) ([]VersionInfo, error) {
+func ListVersions(path string) ([]VersionInfo, error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
 	prefix := base + versionedInfix
@@ -192,8 +206,14 @@ func ListVersions(path string, _ ...VersionedOption) ([]VersionInfo, error) {
 // [WriteFileVersioned]; any readable file works. The versioned-
 // backup naming convention only applies to what RestoreVersion
 // creates on its way to the restore.
+//
+// The version file is read into memory before the rewrite — its
+// size is bounded by [WithVersionsMaxBytes] (default 100 MiB).
+// Files larger than the cap fail with [ErrFileTooLarge]; callers
+// restoring untrusted-size backups should raise the cap explicitly.
 func RestoreVersion(path, versionPath string, opts ...VersionedOption) error {
-	data, err := os.ReadFile(versionPath)
+	cfg := newVersionedConfig(opts)
+	data, err := ReadFile(versionPath, WithMaxSize(cfg.maxBytes))
 	if err != nil {
 		return wrapPathError(opRestoreVersion, versionPath, err)
 	}
@@ -205,9 +225,11 @@ func RestoreVersion(path, versionPath string, opts ...VersionedOption) error {
 
 // newVersionedConfig applies opts to a default-initialized config.
 func newVersionedConfig(opts []VersionedOption) versionedConfig {
+	const defaultMaxBytes = 100 * 1024 * 1024
 	cfg := versionedConfig{
-		perm:  0o644,
-		nowFn: time.Now,
+		perm:     0o644,
+		maxBytes: defaultMaxBytes,
+		nowFn:    time.Now,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -217,6 +239,9 @@ func newVersionedConfig(opts []VersionedOption) versionedConfig {
 	}
 	if cfg.perm == 0 {
 		cfg.perm = 0o644
+	}
+	if cfg.maxBytes <= 0 {
+		cfg.maxBytes = defaultMaxBytes
 	}
 	return cfg
 }
@@ -228,26 +253,32 @@ func versionedName(path string, cfg versionedConfig) string {
 	return fmt.Sprintf("%s%s%s", path, versionedInfix, stamp)
 }
 
+// errVersionedCollisionExhausted signals that uniqueVersionedName
+// couldn't find an unused suffix in 1000 attempts. Surfaced through
+// [WriteFileVersioned] so callers can distinguish a budget-exhausted
+// write from any other rename failure.
+var errVersionedCollisionExhausted = errors.New("fs: versioned: collision-suffix budget exhausted")
+
 // uniqueVersionedName returns a versionedName whose target path is
 // not currently in use. Sub-millisecond writes can produce the same
 // timestamp; rather than relying on infinite clock resolution we
 // append `_1`, `_2`, ... (underscore, since `-` already appears in
 // the timestamp layout) until os.Stat reports ErrNotExist.
 //
-// The retry stops at 1000 attempts, which is far more than any
-// realistic burst could exercise; if we somehow exhaust it, the
-// final candidate is returned anyway and the rename will fail
-// loudly upstream rather than silently overwrite.
-func uniqueVersionedName(path string, cfg versionedConfig) string {
+// The retry stops at 1000 attempts. If the budget is exhausted
+// (extraordinarily unlikely outside of an attack scenario), returns
+// [errVersionedCollisionExhausted] so the caller fails loudly rather
+// than silently clobbering a same-suffix entry.
+func uniqueVersionedName(path string, cfg versionedConfig) (string, error) {
 	base := versionedName(path, cfg)
 	candidate := base
 	for i := 1; i < 1000; i++ {
 		if _, err := os.Stat(candidate); errors.Is(err, stdfs.ErrNotExist) {
-			return candidate
+			return candidate, nil
 		}
 		candidate = fmt.Sprintf("%s_%d", base, i)
 	}
-	return candidate
+	return "", errVersionedCollisionExhausted
 }
 
 // pruneVersions removes versioned backups of path that violate the

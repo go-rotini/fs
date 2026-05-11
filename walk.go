@@ -26,6 +26,7 @@ type walkOptions struct {
 	maxDepth       int
 	followSymlinks bool
 	errorHandler   func(path string, err error) error
+	gitignore      *Gitignore
 }
 
 func newWalkOptions(opts []WalkOption) walkOptions {
@@ -147,16 +148,26 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 			return nil
 		}
 
+		if path != cleanRoot && cfg.gitignore != nil {
+			if skip, prune := gitignoreSkip(cfg.gitignore, toRelPosix(cleanRoot, path), d.IsDir()); skip {
+				if prune {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+
 		return fn(path, d, nil)
 	})
 }
 
 func walkSymlinkAware(root string, fn WalkFunc, cfg walkOptions) error {
 	visited := map[string]struct{}{}
-	return walkSymlinkRec(root, 0, fn, cfg, visited)
+	cleanRoot := filepath.Clean(root)
+	return walkSymlinkRec(cleanRoot, cleanRoot, 0, fn, cfg, visited)
 }
 
-func walkSymlinkRec(path string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
+func walkSymlinkRec(root, path string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if cfg.errorHandler != nil {
@@ -201,11 +212,16 @@ func walkSymlinkRec(path string, depth int, fn WalkFunc, cfg walkOptions, visite
 	}
 
 	for _, e := range entries {
-		if shouldSkip(filepath.Join(path, e.Name()), e, cfg) {
+		child := filepath.Join(path, e.Name())
+		if shouldSkip(child, e, cfg) {
 			continue
 		}
-		child := filepath.Join(path, e.Name())
-		if rerr := walkSymlinkRec(child, depth+1, fn, cfg, visited); rerr != nil {
+		if cfg.gitignore != nil {
+			if skip, _ := gitignoreSkip(cfg.gitignore, toRelPosix(root, child), e.IsDir()); skip {
+				continue
+			}
+		}
+		if rerr := walkSymlinkRec(root, child, depth+1, fn, cfg, visited); rerr != nil {
 			if errors.Is(rerr, filepath.SkipAll) {
 				return rerr
 			}

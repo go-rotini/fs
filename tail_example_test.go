@@ -12,7 +12,7 @@ import (
 
 // Tail follows path indefinitely, yielding each appended line. Use a
 // context to bound the lifetime; when ctx is cancelled the iterator
-// returns cleanly. Rotation is handled automatically — when the file
+// returns cleanly. Rotation is handled automatically; when the file
 // is renamed and a fresh one appears at path, the iterator picks up
 // the new file from offset 0.
 func ExampleTail() {

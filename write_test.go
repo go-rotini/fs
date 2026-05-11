@@ -346,7 +346,7 @@ func TestOpenWrite_NoFinalizeMeansNoCommit(t *testing.T) {
 		t.Error("destination should not exist when finalize was never called")
 	}
 	// finalize should still be safe to NOT call (cleanup is a defer
-	// inside finalize, but the temp leak here is OK — tests don't
+	// inside finalize, but the temp leak here is OK; tests don't
 	// rely on the leak being cleaned up). The harness's t.TempDir
 	// removal handles it.
 	_ = finalize
@@ -732,7 +732,7 @@ func TestWriteFile_RoundTrip(t *testing.T) {
 //
 // These tests swap package-level OS hooks (see fault_hooks.go) to
 // exercise defensive error branches that real I/O can't easily
-// provoke. None call t.Parallel — the hooks are package-global.
+// provoke. None call t.Parallel; the hooks are package-global.
 
 func TestFault_WriteFile_SyncError(t *testing.T) {
 	h := newFaultyHooks(t)

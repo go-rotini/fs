@@ -57,7 +57,7 @@ func ExampleHashCompare() {
 
 // HashWriter folds a hash computation into a copy operation. Pair
 // it with [io.MultiWriter] to hash bytes you're also writing
-// elsewhere — handy for "download + integrity-check" flows.
+// elsewhere; handy for "download + integrity-check" flows.
 func ExampleHashWriter() {
 	hw := fs.HashWriter(fs.HashSHA256)
 

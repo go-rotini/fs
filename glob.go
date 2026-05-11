@@ -23,7 +23,7 @@ func Match(pattern, name string) (bool, error) {
 
 // Glob returns paths matching pattern after applying [Expand]
 // (`~`/`$VAR` resolution) to the pattern. Pattern syntax is
-// [filepath.Match]. A pattern with no matches returns (nil, nil) —
+// [filepath.Match]. A pattern with no matches returns (nil, nil);
 // no-match is not an error, mirroring stdlib's [filepath.Glob].
 //
 // Honors [WithStrictExpansion] via [PathOption].

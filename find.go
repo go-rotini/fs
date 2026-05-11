@@ -28,7 +28,7 @@ func defaultProjectMarkers() []string {
 }
 
 // WithMaxAncestors bounds how many directories the find-up walk
-// traverses before giving up. Default 32 — enough for any realistic
+// traverses before giving up. Default 32; enough for any realistic
 // project tree, while defending against pathological symlink loops
 // or deeply-nested mounts.
 func WithMaxAncestors(n int) FindOption {
@@ -177,8 +177,8 @@ func matchInDir(dir, pattern string) (string, error) {
 //
 // Every call walks the filesystem; no caching is performed. The
 // per-call cost is bounded by [WithMaxAncestors] (default 32 stat
-// calls in the worst case). Callers that hit this hot in a loop —
-// typically long-running daemons that resolve thousands of paths —
+// calls in the worst case). Callers that hit this hot in a loop;
+// typically long-running daemons that resolve thousands of paths;
 // should cache the result themselves with whatever invalidation
 // policy fits the embedding application; a process-global cache
 // here cannot know when a project layout changes underneath it.

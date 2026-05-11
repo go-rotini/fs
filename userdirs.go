@@ -105,7 +105,7 @@ func RuntimeDir() (string, error) {
 func SystemTempDir() string { return os.TempDir() }
 
 // ExecutableDir returns the directory containing the running
-// executable. Symlinks in the path are NOT resolved — use
+// executable. Symlinks in the path are NOT resolved; use
 // [BinaryPath] for the symlink-resolved binary path.
 func ExecutableDir() (string, error) {
 	exe, err := os.Executable()

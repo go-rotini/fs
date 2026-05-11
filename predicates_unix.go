@@ -11,7 +11,7 @@ func IsExecutable(path string) bool {
 	if !existsPredicate(path) {
 		return false
 	}
-	// On POSIX, only regular files are meaningfully "executable" —
+	// On POSIX, only regular files are meaningfully "executable";
 	// directories return EACCES with X_OK semantics that don't match
 	// the predicate's intent. Filter to regular files first.
 	if !IsFile(path) {

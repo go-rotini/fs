@@ -22,7 +22,7 @@ func ExampleStem() {
 // SanitizeFilename strips characters that would be illegal in a
 // filename on Windows or POSIX. When the cleaned stem matches a
 // Windows reserved device name, an underscore is inserted before
-// the extension — "CON.txt" becomes "CON_.txt", not "CON.txt_".
+// the extension; "CON.txt" becomes "CON_.txt", not "CON.txt_".
 func ExampleSanitizeFilename() {
 	fmt.Println(fs.SanitizeFilename("report: q4 / 2024.pdf"))
 	fmt.Println(fs.SanitizeFilename("CON.txt"))
@@ -47,7 +47,7 @@ func ExampleMustBeChildOf() {
 // Expand resolves leading ~ and embedded $VAR / ${VAR} references.
 // Resolution is purely lexical; the filesystem is consulted only
 // when a ~user is supplied. Unset variables expand to the empty
-// string by default — pass [fs.WithStrictExpansion] to error
+// string by default; pass [fs.WithStrictExpansion] to error
 // instead. The example uses a literal path so the Output block is
 // deterministic across environments.
 func ExampleExpand() {

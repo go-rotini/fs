@@ -105,7 +105,7 @@ func TestEnsurePerm_IgnoresNonPermBits(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	// Pass a mode with a type bit set; only permission bits should
-	// matter — and they already match, so no syscall.
+	// matter; and they already match, so no syscall.
 	if err := EnsurePerm(path, os.ModeDir|0o600); err != nil {
 		t.Errorf("EnsurePerm: %v", err)
 	}

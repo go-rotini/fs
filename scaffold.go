@@ -93,7 +93,7 @@ var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflic
 // ScaffoldPlan walks src, renders every path through [text/template]
 // with vars (so a source named `{{.AppName}}.go` becomes
 // `myapp.go`), and returns the actions [ScaffoldApply] would
-// perform — without any filesystem writes. Useful for `--dry-run`
+// perform; without any filesystem writes. Useful for `--dry-run`
 // flags.
 //
 // Template syntax errors in source paths or contents abort the

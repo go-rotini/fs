@@ -79,7 +79,7 @@ const (
 
 // ExtractArchive auto-detects the format of r and extracts entries
 // under dst. Every entry path is resolved through
-// [MustBeChildOf](dst, ...) before any filesystem write — this
+// [MustBeChildOf](dst, ...) before any filesystem write; this
 // defends against zip-slip / tar-slip attacks where a crafted entry
 // named `../../etc/passwd` would otherwise escape the extraction
 // root.
@@ -175,7 +175,7 @@ type gzipReadCloser struct {
 }
 
 func (g *gzipReadCloser) Close() error {
-	// errors.Join keeps both errors in the chain — gzip Close
+	// errors.Join keeps both errors in the chain; gzip Close
 	// flushes internal state, and we never want a benign gzip
 	// success to mask a file Close failure (or vice versa).
 	return errors.Join(g.Reader.Close(), g.file.Close())
@@ -234,7 +234,7 @@ func resolveEntryPath(dst, entryName string) (string, error) {
 	cleaned := filepath.Clean(entryName)
 	if filepath.IsAbs(cleaned) {
 		// Strip the leading separator (works on POSIX); on Windows
-		// a drive prefix is also illegal — handled by the IsAbs check
+		// a drive prefix is also illegal; handled by the IsAbs check
 		// + the MustBeChildOf check below.
 		cleaned = cleaned[1:]
 	}

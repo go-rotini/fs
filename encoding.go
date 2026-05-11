@@ -45,7 +45,7 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // StripUTF8BOM returns b with a leading UTF-8 BOM removed, or b
 // unchanged when no BOM is present. A BOM that does NOT appear at
-// offset 0 is not stripped — it's a real character anywhere else.
+// offset 0 is not stripped; it's a real character anywhere else.
 func StripUTF8BOM(b []byte) []byte {
 	if len(b) >= len(utf8BOM) && bytes.Equal(b[:len(utf8BOM)], utf8BOM) {
 		return b[len(utf8BOM):]

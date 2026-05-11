@@ -81,7 +81,7 @@ func TestReadStdin_Basic(t *testing.T) {
 }
 
 func TestReadStdin_BoundedByMaxSize(t *testing.T) {
-	// 1KiB of data, cap at 256 bytes — must error.
+	// 1KiB of data, cap at 256 bytes; must error.
 	withStdin(t, strings.Repeat("x", 1024), func() {
 		_, err := ReadStdin(WithMaxSize(256))
 		if !errors.Is(err, ErrFileTooLarge) {

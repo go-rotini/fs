@@ -290,7 +290,7 @@ func TestApplyTransient_StopsAtFirstError(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Plan: create A (works), create pre (fails — exists), create B
+	// Plan: create A (works), create pre (fails; exists), create B
 	// (skipped). After the call, A exists, B does not.
 	a := filepath.Join(dir, "a.txt")
 	b := filepath.Join(dir, "b.txt")

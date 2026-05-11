@@ -9,7 +9,7 @@ import (
 // WithTempEnv snapshots `os.Environ` at call time and registers a
 // `t.Cleanup` that restores it. Pair with `t.Setenv` for tests that
 // modify many env vars: `WithTempEnv(t)` first, then any number of
-// `t.Setenv` calls — every modification reverts when the test
+// `t.Setenv` calls; every modification reverts when the test
 // returns, regardless of how the test exits.
 //
 // `t.Setenv` alone restores the specific variable it sets, but

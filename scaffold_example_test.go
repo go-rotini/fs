@@ -13,7 +13,7 @@ import (
 // ScaffoldApply walks an embedded template tree, renders every path
 // and file contents through text/template with vars, and writes the
 // rendered tree under dst. Default conflict policy is
-// SkipExisting — a re-run on a previously-applied scaffold is a
+// SkipExisting; a re-run on a previously-applied scaffold is a
 // no-op (idempotent).
 //
 // In real code the source io/fs.FS is typically an [embed.FS]; the

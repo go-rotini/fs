@@ -509,7 +509,7 @@ func TestMove_MissingSrc(t *testing.T) {
 	}
 }
 
-// TestMove_CrossDevice exercises the EXDEV → CopyFile + Remove fallback.
+// TestMove_CrossDevice exercises the EXDEV to CopyFile + Remove fallback.
 // It synthesizes the cross-device condition by feeding the fallback an
 // error that wraps syscall.EXDEV (the real cross-mount setup is
 // environment-specific and skipped here; see the requirements doc for
@@ -543,7 +543,7 @@ func TestMove_CrossDeviceFallback(t *testing.T) {
 //
 // These tests swap package-level OS hooks (see fault_hooks.go) to
 // exercise defensive error branches that real I/O can't easily
-// provoke. None call t.Parallel — the hooks are package-global.
+// provoke. None call t.Parallel; the hooks are package-global.
 
 func TestFault_CopyFile_SyncError(t *testing.T) {
 	h := newFaultyHooks(t)

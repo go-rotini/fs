@@ -4,7 +4,7 @@ import "testing"
 
 // BenchmarkHash runs each algorithm over the canonical sizes. The
 // underlying hash cost dominates; what the benchmark measures is
-// the wrapper overhead — file open, io.Copy, hex encoding.
+// the wrapper overhead; file open, io.Copy, hex encoding.
 func BenchmarkHash(b *testing.B) {
 	algos := []struct {
 		name string
@@ -40,7 +40,7 @@ func BenchmarkHash(b *testing.B) {
 	}
 }
 
-// BenchmarkHashWriter measures the streaming variant — the cost of
+// BenchmarkHashWriter measures the streaming variant; the cost of
 // piping bytes through [HashWriter] vs reading from disk. Useful
 // for the io.MultiWriter idiom in [doc.go]'s HashWriter example.
 func BenchmarkHashWriter(b *testing.B) {

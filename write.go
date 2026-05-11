@@ -70,7 +70,7 @@ func WithSync(b bool) WriteOption {
 
 // WithAtomic toggles the temp-file + rename strategy. Default true.
 // Disable for very large files where doubled disk usage is
-// prohibitive — at the cost of writes that can leave torn content
+// prohibitive; at the cost of writes that can leave torn content
 // visible to concurrent readers.
 func WithAtomic(b bool) WriteOption {
 	return func(o *writeOptions) { o.atomic = b }

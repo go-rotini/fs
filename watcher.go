@@ -37,7 +37,7 @@ var (
 // correctly.
 //
 // In v0.1 every Watcher uses the polling backend regardless of
-// platform — `os.Lstat` in a loop at the configured interval
+// platform; `os.Lstat` in a loop at the configured interval
 // (default 1 second; override via [WithPolling]). The
 // platform-native backends (inotify on Linux, kqueue on macOS/BSD,
 // ReadDirectoryChangesW on Windows) are scheduled for a follow-up
@@ -185,13 +185,13 @@ func (w *Watcher) selectBackend() (watcherBackend, error) {
 // registerInitial adds the appropriate paths to the backend.
 //
 // For file watchers (not isDir), we watch the parent directory and
-// filter by basename — this catches atomic-rename saves where the
+// filter by basename; this catches atomic-rename saves where the
 // new inode replaces the old one.
 //
 // For directory watchers, we add the directory itself; recursive
 // watches add every existing subdirectory at construction time.
 //
-// Lazy watchers tolerate a missing target — the parent directory
+// Lazy watchers tolerate a missing target; the parent directory
 // must still exist.
 func (w *Watcher) registerInitial(lazy bool) error {
 	// All errors here are wrapped at the newWatcher call site via
@@ -299,7 +299,7 @@ func (w *Watcher) worker() {
 	rawCh := w.backend.Events()
 	deboCh := w.debouncer.Out()
 
-	// Pump backend → debouncer in a sub-goroutine so the main loop can
+	// Pump backend to debouncer in a sub-goroutine so the main loop can
 	// also handle workerStop cleanly.
 	pumpDone := make(chan struct{})
 	go func() {
@@ -340,7 +340,7 @@ func (w *Watcher) shouldEmit(path string) bool {
 // hasParentDir reports whether child lives under parent. A child
 // equal to parent counts as inside; a child that resolves to ".." or
 // a sibling does not. Filenames that incidentally start with two
-// dots (e.g., "..foo") are NOT treated as escapes — only a "..\n"
+// dots (e.g., "..foo") are NOT treated as escapes; only a "..\n"
 // segment terminated by the path separator (or standalone "..") is.
 func hasParentDir(child, parent string) bool {
 	rel, err := filepath.Rel(parent, child)
@@ -373,7 +373,7 @@ func (w *Watcher) fanOut(ev WatchEvent) {
 	}
 }
 
-// Close releases all resources. Idempotent — repeated calls are
+// Close releases all resources. Idempotent; repeated calls are
 // no-ops.
 //
 // The error return is reserved for forward compatibility. v0.1

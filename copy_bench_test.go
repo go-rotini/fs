@@ -43,7 +43,7 @@ func BenchmarkCopyDir(b *testing.B) {
 
 	for _, c := range cases {
 		b.Run(c.shape.String(), func(b *testing.B) {
-			// Build the source ONCE — reused across iterations.
+			// Build the source ONCE; reused across iterations.
 			srcDir := b.TempDir()
 			buildBenchTree(b, srcDir, c.n, c.shape)
 

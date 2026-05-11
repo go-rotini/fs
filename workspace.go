@@ -14,28 +14,23 @@ type WorkspaceRoot struct {
 	// Path is the absolute path of the workspace member.
 	Path string
 
-	// Kind is the kind of workspace declaration that produced this
-	// root: "go.work", "package.json", "pnpm-workspace.yaml", or
-	// "rush.json".
+	// Kind identifies the manifest form that produced this root.
+	// One of "go.work", "package.json", or "pnpm-workspace.yaml".
 	Kind string
 }
 
 // WorkspaceRoots discovers the member roots of a multi-root
-// workspace anchored at root. The detector looks at a small set of
-// canonical manifest files and returns every member it can extract:
+// workspace anchored at root. The detector inspects a small set of
+// canonical manifest files:
 //
-//   - `go.work` — uses each `use` directive; resolves relative paths.
-//   - `package.json` with a `workspaces` field — array OR object
-//     with a `packages` array; glob patterns are expanded
-//     filesystem-side via [Glob].
-//   - `pnpm-workspace.yaml` — parses the simple `packages:` list
-//     form without depending on a YAML parser (a tiny line-oriented
-//     parser handles the common case).
+//   - go.work: each `use` directive.
+//   - package.json with a `workspaces` field: array of globs or an
+//     object with a `packages` array. Globs are expanded via [Glob].
+//   - pnpm-workspace.yaml: the `packages:` list form. See
+//     [parsePnpmWorkspaces] for the supported subset.
 //
-// Returns an empty slice when no workspace manifest is present.
-// Returns the union of member roots across all detected manifests;
-// duplicates (same absolute path under multiple manifests) are
-// elided.
+// Returns an empty slice when no manifest is present. Duplicate
+// member paths across manifests are deduplicated.
 func WorkspaceRoots(root string) ([]WorkspaceRoot, error) {
 	root = filepath.Clean(root)
 	var out []WorkspaceRoot
@@ -81,8 +76,8 @@ func WorkspaceRoots(root string) ([]WorkspaceRoot, error) {
 }
 
 // parseGoWork extracts member paths from a go.work file. The grammar
-// is tiny — `use ( path1 path2 ... )` or `use path` — so we parse
-// line by line rather than pulling in `go/build`.
+// (`use ( path1 path2 ... )` or `use path`) is small enough to parse
+// line by line.
 func parseGoWork(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -115,9 +110,8 @@ func parseGoWork(path string) ([]string, error) {
 }
 
 // parseNpmWorkspaces extracts member paths from a package.json's
-// workspaces field. The field can be either an array of glob
-// patterns or an object with a `packages` array. Globs are expanded
-// against root via [Glob].
+// `workspaces` field. The field is either an array of glob patterns
+// or an object with a `packages` array. Globs are expanded via [Glob].
 func parseNpmWorkspaces(path, root string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -125,36 +119,31 @@ func parseNpmWorkspaces(path, root string) ([]string, error) {
 	}
 	var raw map[string]json.RawMessage
 	if uerr := json.Unmarshal(data, &raw); uerr != nil {
-		return nil, nil //nolint:nilerr // malformed package.json — silently report no members
+		return nil, nil //nolint:nilerr // malformed package.json: report no members
 	}
 	ws, ok := raw["workspaces"]
 	if !ok {
 		return nil, nil
 	}
 	var globs []string
-	// Try array form first.
 	if jerr := json.Unmarshal(ws, &globs); jerr != nil {
-		// Object form.
 		var obj struct {
 			Packages []string `json:"packages"`
 		}
 		if oerr := json.Unmarshal(ws, &obj); oerr != nil {
-			return nil, nil //nolint:nilerr // malformed workspaces field — treat as no members
+			return nil, nil //nolint:nilerr // malformed workspaces field: report no members
 		}
 		globs = obj.Packages
 	}
 	return expandGlobsInRoot(root, globs), nil
 }
 
-// parsePnpmWorkspaces extracts member globs from a
-// pnpm-workspace.yaml.
+// parsePnpmWorkspaces extracts member globs from a pnpm-workspace.yaml.
 //
 // Supported subset: the `packages:` list form with `- "glob"` entries.
-// A file that uses YAML features outside this subset (inline maps,
-// anchors, multi-line strings, multiple top-level keys other than
-// `packages:`) is rejected with [errPnpmWorkspaceUnsupported] rather
-// than silently returning empty — the package would rather fail
-// loudly than silently miss workspace members.
+// Files using YAML features outside this subset (inline maps, anchors,
+// multi-line strings, multiple top-level keys) are rejected with
+// [errPnpmWorkspaceUnsupported] rather than silently returning empty.
 func parsePnpmWorkspaces(path, root string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -164,16 +153,14 @@ func parsePnpmWorkspaces(path, root string) ([]string, error) {
 	inPackages := false
 	sawPackagesKey := false
 	for line := range strings.SplitSeq(string(data), "\n") {
-		// Strip trailing comments (preserve the leading content).
 		rawTrim := strings.TrimRight(line, "\r")
 		trim := strings.TrimSpace(rawTrim)
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
 		}
 
-		// Top-level (non-indented) keys reset the packages section.
-		isIndented := rawTrim != trim
-		if !isIndented {
+		// Top-level (non-indented) keys end any open packages section.
+		if rawTrim == trim {
 			inPackages = false
 		}
 
@@ -185,18 +172,14 @@ func parsePnpmWorkspaces(path, root string) ([]string, error) {
 			inPackages = true
 			continue
 		}
-		// An inline-map `packages: [a, b]` or anchor form is not
-		// supported — fail loudly so callers see the gap rather than
-		// silently empty workspace roots.
+		// Inline-map `packages: [a, b]` and similar forms are not
+		// supported; fail loudly rather than silently miss members.
 		if strings.HasPrefix(trim, "packages:") {
 			return nil, errPnpmWorkspaceUnsupported
 		}
 
 		if inPackages {
 			if !strings.HasPrefix(trim, "- ") {
-				// A non-list-item line inside packages: is malformed.
-				// Quietly tolerate a fully-indented blank or comment
-				// (handled above) but reject substantive lines.
 				return nil, errPnpmWorkspaceUnsupported
 			}
 			globs = append(globs, unquote(strings.TrimSpace(trim[2:])))
@@ -205,18 +188,14 @@ func parsePnpmWorkspaces(path, root string) ([]string, error) {
 	return expandGlobsInRoot(root, globs), nil
 }
 
-// errPnpmWorkspaceUnsupported flags YAML features the package's
-// hand-rolled parser doesn't handle.
 var errPnpmWorkspaceUnsupported = errors.New("fs: workspace: pnpm-workspace.yaml uses unsupported YAML feature (only `packages:` list form is supported)")
 
-// expandGlobsInRoot turns relative glob patterns into absolute paths
-// by joining with root and feeding through [Glob].
 func expandGlobsInRoot(root string, globs []string) []string {
 	var members []string
 	for _, g := range globs {
 		matches, err := Glob(filepath.Join(root, g))
 		if err != nil || len(matches) == 0 {
-			// Not a glob (or no matches) — treat as a literal path.
+			// Treat a non-glob or no-match entry as a literal path.
 			members = append(members, filepath.Join(root, g))
 			continue
 		}

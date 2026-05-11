@@ -380,7 +380,7 @@ func TestSameDevice_SameDir(t *testing.T) {
 //
 // These tests swap package-level OS hooks (see fault_hooks.go) to
 // exercise defensive error branches that real I/O can't easily
-// provoke. None call t.Parallel — the hooks are package-global.
+// provoke. None call t.Parallel; the hooks are package-global.
 
 func TestFault_Touch_CloseError(t *testing.T) {
 	h := newFaultyHooks(t)

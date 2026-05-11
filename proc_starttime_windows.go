@@ -12,14 +12,11 @@ import (
 
 // platformProcessStartTime on Windows uses OpenProcess +
 // GetProcessTimes to fetch the creation FILETIME (100-nanosecond
-// ticks since 1601-01-01 UTC). The FILETIME is rendered in decimal;
-// a recycled PID gets a fresh creation timestamp.
+// ticks since 1601-01-01 UTC), rendered in decimal.
 //
 // Requires PROCESS_QUERY_LIMITED_INFORMATION on the target process.
-// Protected processes (some anti-virus / kernel services) deny
-// access; callers using this with [WithPIDLockFingerprint] should
-// expect an error in that case and treat the empty fingerprint as
-// "defer to PID-alive probe".
+// Protected processes (some anti-virus and kernel services) deny
+// access; the function returns an error in that case.
 func platformProcessStartTime(pid int) (string, error) {
 	const processQueryLimitedInfo = 0x1000
 	procOpenProcess := kernel32.NewProc("OpenProcess")

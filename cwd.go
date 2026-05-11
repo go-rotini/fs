@@ -22,7 +22,7 @@ func Cwd() (string, error) {
 //
 // Process-global state: cwd is shared across every goroutine, not
 // goroutine-local. Concurrent callers race; this function is NOT
-// safe to use from tests that call `t.Parallel()` — a parallel
+// safe to use from tests that call `t.Parallel()`; a parallel
 // sibling test calling any cwd-relative API (including
 // [filepath.Abs] on a relative path) will see the wrong directory
 // for the duration of this call. Prefer [WithDir] for scoped

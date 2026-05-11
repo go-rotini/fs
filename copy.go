@@ -71,7 +71,7 @@ const (
 // mode and (by default) mtime are preserved on dst.
 //
 // If src is a symlink and [WithFollowSymlinks] is false (default),
-// the symlink itself is recreated at dst — the link target is not
+// the symlink itself is recreated at dst; the link target is not
 // dereferenced.
 //
 // Non-regular, non-symlink sources (devices, FIFOs, sockets) error

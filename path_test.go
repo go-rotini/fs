@@ -90,7 +90,7 @@ func TestExpand_UnsetVarLenient(t *testing.T) {
 	t.Parallel()
 	got, err := Expand("$FS_UNSET_TEST_VAR_xyz/path")
 	if err != nil || got != "/path" {
-		t.Errorf("got (%q, %v); unset → empty by default", got, err)
+		t.Errorf("got (%q, %v); unset to empty by default", got, err)
 	}
 }
 

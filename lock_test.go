@@ -412,7 +412,7 @@ func TestPIDLock_FingerprintRejectsRecycledPID(t *testing.T) {
 
 	// Seed: write a lockfile that records the current PID with a
 	// fingerprint of "original". The new acquire is configured with
-	// a fingerprint function that returns "changed" — simulating a
+	// a fingerprint function that returns "changed"; simulating a
 	// PID-recycle scenario where the PID is alive (true, we are
 	// alive) but is a *different* process from the one recorded.
 	if err := os.WriteFile(p, fmt.Appendf(nil, "%d original\n", os.Getpid()), 0o644); err != nil {

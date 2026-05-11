@@ -73,7 +73,7 @@ func WithBufferSize(n int) WatcherOption {
 //
 // Once the platform-native backends (inotify / kqueue /
 // ReadDirectoryChangesW) land in a follow-up release, WithPolling
-// will force the polling backend in preference to the native one —
+// will force the polling backend in preference to the native one;
 // useful for filesystems where the native APIs are known to be
 // unreliable (NFS, FUSE, exotic mounts) or in tests that want
 // deterministic, syscall-free behavior.

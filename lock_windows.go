@@ -32,7 +32,7 @@ const (
 
 // osFlock locks the entire file via LockFileEx. Windows file locks
 // are mandatory (the OS enforces them) and per-handle, so closing
-// the handle releases the lock — matching POSIX flock semantics from
+// the handle releases the lock; matching POSIX flock semantics from
 // the caller's perspective.
 //
 // We lock the maximum possible range (0..0xFFFFFFFFFFFFFFFF) so any
@@ -70,7 +70,7 @@ func osFlock(f *os.File, kind lockKind) error {
 		return nil
 	}
 	if errors.Is(e1, winErrLockViolation) || errors.Is(e1, syscall.ERROR_IO_PENDING) || errors.Is(e1, winErrIOPending) {
-		// LOCKFILE_FAIL_IMMEDIATELY → lock is held.
+		// LOCKFILE_FAIL_IMMEDIATELY to lock is held.
 		return errLockBusy
 	}
 	return e1 //nolint:wrapcheck // wrapped by caller via *PathError
@@ -125,7 +125,7 @@ func platformPIDAlive(pid int) bool {
 		// PID not found or access denied. We can't open the handle,
 		// so we conservatively treat it as alive (see comment above).
 		// The exception is when the PID is so high that it's
-		// unreasonable — but we can't tell that without enumerating
+		// unreasonable; but we can't tell that without enumerating
 		// all PIDs, so we accept the false-positive.
 		return true
 	}

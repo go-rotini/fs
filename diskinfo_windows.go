@@ -39,7 +39,7 @@ func diskUsageOf(path string) (DiskUsage, error) {
 		FreeBytes:      totalFree,
 		AvailableBytes: freeForUser,
 		UsedBytes:      used,
-		// Inode fields are zero — Windows doesn't surface inode counts.
+		// Inode fields are zero; Windows doesn't surface inode counts.
 	}, nil
 }
 

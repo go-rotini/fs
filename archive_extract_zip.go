@@ -27,7 +27,7 @@ func extractZipFromStream(r io.Reader, dst string, cfg archiveExtractOptions) er
 
 	limit := cfg.maxBytes
 	if limit <= 0 {
-		// No cap — copy whole stream.
+		// No cap; copy whole stream.
 		if _, err := io.Copy(tmp, r); err != nil {
 			return wrapPathError(opExtractArchive, dst, err)
 		}

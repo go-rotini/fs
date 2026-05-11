@@ -11,16 +11,16 @@ import (
 
 // ScaffoldExtract is a non-templated copy of src into dst. Used for
 // "extract default resources on first run" workflows where templates
-// aren't needed — the source files are written verbatim.
+// aren't needed; the source files are written verbatim.
 //
 // On every call, the package computes a content-hash of src (a
 // stable SHA-256 over sorted-name + content concatenation) and
 // compares it to the marker file at `<dst>/<versionMarker>` (default
 // `.scaffold-version`; override via [WithScaffoldVersionMarker]):
 //
-//   - Same hash → no-op.
-//   - Different hash → re-extract and update the marker.
-//   - Marker missing → first extract, write marker.
+//   - Same hash to no-op.
+//   - Different hash to re-extract and update the marker.
+//   - Marker missing to first extract, write marker.
 //
 // Conflict policy still applies: by default existing destinations
 // are kept. Use [ScaffoldOverwriteAll] to force re-extracts to

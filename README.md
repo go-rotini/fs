@@ -6,12 +6,12 @@ This package is used as the default filesystem package for [rotini](https://gith
 
 ## Features
 
-- Atomic writes — temp file + `fsync` + rename + parent-dir `fsync` — via `WriteFile`, `WriteFileSecret`, `WriteFileExclusive`, `WriteString`, `Append`, with options `WithPerm`, `WithSync`, `WithBackup`, `WithMkdirAll`
+- Atomic writes (temp file + `fsync` + rename + parent-dir `fsync`) via `WriteFile`, `WriteFileSecret`, `WriteFileExclusive`, `WriteString`, `Append`, with options `WithPerm`, `WithSync`, `WithBackup`, `WithMkdirAll`
 - Bounded reads (default 100 MiB, overridable with `WithMaxSize`) via `ReadFile`, `ReadLines`, `ReadFirstLine`, `OpenLines`, `OpenChunked`, `ReadAt`
 - Idempotent removal: `Remove`, `RemoveAll`, `RemoveContents`, plus symlink-safe `RemoveAllNoFollow`
 - Path safety primitives: `IsSubpath`, `MustBeChildOf`, `EvalSymlinksWithin`, `SanitizeFilename`, `IsReservedName`, `LongPath`
 - TOCTOU-safe open: `OpenNoFollow` (refuses final-component symlinks) and `OpenAt` (resolves through a held directory FD on POSIX)
-- Cross-platform user / system directories: XDG on Linux/FreeBSD, Apple guidelines on macOS, `%APPDATA%` / `%LOCALAPPDATA%` / `%PROGRAMDATA%` on Windows — `Home`, `ConfigDir`, `CacheDir`, `DataDir`, `StateDir`, `RuntimeDir`, `ExecutableDir`, `BinaryPath`, plus `App*Dir(appName)` and `System*Dir(appName)` variants
+- Cross-platform user and system directories (XDG on Linux/FreeBSD, Apple guidelines on macOS, `%APPDATA%` / `%LOCALAPPDATA%` / `%PROGRAMDATA%` on Windows): `Home`, `ConfigDir`, `CacheDir`, `DataDir`, `StateDir`, `RuntimeDir`, `ExecutableDir`, `BinaryPath`, plus `App*Dir(appName)` and `System*Dir(appName)` variants
 - Path expansion: `Expand` handles `~`, `~user`, `$VAR`, `${VAR}` with opt-in strict mode
 - Find-up project discovery: `FindUp`, `FindUpAll`, `ProjectRoot`, `FirstExisting`
 - Directory walking: `Walk` with `WalkSkipHidden`, `WalkSkipNames`, `WalkSkipPatterns`, `WalkMaxDepth`, `WalkFollowSymlinks`, `WalkErrorHandler`, `WithWalkGitignore`; concurrent variant `WalkParallel(ctx, ...)`
@@ -33,8 +33,8 @@ This package is used as the default filesystem package for [rotini](https://gith
 - Bytes formatting: strict-SI `ParseBytes` (`1KB == 1000`, matching kubectl / docker) plus IEC-binary `ParseBytesIEC` (`1KB == 1024`); `FormatBytes`
 - Project-kind detection: `ProjectType` recognizes Go, Node, Rust, Python, Ruby, Java, .NET, PHP, Make, Docker via marker files; extensible via `RegisterProjectKind`
 - Multi-root workspace discovery: `WorkspaceRoots` parses `go.work`, `package.json` workspaces (array + object forms), `pnpm-workspace.yaml`
-- Stdio: `ReadStdin`, `OpenStdinLines`, `WriteStdout` / `WriteStderr` (translates `EPIPE` → `ErrBrokenPipe`), `IsTerminal`
-- Test helpers in `fs/fstest`: `NewTestHarness(t)`, `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT` — importing `github.com/go-rotini/fs` does **not** pull stdlib's `testing` package into your binary
+- Stdio: `ReadStdin`, `OpenStdinLines`, `WriteStdout` / `WriteStderr` (translates `EPIPE` -> `ErrBrokenPipe`), `IsTerminal`
+- Test helpers in `fs/fstest`: `NewTestHarness(t)`, `MockFS`, `WithTempEnv`, `TempFileT`, `TempDirT`. Importing `github.com/go-rotini/fs` does **not** pull stdlib's `testing` package into your binary
 - Bi-directional sentinel matching: `errors.Is(err, fs.ErrNotFound)` matches both the package sentinel AND stdlib's `io/fs.ErrNotExist`; `*MultiError` with Go 1.20 `Unwrap() []error`
 - Pluggable `slog.Logger` for `Apply` / `Cache` / `Rotator` debug output via package-level `SetLogger`
 - DoS protection: bounded reads by default, archive extraction size cap, plan/apply journal size split, content-search size cap, gitignore + workspace parser size limits

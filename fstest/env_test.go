@@ -15,7 +15,7 @@ func TestWithTempEnv_RestoresOnCleanup(t *testing.T) {
 
 	t.Run("inner", func(t *testing.T) {
 		WithTempEnv(t)
-		// Mutate env inside the subtest via direct os.Setenv —
+		// Mutate env inside the subtest via direct os.Setenv;
 		// WithTempEnv's reason to exist.
 		//nolint:usetesting // direct Setenv is the scenario under test
 		if err := os.Setenv(key, "inner"); err != nil {

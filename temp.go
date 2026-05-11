@@ -17,7 +17,7 @@ const (
 // the open file, a cleanup function, and any error.
 //
 // The cleanup closes the file (best-effort; may already be closed by
-// the caller) and removes it. Cleanup is idempotent — repeated calls
+// the caller) and removes it. Cleanup is idempotent; repeated calls
 // run the work exactly once and return the same error from the first
 // invocation; subsequent calls return nil.
 func TempFile(dir, pattern string) (*os.File, func() error, error) {
@@ -50,7 +50,7 @@ func TempFile(dir, pattern string) (*os.File, func() error, error) {
 // [os.MkdirTemp]). dir defaults to [os.TempDir] when empty. Returns
 // the directory path, a cleanup function, and any error.
 //
-// The cleanup is [os.RemoveAll]. Idempotent — repeated calls run the
+// The cleanup is [os.RemoveAll]. Idempotent; repeated calls run the
 // work exactly once.
 func TempDir(dir, pattern string) (string, func() error, error) {
 	if dir == "" {
@@ -76,7 +76,7 @@ func TempDir(dir, pattern string) (string, func() error, error) {
 	return name, cleanup, nil
 }
 
-// TempFileT and TempDirT — `t.Cleanup`-registering convenience
-// wrappers — live in [github.com/go-rotini/fs/fstest]. They cannot
+// TempFileT and TempDirT; `t.Cleanup`-registering convenience
+// wrappers; live in [github.com/go-rotini/fs/fstest]. They cannot
 // live here without pulling [testing] into every consumer's
 // production binary.

@@ -9,7 +9,7 @@ import (
 
 // Fuzz targets. CI runs `go test -fuzz=Fuzz<Name> -fuzztime=60s` per
 // target as a smoke pass. The package-internal invariant we check
-// is "no panic, no wrong result" — every target is allowed to
+// is "no panic, no wrong result"; every target is allowed to
 // return errors freely; only crashes constitute a fuzz failure.
 
 // FuzzExpand drives [Expand] with random input strings. The package
@@ -174,8 +174,8 @@ func FuzzMagic(f *testing.F) {
 }
 
 // FuzzGitignore drives [parseGitignoreLine] with adversarial input.
-// The parser is forgiving by design — comments, blank lines, leading
-// `!`, trailing `/`, embedded `**` — so the invariant we check is
+// The parser is forgiving by design; comments, blank lines, leading
+// `!`, trailing `/`, embedded `**`; so the invariant we check is
 // "no panic" plus "no panic on subsequent .matches() call against
 // a small set of representative path inputs".
 func FuzzGitignore(f *testing.F) {
@@ -248,7 +248,7 @@ func FuzzGoWork(f *testing.F) {
 
 // FuzzPnpmWorkspaces drives [parsePnpmWorkspaces] with arbitrary
 // YAML-ish input. Invariant: no panic. The parser is intentionally
-// strict — unsupported YAML features return an error rather than
+// strict; unsupported YAML features return an error rather than
 // silently empty.
 func FuzzPnpmWorkspaces(f *testing.F) {
 	seeds := []string{

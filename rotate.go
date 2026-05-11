@@ -23,15 +23,11 @@ const (
 	opRotateCompr  = "rotate.compress"
 	opRotateRename = "rotate.rename"
 
-	// rotateTimestampLayout suffixes rotated files. Sortable lex
-	// (also chronologically) so retention pruning can sort by name.
+	// rotateTimestampLayout is lex-sortable (and chronologically so),
+	// allowing retention pruning to sort by name.
 	rotateTimestampLayout = "20060102-150405.000"
 
-	// rotateGzipExt is appended to a rotated filename when
-	// [WithRotateCompress] is enabled.
-	rotateGzipExt = ".gz"
-
-	// rotateFilePerm matches WriteFile's default for new log files.
+	rotateGzipExt              = ".gz"
 	rotateFilePerm os.FileMode = 0o644
 )
 
@@ -41,20 +37,19 @@ var ErrRotatorClosed = errors.New("fs: rotator: closed")
 
 // Rotator is an [io.WriteCloser] that rotates its backing file when
 // a size or age threshold is exceeded. Rotation renames the current
-// file with a sortable timestamp suffix (and optionally gzips it),
-// then reopens the original path fresh.
+// file with a sortable timestamp suffix (optionally gzipping it) and
+// reopens the original path fresh.
 //
-// Rotator is safe for concurrent Write calls. Within a single
-// process, writes are serialized via an internal mutex. Across
-// processes, the backing file is opened with O_APPEND so writes
-// don't interleave at byte granularity, and the size check on each
-// Write consults the actual on-disk file size — two processes
-// sharing the same path will cooperate on the byte threshold.
+// Rotator is safe for concurrent Write calls. Within a process,
+// writes are serialized via an internal mutex. Across processes, the
+// backing file is opened with O_APPEND so writes don't interleave
+// inside a single call, and the size check on each Write consults
+// the actual on-disk file size, so two processes sharing the same
+// path cooperate on the byte threshold.
 //
 // Age-based rotation remains process-local: each Rotator tracks the
 // time it opened the current file. Coordinate manual [Rotator.Rotate]
-// calls if cross-process age coordination matters; for size-only
-// rotation, multiple writers are safe.
+// calls if cross-process age coordination matters.
 type Rotator struct {
 	path string
 	cfg  rotatorConfig
@@ -66,9 +61,6 @@ type Rotator struct {
 	closed   bool
 }
 
-// rotatorConfig holds the per-Rotator options. Zero value means "no
-// size cap, no age cap, no retention, no compression, real wall
-// clock".
 type rotatorConfig struct {
 	maxBytes int64
 	maxAge   time.Duration
@@ -81,9 +73,9 @@ type rotatorConfig struct {
 type RotatorOption func(*rotatorConfig)
 
 // WithRotateMaxBytes rotates the file when its size would exceed n.
-// The check runs before each Write; a single oversized Write is
-// accepted in full and triggers rotation immediately afterward.
-// Zero (the default) disables size-based rotation.
+// The check runs before each Write; an oversized Write is accepted
+// in full and triggers rotation immediately afterward. Zero disables
+// size-based rotation.
 func WithRotateMaxBytes(n int64) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.maxBytes = n
@@ -91,18 +83,16 @@ func WithRotateMaxBytes(n int64) RotatorOption {
 }
 
 // WithRotateMaxAge rotates the file when the time since the current
-// file was opened exceeds d. Useful for daily-log patterns; the age
-// check runs before each Write. Zero (the default) disables
-// age-based rotation.
+// file was opened exceeds d. Zero disables age-based rotation.
 func WithRotateMaxAge(d time.Duration) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.maxAge = d
 	}
 }
 
-// WithRotateKeep retains the n most recent rotated files; older
-// ones are removed after every rotation. Zero (the default) keeps
-// every rotated file. The current (live) file is not counted.
+// WithRotateKeep retains the n most recent rotated files; older ones
+// are removed after every rotation. Zero keeps every rotated file.
+// The live file is not counted.
 func WithRotateKeep(n int) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.keep = n
@@ -110,14 +100,9 @@ func WithRotateKeep(n int) RotatorOption {
 }
 
 // WithRotateCompress controls gzip compression of rotated files
-// after the move. Pass true to enable, false to disable explicitly
-// (useful when composing options from config). Uses [compress/gzip]
-// from stdlib so there's no third-party dependency. Compression
-// runs synchronously after the rename; callers needing non-blocking
-// compression should rotate in a background goroutine.
-//
-// The bool-arg shape matches [WalkSkipHidden] / [WalkFollowSymlinks]
-// for cross-package consistency.
+// after the move. Compression runs synchronously after the rename;
+// callers needing non-blocking compression should rotate in a
+// background goroutine.
 func WithRotateCompress(b bool) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.compress = b
@@ -165,11 +150,10 @@ func NewRotator(path string, opts ...RotatorOption) (*Rotator, error) {
 	}, nil
 }
 
-// Write appends p to the backing file. Before the append, the current
-// size and age are checked against the configured thresholds; if
-// either is exceeded, the file is rotated and a fresh one is opened.
-// Returns the number of bytes written, which equals len(p) on
-// success.
+// Write appends p to the backing file. Before the append, the
+// current size and age are checked against the configured
+// thresholds; if either is exceeded the file is rotated and a fresh
+// one is opened. Returns len(p) on success.
 func (r *Rotator) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -193,8 +177,7 @@ func (r *Rotator) Write(p []byte) (int, error) {
 }
 
 // Close releases the underlying file handle. Subsequent Write calls
-// return [ErrRotatorClosed]. Close is idempotent; the first call's
-// result is returned to subsequent callers.
+// return [ErrRotatorClosed]. Idempotent.
 func (r *Rotator) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -215,8 +198,7 @@ func (r *Rotator) Close() error {
 }
 
 // Rotate forces an immediate rotation regardless of size or age.
-// Useful for SIGHUP-style "rotate now" semantics. Subsequent writes
-// land in a fresh file at the original path.
+// Useful for SIGHUP-style "rotate now" semantics.
 func (r *Rotator) Rotate() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -227,16 +209,10 @@ func (r *Rotator) Rotate() error {
 	return r.rotateLocked()
 }
 
-// shouldRotateLocked reports whether the next Write of pendingBytes
-// would push the rotator past its configured size or age thresholds.
-// Called with r.mu held.
-//
-// The size check consults the actual on-disk file size via Stat
-// rather than the process-local curBytes counter, so two processes
-// sharing the same logfile see each other's growth and cooperate
-// correctly on the size threshold. If Stat fails (e.g., the file
-// was deleted out from under us), the local counter is used as a
-// fallback so this method never returns an error.
+// shouldRotateLocked reports whether the next Write would push past
+// a configured threshold. The size check consults the actual on-disk
+// file size via Stat so cross-process writers cooperate; if Stat
+// fails, the local counter is used as a fallback.
 func (r *Rotator) shouldRotateLocked(pendingBytes int64) bool {
 	size := r.curBytes
 	if r.f != nil {
@@ -245,8 +221,8 @@ func (r *Rotator) shouldRotateLocked(pendingBytes int64) bool {
 		}
 	}
 	if size == 0 {
-		// Never rotate an empty file — an immediately-rotated empty
-		// log produces a stream of zero-byte rotated artifacts.
+		// An empty file would otherwise rotate into an endless stream
+		// of zero-byte artifacts.
 		return false
 	}
 	if r.cfg.maxBytes > 0 && size+pendingBytes > r.cfg.maxBytes {
@@ -258,10 +234,6 @@ func (r *Rotator) shouldRotateLocked(pendingBytes int64) bool {
 	return false
 }
 
-// rotateLocked closes the current file, renames it with a timestamp
-// suffix, optionally compresses it, prunes old rotated files
-// according to the keep policy, and opens a fresh file at the
-// original path. Called with r.mu held.
 func (r *Rotator) rotateLocked() error {
 	if r.f != nil {
 		if err := r.f.Close(); err != nil {
@@ -272,9 +244,8 @@ func (r *Rotator) rotateLocked() error {
 
 	rotated := r.rotatedName()
 	if err := os.Rename(r.path, rotated); err != nil {
-		// If the file vanished between the size check and the rename
-		// (another rotator pulled it), fall through to reopening at
-		// path so the next write succeeds.
+		// Tolerate the case where another rotator already pulled the
+		// file out from under us; fall through to reopening at path.
 		if !errors.Is(err, stdfs.ErrNotExist) {
 			return wrapPathError(opRotateRename, r.path, err)
 		}
@@ -303,18 +274,11 @@ func (r *Rotator) rotateLocked() error {
 	return nil
 }
 
-// rotatedName returns the timestamped name for the current rotation.
-// Format: <path>.<timestamp> — lex-sortable so rotated files appear
-// in chronological order under `ls`.
 func (r *Rotator) rotatedName() string {
 	stamp := r.cfg.nowFn().UTC().Format(rotateTimestampLayout)
 	return fmt.Sprintf("%s.%s", r.path, stamp)
 }
 
-// openRotatedFile opens path with O_APPEND so concurrent writers
-// land at the end without interleaving inside a single Write call.
-// Returns the open file plus its starting size so the Rotator can
-// initialize curBytes accurately.
 func openRotatedFile(path string) (*os.File, stdfs.FileInfo, error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, rotateFilePerm)
 	if err != nil {
@@ -328,9 +292,9 @@ func openRotatedFile(path string) (*os.File, stdfs.FileInfo, error) {
 	return f, info, nil
 }
 
-// compressRotatedFile gzips rotated in place: writes <rotated>.gz
-// and removes <rotated> on success. On any failure the original
-// (uncompressed) rotated file is left intact for forensic recovery.
+// compressRotatedFile gzips rotated to <rotated>.gz and removes the
+// original on success. On any failure the uncompressed file is left
+// intact for recovery.
 func compressRotatedFile(rotated string) error {
 	src, err := os.Open(rotated)
 	if err != nil {
@@ -367,10 +331,10 @@ func compressRotatedFile(rotated string) error {
 	return nil
 }
 
-// pruneRotated enumerates rotated siblings of path (files matching
-// "<basename>.<timestamp>" optionally with ".gz" suffix), sorts them
-// chronologically (newest first), and removes everything beyond the
-// keep-most-recent threshold.
+// pruneRotated enumerates rotated siblings of path, sorts them
+// newest-first, and removes everything beyond the keep-most-recent
+// threshold. The timestamp layout is lex-sortable, so name-sort and
+// chronological-sort coincide.
 func pruneRotated(path string, keep int) error {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -392,18 +356,12 @@ func pruneRotated(path string, keep int) error {
 		if name == base || !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		// Reject the live file (no extra suffix) defensively.
-		if name == base {
-			continue
-		}
 		rotated = append(rotated, name)
 	}
 	if len(rotated) <= keep {
 		return nil
 	}
 
-	// Sort lex-desc; the timestamp layout is lex-sortable, so this is
-	// also chronological-desc. Newest at index 0.
 	sort.Sort(sort.Reverse(sort.StringSlice(rotated)))
 
 	for _, name := range rotated[keep:] {

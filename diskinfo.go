@@ -81,7 +81,7 @@ func isNetworkFSType(fsType string) bool {
 // IsCaseInsensitiveFS reports whether path lives on a case-insensitive
 // volume. Probe-based: writes a temp file with a known case in the
 // parent directory and checks whether the inverse case resolves to
-// the same inode. Best-effort — a probe error returns
+// the same inode. Best-effort; a probe error returns
 // (false, error).
 func IsCaseInsensitiveFS(path string) (bool, error) {
 	parent := path

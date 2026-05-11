@@ -12,7 +12,7 @@ import (
 
 // ExtractArchiveFile auto-detects the format (tar / tar.gz / zip)
 // from the file's leading bytes. Every entry passes through
-// [fs.MustBeChildOf] before any filesystem write — extraction
+// [fs.MustBeChildOf] before any filesystem write; extraction
 // outside dst is impossible by construction (zip-slip / tar-slip
 // defense).
 func ExampleExtractArchiveFile() {

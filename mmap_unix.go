@@ -7,12 +7,11 @@ import (
 	"syscall"
 )
 
-// platformMmap maps the first size bytes of f into the process
-// address space as a read-only PROT_READ+MAP_SHARED region.
+// platformMmap maps the first size bytes of f as PROT_READ |
+// MAP_SHARED.
 func platformMmap(f *os.File, size int64) ([]byte, error) {
 	if size > int64(^uint(0)>>1) {
-		// Size doesn't fit in a Go int — refusing to attempt the
-		// syscall rather than truncate silently.
+		// Refuse rather than silently truncate when size exceeds int.
 		return nil, syscall.EINVAL
 	}
 	data, err := syscall.Mmap(int(f.Fd()), 0, int(size), syscall.PROT_READ, syscall.MAP_SHARED)

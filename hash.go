@@ -92,7 +92,7 @@ func Hash(path string, algo HashAlgo) (string, error) {
 
 // HashCompare returns nil if path's hash matches expected (hex).
 // Comparison is constant-time via [crypto/subtle.ConstantTimeCompare]
-// — protects integrity-check call sites against timing oracles.
+// ; protects integrity-check call sites against timing oracles.
 // Returns [ErrHashMismatch] on mismatch.
 //
 // expected may be upper or lower case; case is normalized by the
@@ -144,7 +144,7 @@ func HashWriter(algo HashAlgo) *HashingWriter {
 }
 
 // Write writes p into the underlying hash. The error return is for
-// [io.Writer] conformance only — [hash.Hash.Write] never errors.
+// [io.Writer] conformance only; [hash.Hash.Write] never errors.
 func (w *HashingWriter) Write(p []byte) (int, error) {
 	return w.h.Write(p)
 }

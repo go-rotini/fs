@@ -120,7 +120,7 @@ func TestCache_TTLExpiration(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	// Backdate the file's mtime past the TTL — simpler than waiting.
+	// Backdate the file's mtime past the TTL; simpler than waiting.
 	path := c.entryPath("k")
 	old := now.Add(-time.Second)
 	if err := os.Chtimes(path, old, old); err != nil {

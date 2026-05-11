@@ -544,7 +544,7 @@ func TestOpenChunked_DefaultSize(t *testing.T) {
 	if err := os.WriteFile(path, []byte("short"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	seq, closeFn, err := OpenChunked(path, 0) // → default 64 KiB
+	seq, closeFn, err := OpenChunked(path, 0) // to default 64 KiB
 	if err != nil {
 		t.Fatalf("OpenChunked: %v", err)
 	}

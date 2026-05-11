@@ -100,7 +100,7 @@ func TestHash_MissingFile(t *testing.T) {
 func TestHash_LargeFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	// 1MB of zero bytes — verifies streaming works (single read won't
+	// 1MB of zero bytes; verifies streaming works (single read won't
 	// suffice in all configurations; io.Copy chunks).
 	path := filepath.Join(dir, "big")
 	if err := os.WriteFile(path, make([]byte, 1<<20), 0o644); err != nil {
@@ -110,7 +110,7 @@ func TestHash_LargeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Hash: %v", err)
 	}
-	// SHA-256 of 1MB of zero bytes — known constant.
+	// SHA-256 of 1MB of zero bytes; known constant.
 	const want = "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
 	if got != want {
 		t.Errorf("got %s, want %s", got, want)

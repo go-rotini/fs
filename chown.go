@@ -8,15 +8,12 @@ import (
 
 const opChown = "chown"
 
-// ChownRecursive walks root and applies uid/gid to every entry —
+// ChownRecursive walks root and applies uid/gid to every entry,
 // including root itself. Passing -1 for uid or gid leaves that value
 // unchanged on POSIX (matching [os.Chown] semantics).
 //
-// On Windows this is a no-op that returns [ErrNotSupported]; the
-// POSIX uid/gid concept does not map cleanly onto NTFS ACLs and
-// surfacing one wouldn't help the caller. Windows ownership changes
-// require the SetSecurityInfo / SetNamedSecurityInfo APIs which are
-// out of scope for the v0.1 package.
+// On Windows returns [ErrNotSupported]; POSIX uid/gid does not map
+// cleanly onto NTFS ACLs.
 //
 // Symlinks are not followed; the link itself has its ownership
 // changed via [os.Lchown] so cross-mount targets are not affected.

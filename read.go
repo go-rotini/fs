@@ -37,7 +37,7 @@ func newReadOptions(opts []ReadOption) readOptions {
 }
 
 // WithMaxSize sets the maximum bytes the read will consume. Zero or
-// negative disables the cap (the read becomes unbounded — only do
+// negative disables the cap (the read becomes unbounded; only do
 // this when you know the source is a regular file of trustworthy
 // size).
 func WithMaxSize(n int64) ReadOption {
@@ -78,7 +78,7 @@ func resolveReadPath(path string, cfg readOptions) (string, error) {
 // skipBOM advances br past a leading UTF-8 BOM if one is present.
 // A peek failure (file shorter than 3 bytes, or no BOM) leaves br
 // untouched; only a discard failure after a successful peek-of-BOM
-// is surfaced — it means the underlying reader broke between peek
+// is surfaced; it means the underlying reader broke between peek
 // and discard, which would surprise downstream callers.
 func skipBOM(br *bufio.Reader) error {
 	peek, peekErr := br.Peek(len(utf8BOM))
@@ -265,7 +265,7 @@ func OpenLines(path string, opts ...ReadOption) (iter.Seq2[string, error], func(
 // OpenChunked returns an iterator that streams path's contents in
 // chunks of size bytes. The iterator stops at EOF; callers can break
 // early. The returned cleanup function closes the underlying file
-// and is idempotent — safe to call multiple times (e.g., once via
+// and is idempotent; safe to call multiple times (e.g., once via
 // `defer` and again explicitly).
 //
 // If size <= 0, a 64 KiB default is used.

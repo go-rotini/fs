@@ -15,7 +15,7 @@ func TestGitignore_LiteralMatch(t *testing.T) {
 	cases := map[string]bool{
 		"foo.txt":         true,
 		"bar.txt":         false,
-		"sub/foo.txt":     true, // unanchored — matches at any depth
+		"sub/foo.txt":     true, // unanchored; matches at any depth
 		"sub/sub/foo.txt": true,
 		"foo.txt.bak":     false, // different name
 	}
@@ -31,7 +31,7 @@ func TestGitignore_AnchoredLeading(t *testing.T) {
 	g := NewGitignore([]string{"/foo"})
 	cases := map[string]bool{
 		"foo":     true,
-		"sub/foo": false, // anchored — only matches at root level
+		"sub/foo": false, // anchored; only matches at root level
 	}
 	for in, want := range cases {
 		if got := g.Match(in, false); got != want {

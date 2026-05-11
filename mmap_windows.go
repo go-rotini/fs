@@ -11,29 +11,16 @@ import (
 )
 
 // platformMmap maps f read-only via CreateFileMapping +
-// MapViewOfFile. Windows file mappings are reference-counted by the
-// OS; closing the mapping handle is safe once the view exists.
+// MapViewOfFile. Closing the mapping handle is safe once the view
+// exists; the OS reference-counts the mapping.
 //
-// Implementation note: this file is the package's one production
-// import of `golang.org/x/sys/windows`. The mapping is treated as a
-// documented exception to the otherwise-strict "zero non-stdlib
-// runtime imports" rule (see doc.go). `x/sys` is Go-team-maintained
-// and effectively-stdlib for syscall ergonomics. We use its typed
-// `Handle`, named constants, and properly-wrapped syscall functions
-// instead of hand-rolling `syscall.Syscall6` against
-// `kernel32.dll` — fewer landmines around argument ordering,
-// FILETIME quirks, and 32/64-bit splits.
+// This file is the package's one production import of
+// golang.org/x/sys/windows; see doc.go for the documented exception.
 //
-// The one place we still need an unchecked `uintptr → unsafe.Pointer`
-// conversion is when turning the OS-returned mapping address into a
-// Go slice. `go vet`'s `unsafeptr` analyzer flags the bare
-// conversion because uintptrs in general can't be traced. We
-// launder it through a `&addr → *unsafe.Pointer → deref` chain that
-// vet doesn't follow — the address is OS-reserved memory-mapped
-// pages that don't move, so the laundering is safe by construction.
-// This is the conventional pattern used by every serious Go mmap
-// package on Windows (bbolt, badger, mmap-go) that wants to avoid
-// per-platform assembly stubs.
+// The uintptr-to-unsafe.Pointer conversion launders through
+// &addr -> *unsafe.Pointer -> deref so go vet's unsafeptr analyzer
+// doesn't flag it. The address is OS-reserved memory-mapped pages,
+// which don't move, so the conversion is safe.
 func platformMmap(f *os.File, size int64) ([]byte, error) {
 	h, err := windows.CreateFileMapping(
 		windows.Handle(f.Fd()),
@@ -59,17 +46,11 @@ func platformMmap(f *os.File, size int64) ([]byte, error) {
 		return nil, errors.New("MapViewOfFile returned NULL")
 	}
 
-	// Launder uintptr → unsafe.Pointer through a pointer-to-uintptr
-	// indirection so `go vet -unsafeptr` doesn't flag the conversion.
-	// The OS guarantees `addr` points at stable memory-mapped pages;
-	// `unsafeptr`'s rule against tracing uintptr provenance doesn't
-	// apply here.
-	//nolint:gosec // OS-returned address; safe by construction
+	//nolint:gosec // OS-returned address; see comment above
 	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&addr))
 	return unsafe.Slice((*byte)(ptr), int(size)), nil
 }
 
-// platformMunmap releases the view created by MapViewOfFile.
 func platformMunmap(data []byte) error {
 	if len(data) == 0 {
 		return nil

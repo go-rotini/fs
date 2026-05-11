@@ -29,9 +29,7 @@ const (
 	ProjectKindDocker ProjectKind = "docker"
 )
 
-// projectMarker maps a filename to the kind it identifies. Order
-// matters only for deterministic output — the detector reads the
-// directory once and reports every match.
+// projectMarker maps a filename to the kind it identifies.
 type projectMarker struct {
 	file string
 	kind ProjectKind
@@ -60,16 +58,10 @@ var (
 
 // RegisterProjectKind adds custom marker filenames for a [ProjectKind]
 // so [ProjectType] recognizes them in addition to the built-in set.
-// Useful for monorepos with bespoke conventions or for tooling that
-// wants to detect framework-specific manifests (e.g.,
-// `bazel.WORKSPACE`).
 //
-// Safe to call from any goroutine. Registrations are additive — they
-// don't replace built-in markers — and persist for the lifetime of
-// the process. Duplicate (kind, marker) pairs are deduplicated so
-// calling RegisterProjectKind twice with the same arguments doesn't
-// inflate the marker table or produce duplicate match results from
-// [ProjectType].
+// Safe to call from any goroutine. Registrations are additive (built-in
+// markers are not replaced) and persist for the lifetime of the
+// process. Duplicate (kind, marker) pairs are deduplicated.
 func RegisterProjectKind(kind ProjectKind, markers ...string) {
 	if kind == "" || len(markers) == 0 {
 		return
@@ -97,14 +89,12 @@ func RegisterProjectKind(kind ProjectKind, markers ...string) {
 // kind whose marker file exists in the directory. Returns an empty
 // slice when none match.
 //
-// The returned slice is sorted alphabetically so the output is
-// deterministic for golden-file tests. Detection is filename-only
-// — no parsing of go.mod / package.json / etc. — so a directory
-// with a stray `Gemfile` is reported as Ruby even if it's
+// The returned slice is sorted alphabetically. Detection is
+// filename-only (no parsing of go.mod, package.json, etc.), so a
+// directory with a stray Gemfile is reported as Ruby even if it's
 // effectively a Go project.
 //
-// For .NET, the marker is any `*.csproj` / `*.fsproj` / `*.sln` in
-// root.
+// For .NET, the marker is any *.csproj, *.fsproj, or *.sln file.
 func ProjectType(root string) ([]ProjectKind, error) {
 	dirents, err := readDirSorted(root)
 	if err != nil {
@@ -122,7 +112,7 @@ func ProjectType(root string) ([]ProjectKind, error) {
 				seen[m.kind] = struct{}{}
 			}
 		}
-		// .NET detection — any of the project / solution files.
+		// .NET detection: any project or solution file.
 		if strings.HasSuffix(name, ".csproj") ||
 			strings.HasSuffix(name, ".fsproj") ||
 			strings.HasSuffix(name, ".sln") {

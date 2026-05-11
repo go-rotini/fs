@@ -45,7 +45,7 @@ func makeTreeFixture(t *testing.T) string {
 	return root
 }
 
-// readBackTree reads every regular file under root into a relative-path → contents map.
+// readBackTree reads every regular file under root into a relative-path to contents map.
 func readBackTree(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -428,7 +428,7 @@ func TestCappedWriter_PartialWrite(t *testing.T) {
 	if n, err := w.Write([]byte("abc")); err != nil || n != 3 {
 		t.Fatalf("first write: n=%d err=%v", n, err)
 	}
-	// Second write: 5 bytes, but only 2 remaining → partial commit + cap error.
+	// Second write: 5 bytes, but only 2 remaining to partial commit + cap error.
 	n, err := w.Write([]byte("12345"))
 	if !errors.Is(err, ErrArchiveTooLarge) {
 		t.Errorf("got %v, want ErrArchiveTooLarge", err)
@@ -439,7 +439,7 @@ func TestCappedWriter_PartialWrite(t *testing.T) {
 	if buf.String() != "abc12" {
 		t.Errorf("buffered = %q, want abc12", buf.String())
 	}
-	// Third write: any byte → cap error.
+	// Third write: any byte to cap error.
 	n, err = w.Write([]byte("z"))
 	if !errors.Is(err, ErrArchiveTooLarge) {
 		t.Errorf("post-cap got %v, want ErrArchiveTooLarge", err)
@@ -653,7 +653,7 @@ func TestArchiveFormat_String(t *testing.T) {
 //
 // These tests swap package-level OS hooks (see fault_hooks.go) to
 // exercise defensive error branches that real I/O can't easily
-// provoke. None call t.Parallel — the hooks are package-global.
+// provoke. None call t.Parallel; the hooks are package-global.
 
 func TestFault_CreateArchive_Tar_ReadError(t *testing.T) {
 	h := newFaultyHooks(t)
@@ -1035,7 +1035,7 @@ func TestOpenAutoArchive_BadGzip(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.gz")
-	// gzip magic prefix but truncated body — gzip.NewReader will fail.
+	// gzip magic prefix but truncated body; gzip.NewReader will fail.
 	if err := os.WriteFile(path, []byte{0x1f, 0x8b}, 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

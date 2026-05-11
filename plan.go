@@ -15,37 +15,28 @@ const (
 	opPlanRollback = "plan.rollback"
 	opPlanJournal  = "plan.journal"
 
-	// journalLockFilename is the sibling lockfile [Apply] / [Resume]
-	// / [Rollback] acquire for the duration of their work. Serializes
-	// concurrent same-journal callers (within a process and across
-	// processes) so the rollback chain stays correct.
+	// journalLockFilename is the per-journal advisory lockfile. Apply,
+	// Resume, and Rollback acquire it for the duration of their work.
 	journalLockFilename = ".lock"
 
-	// journalPlanFilename holds the immutable plan written at the
-	// start of Apply. Read-only during the apply; consulted by Resume
-	// + Rollback. Kept separate from the progress file so the
-	// per-step rewrite cost stays O(progress-record-size) rather than
-	// O(plan-size).
+	// journalPlanFilename holds the immutable plan written at the start
+	// of Apply. Split from the progress file so per-step rewrite cost
+	// is independent of plan size.
 	journalPlanFilename = "plan.json"
 
-	// journalProgressFilename holds the per-step progress counter
-	// (and the Finalized flag). Tiny — typically <100 bytes — so the
-	// rewrite cost is negligible regardless of plan size.
+	// journalProgressFilename holds the per-step progress counter and
+	// the finalized flag. Rewritten after every successful op.
 	journalProgressFilename = "progress.json"
 
-	// journalLegacyFilename was the v0.1.0-dev combined plan +
-	// progress file. Apply now rejects an existing journal containing
-	// only this file as already-claimed; the rejection's error
-	// message tells the caller to remove and start over.
+	// journalLegacyFilename is the pre-split combined file. Apply
+	// rejects journals containing it as already-claimed.
 	journalLegacyFilename = "journal.json"
 
-	// journalSchemaVersion records the on-disk schema version so
-	// future format changes can refuse to resume incompatible
-	// journals. (Addresses R1.)
+	// journalSchemaVersion guards against resuming journals written
+	// by an incompatible package version.
 	journalSchemaVersion = 1
 
-	// journalBackupsDir is the subdirectory holding pre-apply
-	// snapshots of each modified path. Indexed by step number.
+	// journalBackupsDir holds pre-apply snapshots indexed by step.
 	journalBackupsDir = "backups"
 )
 
@@ -69,9 +60,6 @@ const (
 	PlanActionRename
 )
 
-// planActionLabel* are the canonical short names rendered by
-// [PlanAction.String] and [Plan.Diff]. Centralized so the labels
-// stay consistent across both renderings.
 const (
 	planActionLabelCreate = "create"
 	planActionLabelUpdate = "update"
@@ -95,9 +83,7 @@ func (a PlanAction) String() string {
 	}
 }
 
-// PlanOp is a single operation inside a [Plan]. JSON-serialized into
-// the journal so an interrupted apply can resume on a later process
-// start.
+// PlanOp is a single operation inside a [Plan].
 type PlanOp struct {
 	Action PlanAction  `json:"action"`
 	Path   string      `json:"path"`
@@ -106,13 +92,10 @@ type PlanOp struct {
 	Perm   os.FileMode `json:"perm,omitempty"`   // PlanActionCreate / PlanActionUpdate
 }
 
-// Plan is a sequence of [PlanOp] executed in order by [Apply].
-//
-// A Plan is a value type — callers can build it up with the fluent
-// helpers ([*Plan.Create], [*Plan.Update], [*Plan.Delete],
-// [*Plan.Rename]) or by appending to Ops directly. Plans are
-// JSON-serializable so they can be inspected, archived, or
-// transported between processes.
+// Plan is a sequence of [PlanOp] executed in order by [Apply]. Build
+// it with the fluent helpers ([*Plan.Create], [*Plan.Update],
+// [*Plan.Delete], [*Plan.Rename]) or by appending to Ops directly.
+// Plans are JSON-serializable.
 type Plan struct {
 	Ops []PlanOp `json:"ops"`
 }
@@ -154,7 +137,7 @@ func (p *Plan) Rename(src, dst string) *Plan {
 }
 
 // Diff renders the plan as a short human-readable summary, one line
-// per op. Suitable for `--dry-run` previews; not a structured diff.
+// per op. Suitable for --dry-run previews; not a structured diff.
 func (p *Plan) Diff() string {
 	if p == nil || len(p.Ops) == 0 {
 		return "(empty plan)\n"
@@ -177,13 +160,10 @@ func (p *Plan) Diff() string {
 	return b.String()
 }
 
-// ApplyOption configures [Apply] / [Resume] / [Rollback].
+// ApplyOption configures [Apply], [Resume], and [Rollback].
 type ApplyOption func(*applyConfig)
 
 type applyConfig struct {
-	// mkdirParents controls whether the journal directory and any
-	// target-parent directories that don't yet exist are created.
-	// On by default; pass [WithApplyNoMkdir] to disable.
 	mkdirParents bool
 }
 
@@ -196,22 +176,12 @@ func WithApplyNoMkdir() ApplyOption {
 	}
 }
 
-// journal is the in-memory view of an in-progress or completed
-// apply. Persisted across two files under journalDir:
+// journal is the in-memory view of an in-progress or completed apply.
+// Persisted across two files under journalDir: plan.json (immutable,
+// written once on Apply) and progress.json (rewritten per step).
 //
-//   - plan.json     — immutable plan, written once on Apply.
-//   - progress.json — Completed + Finalized + Schema, rewritten per
-//     step.
-//
-// Splitting the files keeps the per-step rewrite cost independent of
-// plan size — a plan with megabyte-sized Data payloads doesn't
-// re-serialize the payloads on every successful op.
-//
-// Wire format note: PlanOp.Data is a []byte, which Go's [encoding/json]
-// serializes as base64-encoded strings — a ~33% inflation. For plans
-// holding mostly text/config payloads the inflation is negligible.
-// Plans whose ops carry many megabytes of binary data should expect
-// the on-disk plan.json to be ~1.33× the in-memory payload size.
+// PlanOp.Data is JSON-serialized as base64, inflating binary payloads
+// by ~33% on disk.
 type journal struct {
 	Plan      Plan `json:"-"`
 	Completed int  `json:"completed"`
@@ -219,34 +189,29 @@ type journal struct {
 	Schema    int  `json:"schema"`
 }
 
-// planFile is the on-disk shape of plan.json — just the plan.
+// planFile is the on-disk shape of plan.json.
 type planFile struct {
 	Plan   Plan `json:"plan"`
 	Schema int  `json:"schema"`
 }
 
 // errSchemaMismatch is returned by [loadJournal] when the on-disk
-// schema version doesn't match [journalSchemaVersion]. Wrapped in a
-// [*PathError] at the call site so callers can errors.Is against
-// either this sentinel or [stdfs.ErrNotExist] when distinguishing
-// "stale journal" from "no journal".
+// schema version doesn't match [journalSchemaVersion].
 var errSchemaMismatch = errors.New("fs: plan: journal schema mismatch")
 
 // Apply runs the plan, writing a journal under journalDir so an
 // interrupted apply can be resumed. journalDir must be an empty or
-// nonexistent directory — Apply refuses to overwrite an existing
-// journal to avoid corrupting in-progress applies.
+// nonexistent directory; Apply refuses to overwrite an existing
+// journal.
 //
 // On any per-op failure, Apply returns the error without rolling
-// back; the journal records progress so the caller can decide
+// back. The journal records progress so the caller can decide
 // whether to [Rollback] or [Resume].
 //
-// Concurrency: Apply, [Resume], and [Rollback] acquire an advisory
-// [Lock] on `<journalDir>/.lock` for the duration of their work, so
-// concurrent same-journal callers (within a process or across
-// processes) serialize automatically. Independent journals are
-// independent — running two Applies against unrelated journalDirs
-// concurrently is safe.
+// Apply, [Resume], and [Rollback] acquire an advisory [Lock] on
+// <journalDir>/.lock for the duration of their work, so concurrent
+// same-journal callers serialize automatically. Independent
+// journals are independent.
 func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, journalDir, ErrInvalidPath)
@@ -283,16 +248,13 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	return resumeJournal(journalDir, &j, cfg)
 }
 
-// acquireJournalLock acquires the per-journal advisory lock that
-// serializes Apply / Resume / Rollback against the same journalDir.
-// Returns a release closure (idempotent) that the caller defers.
 func acquireJournalLock(journalDir string) (func(), error) {
 	lockPath := filepath.Join(journalDir, journalLockFilename)
 	h, err := Lock(lockPath)
 	if err != nil {
 		return nil, err
 	}
-	return func() { _ = h.Release() }, nil //nolint:errcheck // best-effort release; the Apply / Resume / Rollback return value is what callers care about
+	return func() { _ = h.Release() }, nil //nolint:errcheck // probe-only; release errors are not actionable here
 }
 
 // Resume continues a previously-interrupted apply from its journal.
@@ -320,8 +282,7 @@ func Resume(journalDir string, opts ...ApplyOption) error {
 // Rollback reverts the operations recorded in the journal in reverse
 // order. Each op's stored backup is used to restore the original
 // state. After successful rollback, the journal directory is left in
-// place (callers can [os.RemoveAll] it explicitly).
-// See [Apply] for the concurrency contract.
+// place. See [Apply] for the concurrency contract.
 func Rollback(journalDir string, opts ...ApplyOption) error {
 	_ = newApplyConfig(opts)
 
@@ -348,8 +309,6 @@ func Rollback(journalDir string, opts ...ApplyOption) error {
 	return nil
 }
 
-// resumeJournal is the shared body of Apply and Resume: iterate ops
-// starting at j.Completed, perform each, persist progress.
 func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 	log := logger()
 	for i := j.Completed; i < len(j.Plan.Ops); i++ {
@@ -373,19 +332,13 @@ func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 // no backup snapshots, and no resume/rollback support. The first
 // op's failure surfaces as the return; subsequent ops are skipped.
 //
-// Use this when you want [Apply]'s sequenced execution semantics
-// without the journal overhead — e.g., a simple multi-file write
-// where rollback isn't meaningful, or a CLI `--apply` mode whose
-// failure recovery is "the user re-runs after fixing the issue."
+// Use this when sequenced execution is wanted without the journal
+// overhead. For executions that must be resumable or reversible, use
+// [Apply] against a journal directory.
 //
-// For executions that must be resumable or reversible, use [Apply]
-// against a journal directory.
-//
-// Concurrency: ApplyTransient has no internal locking (no journal
-// to coordinate against). Concurrent calls against the same plan
-// against distinct targets are safe; concurrent calls touching the
-// same on-disk files race exactly as the underlying [WriteFile] /
-// [os.Remove] / [os.Rename] would.
+// ApplyTransient has no internal locking. Concurrent calls touching
+// the same on-disk files race exactly as the underlying [WriteFile]
+// / [os.Remove] / [os.Rename] would.
 func ApplyTransient(p *Plan, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, "", ErrInvalidPath)
@@ -400,10 +353,8 @@ func ApplyTransient(p *Plan, opts ...ApplyOption) error {
 }
 
 // applyOp executes a single PlanOp and records any backup data the
-// inverse will need.
-//
-// When journalDir is empty (e.g., [ApplyTransient]), backup recording
-// is skipped — the op is performed but no rollback state is kept.
+// inverse will need. When journalDir is empty (the [ApplyTransient]
+// path), backup recording is skipped.
 func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 	if cfg.mkdirParents && (op.Action == PlanActionCreate || op.Action == PlanActionUpdate || op.Action == PlanActionRename) {
 		if err := MkdirAll(filepath.Dir(op.Path), 0o755); err != nil {
@@ -413,15 +364,12 @@ func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 
 	switch op.Action {
 	case PlanActionCreate:
-		// Creating requires the file to not exist. No backup needed —
-		// rollback removes it.
 		if Exists(op.Path) {
 			return wrapPathError(opPlanApply, op.Path, ErrAlreadyExists)
 		}
 		return WriteFile(op.Path, op.Data, WithPerm(op.Perm))
 
 	case PlanActionUpdate:
-		// Snapshot the prior contents (if any) so we can restore.
 		if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
 			return err
 		}
@@ -429,7 +377,7 @@ func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 
 	case PlanActionDelete:
 		if !Exists(op.Path) {
-			return nil // idempotent — already gone
+			return nil
 		}
 		if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
 			return err
@@ -440,9 +388,6 @@ func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 		return nil
 
 	case PlanActionRename:
-		// Snapshot the destination (if it exists) so rollback can put
-		// it back. The source vanishes — its content is preserved at
-		// the destination, so no extra snapshot needed.
 		if Exists(op.Path) {
 			if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
 				return err
@@ -458,8 +403,6 @@ func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
 	}
 }
 
-// rollbackOp reverses a previously-applied op using the journal's
-// backup snapshot.
 func rollbackOp(journalDir string, op PlanOp, step int) error {
 	switch op.Action {
 	case PlanActionCreate:
@@ -475,12 +418,9 @@ func rollbackOp(journalDir string, op PlanOp, step int) error {
 		return restoreFromBackup(journalDir, op.Path, step)
 
 	case PlanActionRename:
-		// Move back: dst → src.
 		if rerr := os.Rename(op.Path, op.Source); rerr != nil {
 			return wrapPathError(opPlanRollback, op.Path, rerr)
 		}
-		// If the destination originally existed (had a backup), put
-		// it back where it was.
 		return restoreFromBackup(journalDir, op.Path, step)
 
 	default:
@@ -489,12 +429,8 @@ func rollbackOp(journalDir string, op PlanOp, step int) error {
 }
 
 // backupBeforeWrite copies the existing file at path into the
-// journal's backups/<step> dir. If path doesn't exist, it's a no-op.
-// The backup is stored with the same basename so rollback can locate
-// it.
-//
-// When journalDir is empty (the [ApplyTransient] path), backup
-// recording is skipped entirely.
+// journal's backups/<step> dir. No-op when path doesn't exist or
+// when journalDir is empty.
 func backupBeforeWrite(journalDir, path string, step int) error {
 	if journalDir == "" {
 		return nil
@@ -527,15 +463,12 @@ func backupBeforeWrite(journalDir, path string, step int) error {
 }
 
 // restoreFromBackup writes the journal snapshot back to path. If no
-// snapshot exists (target was originally absent), the path is
-// removed instead so the post-rollback state matches the pre-apply
-// state.
+// snapshot exists, the path is removed instead.
 func restoreFromBackup(journalDir, path string, step int) error {
 	src := filepath.Join(journalDir, journalBackupsDir, fmt.Sprintf("step-%d", step), filepath.Base(path))
 	data, err := os.ReadFile(src)
 	if err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) {
-			// No backup was created → path was originally absent.
 			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
 				return wrapPathError(opPlanRollback, path, rerr)
 			}
@@ -554,8 +487,6 @@ func restoreFromBackup(journalDir, path string, step int) error {
 	return nil
 }
 
-// savePlanFile writes plan.json once at Apply start. The file is
-// then immutable — Apply / Resume / Rollback only read it.
 func savePlanFile(journalDir string, j *journal) error {
 	pf := planFile{Plan: j.Plan, Schema: journalSchemaVersion}
 	data, err := json.MarshalIndent(pf, "", "  ")
@@ -566,9 +497,6 @@ func savePlanFile(journalDir string, j *journal) error {
 	return WriteFile(target, data, WithPerm(0o644))
 }
 
-// saveProgress rewrites progress.json after each successful op (and
-// once more on Finalize). Tiny payload — Completed + Finalized +
-// Schema.
 func saveProgress(journalDir string, j *journal) error {
 	j.Schema = journalSchemaVersion
 	data, err := json.MarshalIndent(j, "", "  ")
@@ -579,8 +507,6 @@ func saveProgress(journalDir string, j *journal) error {
 	return WriteFile(target, data, WithPerm(0o644))
 }
 
-// loadJournal reads plan.json + progress.json from journalDir.
-// Returns the merged journal. Refuses to resume on schema mismatch.
 func loadJournal(journalDir string) (*journal, error) {
 	planPath := filepath.Join(journalDir, journalPlanFilename)
 	planData, err := os.ReadFile(planPath)
@@ -611,7 +537,6 @@ func loadJournal(journalDir string) (*journal, error) {
 	return &j, nil
 }
 
-// newApplyConfig applies opts to a default-initialized config.
 func newApplyConfig(opts []ApplyOption) applyConfig {
 	cfg := applyConfig{mkdirParents: true}
 	for _, opt := range opts {

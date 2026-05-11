@@ -12,15 +12,12 @@ import (
 const opFindByContent = "findbycontent"
 
 // findContentDefaultMaxFileSize caps per-file scanning when the
-// caller doesn't set [WithFindByContentMaxSize]. 100 MiB matches the
-// package's default read cap.
+// caller doesn't set [WithFindByContentMaxSize].
 const findContentDefaultMaxFileSize = 100 * 1024 * 1024
 
-// ContentMatch is a single line that matched a [FindByContent]
-// search.
+// ContentMatch is a single line that matched a [FindByContent] search.
 type ContentMatch struct {
-	// Path is the absolute path of the file that contained the
-	// match.
+	// Path is the absolute path of the file that contained the match.
 	Path string
 
 	// Line is the 1-indexed line number where the match was found.
@@ -32,12 +29,11 @@ type ContentMatch struct {
 }
 
 // WithFindByContentMaxSize caps the size of files [FindByContent]
-// will scan. Files larger than n are skipped (no match). Pass 0 or
-// negative to use the default cap (100 MiB).
+// will scan. Files larger than n are skipped. Pass 0 or negative to
+// use the default cap (100 MiB).
 //
 // Returned as a [WalkOption] so callers pass it alongside other walk
-// filters; only [FindByContent] / [FindByContentRegex] read the
-// value. Setting it on a plain [Walk] is a no-op.
+// filters. Setting it on a plain [Walk] is a no-op.
 func WithFindByContentMaxSize(n int64) WalkOption {
 	return func(o *walkOptions) {
 		if n > 0 {
@@ -47,16 +43,15 @@ func WithFindByContentMaxSize(n int64) WalkOption {
 }
 
 // FindByContent walks root looking for files whose contents contain
-// substr. Returns one [ContentMatch] per matching line (so a single
-// file with N matches contributes N entries to the result).
+// substr. Returns one [ContentMatch] per matching line.
 //
 // Pass any [WalkOption] to scope the walk or tune content-search
 // behavior (e.g., [WalkSkipPatterns], [WithWalkGitignore],
 // [WithFindByContentMaxSize]).
 //
-// Binary detection: lines containing a NUL byte are skipped silently,
-// matching `grep --binary-files=without-match` behavior. Files larger
-// than the configured size cap (default 100 MiB) are skipped.
+// Lines containing a NUL byte are skipped (matching grep's
+// --binary-files=without-match behavior). Files larger than the
+// configured cap (default 100 MiB) are skipped.
 func FindByContent(root, substr string, opts ...WalkOption) ([]ContentMatch, error) {
 	if substr == "" {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)

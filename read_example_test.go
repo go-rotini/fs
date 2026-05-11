@@ -51,7 +51,7 @@ func ExampleReadLines() {
 
 // OpenLines returns an iterator. The second value is non-nil only
 // if the underlying scanner errors mid-stream (line too long, I/O
-// failure, etc.) — always check it inside the loop.
+// failure, etc.); always check it inside the loop.
 func ExampleOpenLines() {
 	tmp, cleanup, _ := fs.TempDir("", "fs-example-*")
 	defer cleanup()
@@ -77,7 +77,7 @@ func ExampleOpenLines() {
 	// three
 }
 
-// ReadFirstLine returns just the first line — useful for shebangs,
+// ReadFirstLine returns just the first line; useful for shebangs,
 // version stamps, single-value config files.
 func ExampleReadFirstLine() {
 	tmp, cleanup, _ := fs.TempDir("", "fs-example-*")

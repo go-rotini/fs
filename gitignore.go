@@ -11,22 +11,20 @@ import (
 const (
 	opLoadGitignore = "loadgitignore"
 
-	// maxGitignoreDoubleStar caps how many `**` segments a single
-	// pattern may contain. `matchSegments` is O(n^k) in k = `**`
-	// count, so an adversarial pattern with many `**`s against a
-	// deep path triggers exponential blowup. `git` itself caps near
-	// 16; the package matches that.
+	// maxGitignoreDoubleStar caps the number of `**` segments in a
+	// single pattern. matchSegments is O(n^k) in k (the `**` count);
+	// an adversarial pattern against a deep path could exponentially
+	// blow up matching otherwise. git itself caps near 16.
 	maxGitignoreDoubleStar = 16
 )
 
-// Gitignore is a compiled set of `.gitignore`-style ignore rules.
+// Gitignore is a compiled set of .gitignore-style ignore rules.
 // Match reports whether a path is ignored. The matcher implements
-// the gitignore spec for the cases CLI tooling cares about — leading
-// `!` negation, trailing `/` directory-only, leading `/` anchoring,
-// `**` recursive wildcard, `*`/`?`/`[...]` per-segment globs. Some
-// edge cases of the full spec (interaction with already-tracked
-// files in git's index, character-class collation in non-POSIX
-// locales) are intentionally out of scope.
+// the standard gitignore syntax: leading `!` negation, trailing `/`
+// directory-only, leading or embedded `/` anchoring, `**` recursive
+// wildcard, and the `*`/`?`/`[...]` per-segment globs. Edge cases
+// outside the standard syntax (interaction with git's index,
+// non-POSIX character-class collation) are out of scope.
 //
 // A Gitignore is immutable after construction and safe for concurrent
 // use.
@@ -34,34 +32,17 @@ type Gitignore struct {
 	patterns []gitignorePattern
 }
 
-// gitignorePattern is one parsed line of a .gitignore file.
 type gitignorePattern struct {
-	// raw is the original line for diagnostic output.
-	raw string
-
-	// negated is true when the pattern began with `!`.
-	negated bool
-
-	// dirOnly is true when the pattern ended with `/`.
-	dirOnly bool
-
-	// anchored is true when the pattern had a `/` anywhere other than
-	// the trailing position (or began with `/`). Anchored patterns
-	// match only at the gitignore-root level, walking into the path
-	// from the leftmost segment. Unanchored patterns match at any
-	// depth.
+	raw      string
+	negated  bool
+	dirOnly  bool
 	anchored bool
-
-	// segments is the pattern split on `/`. Each segment is either a
-	// literal/glob (matched per path component) or the special `**`
-	// recursive wildcard.
 	segments []string
 }
 
-// NewGitignore compiles patterns into a [*Gitignore]. The input is
-// the same format as a `.gitignore` file's body: one pattern per
-// line, `#` comments, blank lines ignored. Unlike [LoadGitignore],
-// no file is read.
+// NewGitignore compiles patterns into a [*Gitignore]. The input has
+// the same format as a .gitignore file body: one pattern per line,
+// `#` comments, blank lines ignored.
 func NewGitignore(patterns []string) *Gitignore {
 	g := &Gitignore{}
 	for _, line := range patterns {
@@ -73,8 +54,7 @@ func NewGitignore(patterns []string) *Gitignore {
 }
 
 // LoadGitignore reads patterns from filePath and compiles them into
-// a [*Gitignore]. The file's contents are parsed as a standard
-// `.gitignore` file.
+// a [*Gitignore].
 func LoadGitignore(filePath string) (*Gitignore, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -95,15 +75,13 @@ func LoadGitignore(filePath string) (*Gitignore, error) {
 
 // Match reports whether relPath is ignored. relPath must be relative
 // to the directory the .gitignore was placed in, using POSIX
-// separators (forward slashes). isDir indicates whether the entry is
-// a directory; dir-only patterns (trailing `/`) only match when this
-// is true.
+// separators. isDir indicates whether the entry is a directory;
+// dir-only patterns (trailing `/`) match only when this is true.
 //
 // Match implements the gitignore precedence rule: later patterns
 // override earlier ones. A negation (leading `!`) re-includes a
-// previously-ignored path, except when an ancestor directory was
-// itself ignored — see the package's WalkOption helper for the
-// walk-time enforcement of that rule.
+// previously-ignored path; see [WithWalkGitignore] for ancestor-
+// directory enforcement during walks.
 func (g *Gitignore) Match(relPath string, isDir bool) bool {
 	if g == nil || len(g.patterns) == 0 {
 		return false
@@ -127,14 +105,12 @@ func (g *Gitignore) Match(relPath string, isDir bool) bool {
 }
 
 // parseGitignoreLine turns one .gitignore line into a compiled
-// pattern. Returns ok=false for blank or comment lines.
+// pattern. Returns ok=false for blank or comment lines, or for
+// patterns whose `**` count exceeds [maxGitignoreDoubleStar].
 func parseGitignoreLine(line string) (gitignorePattern, bool) {
-	// Trim trailing CR for files written on Windows.
 	line = strings.TrimRight(line, "\r")
-	// Strip a trailing space (unless escaped). Real .gitignore allows
-	// escaped trailing spaces via `\ `; that's a corner case we
-	// intentionally skip — none of the popular open-source
-	// .gitignore catalogs use it.
+	// Strip trailing whitespace. Real .gitignore allows escaped
+	// trailing spaces via `\ `; that corner case is not supported.
 	line = strings.TrimRight(line, " \t")
 
 	if line == "" || strings.HasPrefix(line, "#") {
@@ -147,7 +123,7 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 		p.negated = true
 		line = line[1:]
 	}
-	// An escaped `\#` or `\!` at the start represents a literal char.
+	// Escaped `\#` or `\!` at the start is a literal char.
 	if strings.HasPrefix(line, `\#`) || strings.HasPrefix(line, `\!`) {
 		line = line[1:]
 	}
@@ -157,8 +133,8 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 		line = line[:len(line)-1]
 	}
 
-	// A pattern is anchored if it contains a slash anywhere (other
-	// than the trailing-/ we just stripped) OR begins with `/`.
+	// A pattern is anchored if it begins with `/` or contains `/`
+	// anywhere other than the (already-stripped) trailing position.
 	if strings.HasPrefix(line, "/") {
 		p.anchored = true
 		line = line[1:]
@@ -168,9 +144,6 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 
 	p.segments = strings.Split(line, "/")
 
-	// Refuse patterns with so many `**` segments that matching
-	// blows up exponentially. matchSegments tries every position
-	// for each `**`; with k of them the search space is O(n^k).
 	doubleStars := 0
 	for _, seg := range p.segments {
 		if seg == "**" {
@@ -185,20 +158,15 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 
 // matches reports whether p matches relPath.
 //
-// Algorithm:
-//
-//  1. Split relPath into segments.
-//  2. If anchored, attempt to match p.segments against the head of
-//     relPath's segments (consuming `**` greedily as needed).
-//  3. If unanchored, try matching at every starting index of
-//     relPath's segments.
+// For anchored patterns, p.segments are matched against the head of
+// relPath's segments. For unanchored patterns, matching is attempted
+// at every starting index. `**` consumes zero or more path segments.
 func (p gitignorePattern) matches(relPath string) bool {
 	pathSegs := strings.Split(relPath, "/")
 
 	if p.anchored {
 		return matchSegments(p.segments, pathSegs)
 	}
-	// Unanchored: pattern can match at any depth.
 	for i := 0; i <= len(pathSegs); i++ {
 		if matchSegments(p.segments, pathSegs[i:]) {
 			return true
@@ -207,17 +175,15 @@ func (p gitignorePattern) matches(relPath string) bool {
 	return false
 }
 
-// matchSegments runs pattern segments against path segments with `**`
-// awareness. Returns true when the pattern consumes a prefix of the
-// path (so a pattern "foo" matches the path "foo/bar" — the parent-
-// dir ignore semantics).
+// matchSegments runs pattern segments against path segments with
+// `**` awareness. Returns true when the pattern consumes a prefix of
+// the path, giving the standard parent-dir-ignore semantics (pattern
+// "foo" matches path "foo/bar").
 func matchSegments(pat, p []string) bool {
 	if len(pat) == 0 {
 		return true
 	}
 	if pat[0] == "**" {
-		// `**` consumes zero or more path segments. Try every
-		// possible split.
 		for i := 0; i <= len(p); i++ {
 			if matchSegments(pat[1:], p[i:]) {
 				return true
@@ -236,12 +202,12 @@ func matchSegments(pat, p []string) bool {
 }
 
 // WithWalkGitignore adds gitignore-based filtering to a [Walk]. The
-// gitignore matcher's anchor is the walk root: all matched paths are
-// computed relative to root using POSIX separators.
+// matcher's anchor is the walk root; matched paths are computed
+// relative to root using POSIX separators.
 //
 // A directory matched by the gitignore is pruned from the walk (its
-// contents are not visited). File entries that match are skipped
-// from fn but the walk continues.
+// contents are not visited). Matched file entries are skipped from
+// fn but the walk continues.
 func WithWalkGitignore(g *Gitignore) WalkOption {
 	return func(o *walkOptions) {
 		o.gitignore = g
@@ -249,10 +215,10 @@ func WithWalkGitignore(g *Gitignore) WalkOption {
 }
 
 // gitignoreSkip reports whether the entry at rel (relative to the
-// walk root, POSIX separators) should be skipped according to g.
-// Returns ok=true when the skip should happen; pruneDir=true when
-// the caller should additionally avoid descending. For nil g returns
-// false/false unconditionally.
+// walk root, POSIX separators) should be skipped. pruneDir indicates
+// whether descent into the entry should also be skipped (true only
+// when the entry is itself a matched directory). For nil g returns
+// false unconditionally.
 func gitignoreSkip(g *Gitignore, rel string, isDir bool) (skip, pruneDir bool) {
 	if g == nil || rel == "" || rel == "." {
 		return false, false

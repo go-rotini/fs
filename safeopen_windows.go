@@ -13,7 +13,7 @@ import (
 // so CreateFile returns a handle to the reparse point itself rather
 // than transparently following it, then queries the handle's
 // attributes and refuses any FILE_ATTRIBUTE_REPARSE_POINT (covers
-// symbolic links, junctions, and mount points — all forms of
+// symbolic links, junctions, and mount points; all forms of
 // "link-like" reparse Windows surfaces).
 //
 // On a match, the handle is closed and [ErrSymlinkLoop] is
@@ -21,12 +21,12 @@ import (
 // [OpenNoFollow]. The Go flag bits are translated to Win32 access /
 // disposition via the same mapping the stdlib uses. perm is
 // accepted for cross-platform signature symmetry but Win32
-// CreateFile uses NTFS ACLs rather than POSIX mode bits — perm has
+// CreateFile uses NTFS ACLs rather than POSIX mode bits; perm has
 // no effect.
 //
 // Note: this is not race-free. Between CreateFile succeeding and
 // GetFileInformationByHandle running, the file COULD in principle be
-// swapped — but the handle we hold pins the *original* inode so the
+// swapped; but the handle we hold pins the *original* inode so the
 // attribute we read is the attribute of the file we opened, not the
 // post-swap file. The remaining race is purely "the attacker swaps
 // a real file in for a symlink between the open and the attribute

@@ -48,7 +48,7 @@ func TestRotator_SizeRotation(t *testing.T) {
 	path := filepath.Join(dir, "app.log")
 
 	// Cap at 12 bytes. Each Write is 10 bytes ("xxxxxxxx0\n").
-	// First write: 0 → 10 bytes, no rotation.
+	// First write: 0 to 10 bytes, no rotation.
 	// Second write would push to 20 bytes (>12), rotate first.
 	r, err := NewRotator(path, WithRotateMaxBytes(12))
 	if err != nil {

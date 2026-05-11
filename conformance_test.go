@@ -19,7 +19,7 @@ import (
 
 // TestConformanceAtomicWrite verifies the atomic-rename guarantee:
 // readers concurrent with a [WriteFile] overwrite always observe
-// either the OLD contents in full or the NEW contents in full —
+// either the OLD contents in full or the NEW contents in full;
 // never a partial / interleaved view.
 func TestConformanceAtomicWrite(t *testing.T) {
 	t.Parallel()
@@ -81,8 +81,8 @@ func TestConformanceAtomicWrite(t *testing.T) {
 }
 
 // TestConformanceSymlinkLoopDetection verifies that EvalSymlinks
-// surfaces a → b → a as [ErrSymlinkLoop] within a bounded number
-// of hops — not by hanging or recursing forever.
+// surfaces a to b to a as [ErrSymlinkLoop] within a bounded number
+// of hops; not by hanging or recursing forever.
 func TestConformanceSymlinkLoopDetection(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation typically requires elevation on Windows")
@@ -92,10 +92,10 @@ func TestConformanceSymlinkLoopDetection(t *testing.T) {
 	a := filepath.Join(dir, "a")
 	b := filepath.Join(dir, "b")
 	if err := os.Symlink(b, a); err != nil {
-		t.Fatalf("Symlink a → b: %v", err)
+		t.Fatalf("Symlink a to b: %v", err)
 	}
 	if err := os.Symlink(a, b); err != nil {
-		t.Fatalf("Symlink b → a: %v", err)
+		t.Fatalf("Symlink b to a: %v", err)
 	}
 
 	_, err := EvalSymlinks(a)
@@ -154,7 +154,7 @@ func TestConformanceZipSlipDefense(t *testing.T) {
 }
 
 // TestConformanceTOCTOUOpenNoFollow verifies [OpenNoFollow] refuses
-// a path whose final component is a symlink — defending against
+// a path whose final component is a symlink; defending against
 // the link-replace race where an attacker swaps a regular file for
 // a symlink between Stat and Open.
 func TestConformanceTOCTOUOpenNoFollow(t *testing.T) {

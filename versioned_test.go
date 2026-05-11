@@ -127,7 +127,7 @@ func TestWriteFileVersioned_MaxAgePruning(t *testing.T) {
 	// v1). v3's write creates backup at t=60m (containing v2). v4's
 	// write at t=80m creates backup at t=80m (containing v3) and
 	// then prunes with cutoff=80m-10m=70m: backups at t=5m and t=60m
-	// are both older than cutoff → pruned. Only the t=80m backup
+	// are both older than cutoff to pruned. Only the t=80m backup
 	// remains.
 	stamps := []time.Duration{0, 5 * time.Minute, 60 * time.Minute, 80 * time.Minute}
 	for i, dt := range stamps {

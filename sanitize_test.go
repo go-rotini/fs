@@ -34,10 +34,10 @@ func TestSanitizeFilename_AllStrippedFallsBack(t *testing.T) {
 	t.Parallel()
 	got := SanitizeFilename(`<>:?"|/*\`)
 	if got != "_" {
-		t.Errorf("all-illegal input → %q, want _", got)
+		t.Errorf("all-illegal input to %q, want _", got)
 	}
 	if got := SanitizeFilename("...   "); got != "_" {
-		t.Errorf("only-trailing-trim input → %q, want _", got)
+		t.Errorf("only-trailing-trim input to %q, want _", got)
 	}
 }
 

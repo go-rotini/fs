@@ -148,7 +148,7 @@ func TestOpenAt_MissingChild(t *testing.T) {
 // TestOpenAt_HoldsInodeAfterRename verifies the POSIX guarantee: an
 // open dir FD continues to refer to the original inode even after
 // the directory's pathname changes. This is the primary
-// race-resistance property OpenAt provides over Join + OpenFile —
+// race-resistance property OpenAt provides over Join + OpenFile;
 // an attacker that renames the parent between calls cannot redirect
 // the open. On Windows, OpenAt is a Join + OpenFile fallback and
 // this test is skipped.

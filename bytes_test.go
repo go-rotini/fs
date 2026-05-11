@@ -37,7 +37,7 @@ func TestFormatBytes_Boundaries(t *testing.T) {
 // --- ParseBytes: strict-SI by default ---
 
 // IEC binary units (KiB, MiB, ...) are always 1024-based regardless
-// of which ParseBytes variant is used — they're unambiguous.
+// of which ParseBytes variant is used; they're unambiguous.
 func TestParseBytes_IECSuffixes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

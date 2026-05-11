@@ -97,7 +97,7 @@ func buildBenchTree(tb testing.TB, root string, n int, shape benchShape) string 
 			}
 		}
 	case shapeDeep:
-		// Cap depth at 64 — beyond that we hit PATH_MAX on most
+		// Cap depth at 64; beyond that we hit PATH_MAX on most
 		// platforms (macOS APFS is ~1024 chars; the segment prefix
 		// "d999/" alone burns 5 chars per level). If n > maxDepth,
 		// the extra files are placed as siblings of the deepest

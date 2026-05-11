@@ -13,7 +13,7 @@ import (
 
 // Walk traverses a tree; the callback receives every entry. Use
 // [fs.WalkSkipNames] to prune well-known directories (`.git`,
-// `node_modules`, `.terraform`, etc.) — the skipped directory's
+// `node_modules`, `.terraform`, etc.); the skipped directory's
 // entire subtree is omitted.
 func ExampleWalk() {
 	tmp, cleanup, _ := fs.TempDir("", "fs-example-*")

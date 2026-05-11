@@ -16,7 +16,7 @@ import (
 // (write-temp + rename) are observed correctly.
 //
 // This example has no Output block because event delivery is
-// asynchronous — pkg.go.dev still renders the body as runnable
+// asynchronous; pkg.go.dev still renders the body as runnable
 // reference code.
 func ExampleNewWatcher() {
 	tmp, cleanup, _ := fs.TempDir("", "fs-example-*")

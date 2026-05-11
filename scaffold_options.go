@@ -34,7 +34,7 @@ func WithScaffoldOnConflict(c ScaffoldOnConflict) ScaffoldOption {
 // destination path and the planned action, and returns the action
 // to execute (typically [ScaffoldActionOverwrite] or
 // [ScaffoldActionSkip]). Required when onConflict is
-// PromptInteractive — a missing prompt with that policy errors.
+// PromptInteractive; a missing prompt with that policy errors.
 func WithScaffoldPromptFunc(fn func(path string, plan ScaffoldAction) ScaffoldActionOp) ScaffoldOption {
 	return func(o *scaffoldOptions) { o.promptFunc = fn }
 }

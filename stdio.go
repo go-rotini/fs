@@ -42,7 +42,7 @@ func ReadStdin(opts ...ReadOption) ([]byte, error) {
 // [bufio.Scanner.Text]. The iterator continues until EOF.
 //
 // Stdin can't be reopened, so the returned iterator can only be
-// consumed once per process. There is no cleanup function — the
+// consumed once per process. There is no cleanup function; the
 // caller's lifecycle owns os.Stdin.
 func OpenStdinLines() iter.Seq[string] {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -81,7 +81,7 @@ func writeFD(op, name string, w io.Writer, data []byte) error {
 
 // IsTerminal reports whether f is connected to a terminal. Useful
 // for callers deciding between human-readable and machine-readable
-// output. The fs package exposes only this primitive — pager
+// output. The fs package exposes only this primitive; pager
 // invocation, color decisions, and width queries belong in the
 // future rotini/cli framework.
 //

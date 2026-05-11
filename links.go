@@ -20,7 +20,7 @@ const (
 // target, returns nil. If linkPath exists but points elsewhere or is
 // not a symlink, returns [ErrAlreadyExists].
 //
-// Concurrent callers: the idempotency check (Readlink → Symlink)
+// Concurrent callers: the idempotency check (Readlink to Symlink)
 // is NOT atomic. Between the two syscalls another process can
 // create the link with a different target; the loser of that race
 // sees [ErrAlreadyExists]. POSIX `symlink(2)` is atomic for the
@@ -29,7 +29,7 @@ const (
 // "exactly one creator wins" semantics, accept [ErrAlreadyExists]
 // from one of the concurrent callers as a successful outcome.
 //
-// The target is stored verbatim in the link — it is not validated,
+// The target is stored verbatim in the link; it is not validated,
 // resolved, or required to exist (a "dangling" symlink is allowed,
 // matching [os.Symlink]).
 func Symlink(target, linkPath string) error {
@@ -88,14 +88,14 @@ func EvalSymlinks(path string) (string, error) {
 // are allowed to), this function silently fails to detect loops and
 // the caller sees the raw error rather than [ErrSymlinkLoop]. The
 // tripwire is [TestConformanceSymlinkLoopDetection] in
-// conformance_test.go — it constructs a real `a → b → a` loop and
-// asserts that EvalSymlinks → isSymlinkLoop returns
+// conformance_test.go; it constructs a real `a to b to a` loop and
+// asserts that EvalSymlinks to isSymlinkLoop returns
 // [ErrSymlinkLoop]. CI runs this on every supported Go version on
 // every supported platform; a stdlib message rename will surface
 // there before any user-visible regression.
 //
 // Once a public sentinel exists upstream (track:
-// https://github.com/golang/go — search "EvalSymlinks too many links"
+// https://github.com/golang/go; search "EvalSymlinks too many links"
 // in proposals), this function should switch to errors.Is against it
 // and drop the string match.
 func isSymlinkLoop(err error) bool {

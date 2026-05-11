@@ -17,7 +17,7 @@ type pollingBackend struct {
 	interval time.Duration
 
 	mu       sync.Mutex
-	paths    map[string]*pollSnapshot       // absolute path → last stat
+	paths    map[string]*pollSnapshot       // absolute path -> last stat
 	dirChild map[string]map[string]struct{} // for watched directories: tracked child names
 	out      chan rawWatchEvent
 	stop     chan struct{}

@@ -21,7 +21,7 @@ import (
 // helpers without forcing those into the main package's import
 // graph.
 
-// TestAcceptanceProjectRoot — fixture tree with `.git` at the top;
+// TestAcceptanceProjectRoot; fixture tree with `.git` at the top;
 // from a deeply-nested subdirectory, ProjectRoot returns the
 // correct ancestor.
 func TestAcceptanceProjectRoot(t *testing.T) {
@@ -44,7 +44,7 @@ func TestAcceptanceProjectRoot(t *testing.T) {
 	}
 }
 
-// TestAcceptanceConfigSave — CLI atomic-save scenario:
+// TestAcceptanceConfigSave; CLI atomic-save scenario:
 //  1. Write a config with mode 0o600 ("secret-bearing").
 //  2. Overwrite with new content; mode is preserved.
 //  3. Read back to verify contents survive.
@@ -79,7 +79,7 @@ func TestAcceptanceConfigSave(t *testing.T) {
 	}
 }
 
-// TestAcceptanceWalkSkipping — walk over a fixture with `.git`,
+// TestAcceptanceWalkSkipping; walk over a fixture with `.git`,
 // `node_modules`, and `.terraform` directories; each is pruned by
 // WalkSkipNames.
 func TestAcceptanceWalkSkipping(t *testing.T) {
@@ -127,7 +127,7 @@ func TestAcceptanceWalkSkipping(t *testing.T) {
 	}
 }
 
-// TestAcceptanceFindUpEnv — fixture with multiple `.env` files at
+// TestAcceptanceFindUpEnv; fixture with multiple `.env` files at
 // different levels; FindUpAll returns them leaf-to-root and
 // ProjectRoot picks the right ancestor.
 func TestAcceptanceFindUpEnv(t *testing.T) {
@@ -168,7 +168,7 @@ func TestAcceptanceFindUpEnv(t *testing.T) {
 	}
 }
 
-// TestAcceptanceUserDirs — set `XDG_CONFIG_HOME` to a fixture path
+// TestAcceptanceUserDirs; set `XDG_CONFIG_HOME` to a fixture path
 // (Linux/freebsd only); ConfigDir returns it; AppConfigDir("myapp")
 // returns the joined form. macOS / Windows have non-XDG conventions
 // and are skipped.
@@ -197,7 +197,7 @@ func TestAcceptanceUserDirs(t *testing.T) {
 	}
 }
 
-// TestAcceptanceArchiveRoundtrip — create an archive from a tree,
+// TestAcceptanceArchiveRoundtrip; create an archive from a tree,
 // extract elsewhere, verify the resulting tree matches the source.
 func TestAcceptanceArchiveRoundtrip(t *testing.T) {
 	t.Parallel()
@@ -247,7 +247,7 @@ func TestAcceptanceArchiveRoundtrip(t *testing.T) {
 	}
 }
 
-// TestAcceptanceScaffoldIdempotent — apply a scaffold, then apply
+// TestAcceptanceScaffoldIdempotent; apply a scaffold, then apply
 // again; the second call is a no-op (default SkipExisting policy).
 func TestAcceptanceScaffoldIdempotent(t *testing.T) {
 	t.Parallel()

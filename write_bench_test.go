@@ -6,7 +6,7 @@ import (
 )
 
 // BenchmarkWriteFile measures the atomic-by-default write across
-// the canonical sizes. Includes the temp+rename overhead — that's
+// the canonical sizes. Includes the temp+rename overhead; that's
 // the actual per-call cost callers see.
 func BenchmarkWriteFile(b *testing.B) {
 	for _, sz := range benchSizes {
@@ -52,7 +52,7 @@ func BenchmarkWriteFile_Direct(b *testing.B) {
 }
 
 // BenchmarkWriteFile_Sync forces an fsync after the write. On most
-// platforms this is the dominant cost — useful for sizing the
+// platforms this is the dominant cost; useful for sizing the
 // "default-sync for overwrites" choice in the docs.
 func BenchmarkWriteFile_Sync(b *testing.B) {
 	const size = 1 << 16
@@ -117,7 +117,7 @@ func BenchmarkAppend(b *testing.B) {
 	}
 }
 
-// BenchmarkOpenWrite_Finalize measures the full Open → Write →
+// BenchmarkOpenWrite_Finalize measures the full Open to Write to
 // Finalize cycle (the streaming variant). Compares against
 // BenchmarkWriteFile to expose the overhead a caller pays for
 // streaming control.

@@ -11,7 +11,7 @@ const (
 	// Mode0640 restricts read to owner + group.
 	Mode0640 os.FileMode = 0o640
 
-	// Mode0600 is owner-only read/write — appropriate for secret-bearing files.
+	// Mode0600 is owner-only read/write; appropriate for secret-bearing files.
 	Mode0600 os.FileMode = 0o600
 
 	// Mode0755 is the default for new directories (owner rwx, group/other rx).
@@ -20,7 +20,7 @@ const (
 	// Mode0750 restricts directory access to owner + group.
 	Mode0750 os.FileMode = 0o750
 
-	// Mode0700 is owner-only directory access — appropriate for state dirs
+	// Mode0700 is owner-only directory access; appropriate for state dirs
 	// containing secrets.
 	Mode0700 os.FileMode = 0o700
 )
@@ -32,7 +32,7 @@ const (
 )
 
 // Chmod wraps [os.Chmod] with the package's error envelope. The mode
-// argument is interpreted by the OS — only the permission bits
+// argument is interpreted by the OS; only the permission bits
 // (`os.ModePerm`) are honored on POSIX, and on Windows only the
 // read-only bit changes meaningfully.
 func Chmod(path string, mode os.FileMode) error {
@@ -66,12 +66,12 @@ func EnsurePerm(path string, mode os.FileMode) error {
 
 // WarnInsecurePerm reports whether path's mode permits more access
 // than expected. Returns insecure=true when actual has any
-// permission bit set that isn't in expected — e.g., expected=0o600,
+// permission bit set that isn't in expected; e.g., expected=0o600,
 // actual=0o644 surfaces the surplus group/other read bits as
 // insecure=true. Permission bits LESS permissive than expected are
 // not flagged (a 0o400 file is fine when expected=0o600).
 //
-// Callers decide what to do — warn the user, refuse to load the
+// Callers decide what to do; warn the user, refuse to load the
 // file, or repair via [Chmod] / [EnsurePerm]. Pairs with
 // `WriteFile(..., WithPerm(fs.Mode0600))` for end-to-end
 // secret-handling discipline.

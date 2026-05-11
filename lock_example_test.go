@@ -25,7 +25,7 @@ func ExampleWithLock() {
 	// err: true
 }
 
-// TryLock is the non-blocking acquire — useful for "if no one else
+// TryLock is the non-blocking acquire; useful for "if no one else
 // is running, do this work; otherwise skip" patterns common in
 // cron-style commands.
 func ExampleTryLock() {

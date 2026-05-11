@@ -17,16 +17,13 @@ const (
 	opRestoreVersion = "restoreversion"
 	opPruneVersions  = "pruneversions"
 
-	// versionedInfix sits between the live filename and the timestamp
-	// suffix to make versioned backups visually distinct from
-	// adjacent files and from log-rotator output.
-	//
-	//   /etc/myapp/config.yaml
-	//   /etc/myapp/config.yaml.bak.20260510-120000.000
+	// versionedInfix separates the live filename from the timestamp
+	// suffix so backups are visually distinct (e.g.,
+	// config.yaml.bak.20260510-120000.000).
 	versionedInfix = ".bak."
 
-	// versionedTimestampLayout is the same sortable layout as
-	// log rotation. Lex-sortable → chronological-sortable.
+	// versionedTimestampLayout is lex-sortable, so name-sort equals
+	// chronological-sort.
 	versionedTimestampLayout = "20060102-150405.000"
 )
 
@@ -55,8 +52,8 @@ type versionedConfig struct {
 }
 
 // WithVersionsKeep retains the n most recent versions and removes
-// older ones after every successful write. Zero (the default)
-// disables count-based pruning.
+// older ones after every successful write. Zero disables count-based
+// pruning.
 func WithVersionsKeep(n int) VersionedOption {
 	return func(c *versionedConfig) {
 		c.keep = n
@@ -64,8 +61,7 @@ func WithVersionsKeep(n int) VersionedOption {
 }
 
 // WithVersionsMaxAge removes versions whose recorded creation time
-// is older than d before the current wall clock. Zero (the default)
-// disables age-based pruning.
+// is older than d. Zero disables age-based pruning.
 func WithVersionsMaxAge(d time.Duration) VersionedOption {
 	return func(c *versionedConfig) {
 		c.maxAge = d
@@ -73,8 +69,8 @@ func WithVersionsMaxAge(d time.Duration) VersionedOption {
 }
 
 // WithVersionsPerm overrides the file mode used for newly-written
-// backup files. Default 0o644 — matches [WriteFile]. For backups of
-// secret files use 0o600.
+// backup files. Default 0o644 (matches [WriteFile]); use 0o600 for
+// secret files.
 func WithVersionsPerm(perm os.FileMode) VersionedOption {
 	return func(c *versionedConfig) {
 		c.perm = perm
@@ -90,9 +86,8 @@ func WithVersionsClock(now func() time.Time) VersionedOption {
 }
 
 // WithVersionsMaxBytes caps the byte size [RestoreVersion] will read
-// from a backup file into memory. Default 100 MiB. Restoring a file
-// larger than the cap fails with [ErrFileTooLarge]; raise this if
-// you genuinely need to restore very large backups.
+// from a backup file into memory. Default 100 MiB. Larger files fail
+// with [ErrFileTooLarge].
 func WithVersionsMaxBytes(n int64) VersionedOption {
 	return func(c *versionedConfig) {
 		c.maxBytes = n
@@ -102,17 +97,15 @@ func WithVersionsMaxBytes(n int64) VersionedOption {
 // WriteFileVersioned writes data to path atomically. If path already
 // exists, its current contents are first renamed to
 // "<path>.bak.<timestamp>" so the prior version is preserved.
-// Returns the backup path (empty string if there was no prior file)
+// Returns the backup path (empty if there was no prior file)
 // alongside any write error.
 //
 // After the write, pruning runs per [WithVersionsKeep] and
 // [WithVersionsMaxAge]. Pruning errors are returned but do not
-// invalidate the just-completed write — callers can inspect the
-// error and proceed.
+// invalidate the just-completed write.
 //
-// The rename-to-backup step is atomic; the live file at path is
-// briefly absent between the rename and the new file's appearance.
-// On POSIX this window is sub-microsecond; readers using
+// The rename-to-backup step is atomic. On POSIX the window between
+// rename and new file write is sub-microsecond; readers using
 // read-and-handle-NotFound see at most a transient miss.
 func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (backup string, err error) {
 	cfg := newVersionedConfig(opts)
@@ -143,8 +136,7 @@ func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (back
 }
 
 // ListVersions returns the on-disk backup versions of path, newest
-// first. Returns an empty slice if path has no backups. Returns nil
-// + error if the directory containing path cannot be read.
+// first. Returns an empty slice if path has no backups.
 func ListVersions(path string) ([]VersionInfo, error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)
@@ -168,9 +160,8 @@ func ListVersions(path string) ([]VersionInfo, error) {
 			continue
 		}
 		stamp := strings.TrimPrefix(name, prefix)
-		// Strip the collision-suffix added by uniqueVersionedName, if
-		// any. The disambiguator uses '_' as a separator since '-' is
-		// already part of the timestamp layout.
+		// Strip the collision-suffix added by uniqueVersionedName,
+		// keeping just the timestamp.
 		if idx := strings.Index(stamp, "_"); idx > 0 {
 			stamp = stamp[:idx]
 		}
@@ -203,14 +194,8 @@ func ListVersions(path string) ([]VersionInfo, error) {
 // versioned backup so the restore itself is reversible.
 //
 // versionPath does not have to be a file produced by
-// [WriteFileVersioned]; any readable file works. The versioned-
-// backup naming convention only applies to what RestoreVersion
-// creates on its way to the restore.
-//
-// The version file is read into memory before the rewrite — its
-// size is bounded by [WithVersionsMaxBytes] (default 100 MiB).
-// Files larger than the cap fail with [ErrFileTooLarge]; callers
-// restoring untrusted-size backups should raise the cap explicitly.
+// [WriteFileVersioned]; any readable file works. The version file is
+// read into memory bounded by [WithVersionsMaxBytes] (default 100 MiB).
 func RestoreVersion(path, versionPath string, opts ...VersionedOption) error {
 	cfg := newVersionedConfig(opts)
 	data, err := ReadFile(versionPath, WithMaxSize(cfg.maxBytes))
@@ -223,7 +208,6 @@ func RestoreVersion(path, versionPath string, opts ...VersionedOption) error {
 	return nil
 }
 
-// newVersionedConfig applies opts to a default-initialized config.
 func newVersionedConfig(opts []VersionedOption) versionedConfig {
 	const defaultMaxBytes = 100 * 1024 * 1024
 	cfg := versionedConfig{
@@ -246,29 +230,19 @@ func newVersionedConfig(opts []VersionedOption) versionedConfig {
 	return cfg
 }
 
-// versionedName returns a fresh versioned-backup name for path. The
-// timestamp suffix is always UTC for cross-machine portability.
 func versionedName(path string, cfg versionedConfig) string {
 	stamp := cfg.nowFn().UTC().Format(versionedTimestampLayout)
 	return fmt.Sprintf("%s%s%s", path, versionedInfix, stamp)
 }
 
 // errVersionedCollisionExhausted signals that uniqueVersionedName
-// couldn't find an unused suffix in 1000 attempts. Surfaced through
-// [WriteFileVersioned] so callers can distinguish a budget-exhausted
-// write from any other rename failure.
+// couldn't find an unused suffix in 1000 attempts.
 var errVersionedCollisionExhausted = errors.New("fs: versioned: collision-suffix budget exhausted")
 
 // uniqueVersionedName returns a versionedName whose target path is
 // not currently in use. Sub-millisecond writes can produce the same
-// timestamp; rather than relying on infinite clock resolution we
-// append `_1`, `_2`, ... (underscore, since `-` already appears in
-// the timestamp layout) until os.Stat reports ErrNotExist.
-//
-// The retry stops at 1000 attempts. If the budget is exhausted
-// (extraordinarily unlikely outside of an attack scenario), returns
-// [errVersionedCollisionExhausted] so the caller fails loudly rather
-// than silently clobbering a same-suffix entry.
+// timestamp; the function appends _1, _2, ... until it finds an
+// unused suffix or exhausts the 1000-attempt budget.
 func uniqueVersionedName(path string, cfg versionedConfig) (string, error) {
 	base := versionedName(path, cfg)
 	candidate := base
@@ -282,8 +256,8 @@ func uniqueVersionedName(path string, cfg versionedConfig) (string, error) {
 }
 
 // pruneVersions removes versioned backups of path that violate the
-// keep or max-age policy. Called after each WriteFileVersioned
-// success.
+// keep or max-age policy. Called after each successful
+// WriteFileVersioned.
 func pruneVersions(path string, cfg versionedConfig) error {
 	if cfg.keep == 0 && cfg.maxAge == 0 {
 		return nil
@@ -294,7 +268,8 @@ func pruneVersions(path string, cfg versionedConfig) error {
 		return err
 	}
 
-	// Apply age first so the keep policy operates on what's left.
+	// Age pruning runs first so the keep policy operates on the
+	// survivors.
 	if cfg.maxAge > 0 {
 		cutoff := cfg.nowFn().Add(-cfg.maxAge)
 		filtered := versions[:0]

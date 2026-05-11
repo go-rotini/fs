@@ -32,7 +32,7 @@ func NewTestHarness(t *testing.T) *TestHarness {
 
 // NewHarnessAt returns a [*TestHarness] rooted at an existing
 // directory. Unlike [NewTestHarness], this does NOT create the
-// directory or register cleanup — the caller owns the root's
+// directory or register cleanup; the caller owns the root's
 // lifecycle. Intended for acceptance-style tests that have already
 // allocated a working directory and want the harness's [Snapshot] /
 // [Path] ergonomics over it.
@@ -99,7 +99,7 @@ func (h *TestHarness) Mkdir(rel string) string {
 }
 
 // Symlink creates a symlink at rel pointing at target. target is
-// stored verbatim — relative targets are resolved against the
+// stored verbatim; relative targets are resolved against the
 // symlink's own directory at lookup time, matching POSIX semantics.
 // Returns the absolute path. Calls `t.Fatalf` on error.
 func (h *TestHarness) Symlink(rel, target string) string {
@@ -124,7 +124,7 @@ func (h *TestHarness) Remove(rel string) {
 }
 
 // Snapshot returns a deterministic representation of the harness's
-// contents — sorted by path, with each entry rendered as either
+// contents; sorted by path, with each entry rendered as either
 // `DIR  <path>` or `FILE <path> mode=<perm> size=<size> <contents>`.
 // Suitable for golden-file comparison.
 //

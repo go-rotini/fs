@@ -59,7 +59,7 @@ func collectLines(t *testing.T, ctx context.Context, path string, opts ...TailOp
 // settleAndSnap advances the synctest bubble's fake clock by enough
 // poll intervals for Tail to drain the file, then returns the
 // captured lines. synctest.Wait blocks until every goroutine in the
-// bubble (including Tail's poller) is durably blocked — at which
+// bubble (including Tail's poller) is durably blocked; at which
 // point any newly-yielded lines have landed in the slice.
 func settleAndSnap(t *testing.T, snap func() ([]string, error), pollInterval time.Duration, polls int) []string {
 	t.Helper()
@@ -157,7 +157,7 @@ func TestTail_PartialLineWaitsForNewline(t *testing.T) {
 			t.Fatalf("Write partial: %v", werr)
 		}
 
-		// Advance the bubble several polls — Tail must NOT yield the
+		// Advance the bubble several polls; Tail must NOT yield the
 		// partial line.
 		got := settleAndSnap(t, snap, poll, 3)
 		if len(got) != 0 {
@@ -225,7 +225,7 @@ func TestTail_DetectsRotationByRename(t *testing.T) {
 			t.Fatalf("pre-rotate lines = %v; want [before-rotate]", got)
 		}
 
-		// Simulate logrotate: rename current → .1, then create fresh.
+		// Simulate logrotate: rename current to .1, then create fresh.
 		if err := os.Rename(path, path+".1"); err != nil {
 			t.Fatalf("Rename: %v", err)
 		}

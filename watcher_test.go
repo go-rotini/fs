@@ -12,7 +12,7 @@ import (
 )
 
 // All watcher tests use WithPolling with a short interval to keep
-// the runtime deterministic across platforms — the platform-native
+// the runtime deterministic across platforms; the platform-native
 // backends are placeholders that fall through to polling anyway.
 
 const (
@@ -421,7 +421,7 @@ func TestWatcher_NativeBackendFallsBackToPolling(t *testing.T) {
 	if err := os.WriteFile(path, []byte("v"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	// No WithPolling — forces native-backend attempt + fallback.
+	// No WithPolling; forces native-backend attempt + fallback.
 	w, err := NewWatcher(path, WithDebounce(0))
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
@@ -507,7 +507,7 @@ func TestWatcher_DebounceCoalescesBurst(t *testing.T) {
 
 	time.Sleep(2 * pollInterval)
 
-	// Five rapid writes within the debounce window — should coalesce.
+	// Five rapid writes within the debounce window; should coalesce.
 	for i := range 5 {
 		if err := os.WriteFile(path, []byte{byte(i)}, 0o644); err != nil {
 			t.Fatalf("WriteFile %d: %v", i, err)

@@ -22,23 +22,16 @@ const (
 	opCacheStats  = "cache.stats"
 	opNewCache    = "cache.new"
 
-	// cacheEntryExt is the suffix every entry file gets. Distinguishes
-	// cache entries from sub-shard directories during walks and lets a
-	// user safely sweep `*.bin` under the cache dir without an
-	// allow-list.
+	// cacheEntryExt distinguishes cache entries from sub-shard
+	// directories during walks.
 	cacheEntryExt = ".bin"
 
 	// cacheShardLen is the number of hash hex chars used as the shard
-	// directory name. Two chars → 256 shards: enough to keep dirent
-	// counts bounded for caches up to ~100k entries on every supported
+	// directory name. Two chars yield 256 shards, bounding dirent
+	// counts for caches up to ~100k entries on every supported
 	// filesystem.
 	cacheShardLen = 2
 
-	// cacheDirPerm + cacheFilePerm match the package defaults for
-	// MkdirAll and WriteFile. Caches typically live under
-	// CacheDir / StateDir which are already 0o700 on POSIX; the per-
-	// entry mode here is permissive so cooperating tools (e.g., the
-	// user's shell) can inspect them.
 	cacheDirPerm  os.FileMode = 0o755
 	cacheFilePerm os.FileMode = 0o644
 )
@@ -53,23 +46,21 @@ var ErrCacheClosed = errors.New("fs: cache: closed")
 // Cache is safe for concurrent use by multiple goroutines. Multiple
 // processes can share the same cache directory: writes are atomic via
 // temp+rename; eviction sweeps may briefly over- or under-evict if
-// two processes evict simultaneously, which is acceptable for a
-// best-effort cache.
+// two processes evict simultaneously.
 //
 // Storage layout (relative to dir, with WithCacheVersion(v) applied):
 //
 //	<dir>/<version-or-empty>/<hash[0:2]>/<hash[2:]>.bin
 //
-// where hash = sha256(key). The version segment is omitted when the
-// cache has no version configured. Each entry file holds only the
-// value bytes; the file's modification time encodes the entry's
-// creation time and drives TTL accounting.
+// where hash = sha256(key). Each entry file holds only the value
+// bytes; the file's modification time encodes the entry's creation
+// time and drives TTL accounting.
 //
 // Eviction is mtime-based LRU when [WithCacheMaxBytes] is set: after
 // every Set whose cumulative size pushes total bytes above the cap,
 // the oldest entries are removed until total bytes is below the cap.
 type Cache struct {
-	dir string // effective dir = config dir + version subdir (if any)
+	dir string
 	cfg cacheConfig
 
 	mu     sync.Mutex
@@ -78,16 +69,10 @@ type Cache struct {
 
 // CacheStats is a point-in-time snapshot of the cache state.
 type CacheStats struct {
-	// Entries is the number of value files currently on disk.
 	Entries int
-
-	// Bytes is the total size of every value file (excludes
-	// directory overhead).
-	Bytes int64
+	Bytes   int64
 }
 
-// cacheConfig holds the per-Cache options. The zero value means "no
-// TTL, no size cap, no version, real wall clock".
 type cacheConfig struct {
 	ttl      time.Duration
 	maxBytes int64
@@ -95,12 +80,11 @@ type cacheConfig struct {
 	nowFn    func() time.Time
 }
 
-// CacheOption configures Cache construction. Pass via [NewCache].
+// CacheOption configures [NewCache].
 type CacheOption func(*cacheConfig)
 
 // WithCacheTTL sets the per-entry time-to-live. Entries older than d
-// at Get time are deleted and reported as misses. Zero disables TTL
-// (the default).
+// at Get time are deleted and reported as misses. Zero disables TTL.
 func WithCacheTTL(d time.Duration) CacheOption {
 	return func(c *cacheConfig) {
 		c.ttl = d
@@ -109,7 +93,7 @@ func WithCacheTTL(d time.Duration) CacheOption {
 
 // WithCacheMaxBytes sets a soft cap on total bytes across all entries.
 // After each Set, the cache evicts oldest-by-mtime entries until the
-// total is at or below n. Zero (the default) disables the cap.
+// total is at or below n. Zero disables the cap.
 func WithCacheMaxBytes(n int64) CacheOption {
 	return func(c *cacheConfig) {
 		c.maxBytes = n
@@ -118,12 +102,8 @@ func WithCacheMaxBytes(n int64) CacheOption {
 
 // WithCacheVersion namespaces all entries under a version segment in
 // the cache directory. Bumping the version is equivalent to a full
-// purge: new entries land under <dir>/<newVersion>/ and Get against
-// the old version's path simply misses.
-//
-// On Cache open, sibling version directories under <dir> are removed
-// so a long-lived cache doesn't accumulate every historical version.
-// Pass "" (the default) to disable versioning entirely.
+// purge. On Cache open, sibling version directories under dir are
+// removed.
 //
 // Allowed characters: [A-Za-z0-9._-]. Other inputs are rejected by
 // [NewCache] with [ErrInvalidPath].
@@ -134,7 +114,7 @@ func WithCacheVersion(v string) CacheOption {
 }
 
 // WithCacheClock overrides the wall clock used for TTL accounting.
-// Useful only in tests; production callers should leave the default.
+// Useful only in tests.
 func WithCacheClock(now func() time.Time) CacheOption {
 	return func(c *cacheConfig) {
 		c.nowFn = now
@@ -144,11 +124,6 @@ func WithCacheClock(now func() time.Time) CacheOption {
 // NewCache opens (or creates) a [Cache] rooted at dir. The directory
 // is created with mode 0o755 if missing. Returns a non-nil error if
 // dir is empty, malformed, or cannot be created.
-//
-// Each NewCache call creates an independent handle; concurrent
-// handles in the same process serialize on internal mutexes and
-// otherwise do not coordinate. Across processes, see the [Cache]
-// concurrency notes.
 func NewCache(dir string, opts ...CacheOption) (*Cache, error) {
 	if dir == "" {
 		return nil, wrapPathError(opNewCache, dir, ErrInvalidPath)
@@ -187,9 +162,9 @@ func NewCache(dir string, opts ...CacheOption) (*Cache, error) {
 }
 
 // Close marks the cache as closed. Subsequent operations return
-// [ErrCacheClosed]. Close does NOT remove files on disk; callers
-// that want the directory gone should call [Cache.Purge] before
-// Close or [os.RemoveAll] after. Close is idempotent.
+// [ErrCacheClosed]. Close does not remove files on disk; call
+// [Cache.Purge] before Close or [os.RemoveAll] after to remove the
+// directory. Idempotent.
 func (c *Cache) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -198,29 +173,24 @@ func (c *Cache) Close() error {
 }
 
 // Get returns the cached value for key. ok is true on a hit; false
-// when the entry is missing, expired, or otherwise unreadable.
+// when the entry is missing, expired, or unreadable.
 //
-// Get never returns an error — read failures are treated as misses
-// so callers can write the idiomatic compute-on-miss form without
-// error plumbing. The entry on disk is deleted if it was expired.
+// Get never returns an error; read failures are treated as misses
+// so callers can write the compute-on-miss form without error
+// plumbing. Expired entries are deleted from disk before the miss
+// is reported.
 func (c *Cache) Get(key string) (value []byte, ok bool) {
 	value, ok, _ = c.getInternal(key) //nolint:errcheck // Get is the miss-as-bool variant; use GetWithError to see the error
 	return value, ok
 }
 
 // GetWithError is the error-surfacing variant of [Cache.Get]. ok is
-// true on a hit; ok is false either because the entry was missing /
-// expired (err nil) OR because reading it failed (err non-nil).
-// Callers that need to distinguish "real miss" from "broken storage"
-// should prefer this over Get. Both forms have identical semantics
-// on success.
+// true on a hit; ok is false either because the entry was missing
+// or expired (err nil) or because reading it failed (err non-nil).
 func (c *Cache) GetWithError(key string) (value []byte, ok bool, err error) {
 	return c.getInternal(key)
 }
 
-// getInternal is the shared body of Get / GetWithError. Returns
-// (nil, false, nil) on miss, (nil, false, err) on a read failure,
-// (data, true, nil) on hit.
 func (c *Cache) getInternal(key string) ([]byte, bool, error) {
 	c.mu.Lock()
 	closed := c.closed
@@ -281,7 +251,7 @@ func (c *Cache) Set(key string, value []byte) error {
 }
 
 // Delete removes the entry for key. Returns nil if the entry was
-// missing. Errors surface only for unrecoverable read/write failures.
+// missing.
 func (c *Cache) Delete(key string) error {
 	c.mu.Lock()
 	closed := c.closed
@@ -321,8 +291,7 @@ func (c *Cache) Purge() error {
 }
 
 // Stats walks the cache directory and returns the entry count and
-// total bytes. O(n) in the number of entries; safe to call from
-// admin / debug paths but avoid invoking on hot read paths.
+// total bytes. O(n) in the number of entries.
 func (c *Cache) Stats() (CacheStats, error) {
 	c.mu.Lock()
 	closed := c.closed
@@ -343,43 +312,26 @@ func (c *Cache) Stats() (CacheStats, error) {
 }
 
 // CacheEntry describes one stored entry by its on-disk metadata.
-// The original key is intentionally not surfaced: keys are
-// SHA-256-hashed before storage and the package does not maintain a
-// reverse index. Callers that need to address entries by name should
-// track their own key set externally; [Cache.Entries] is for sweeping
-// by size/age (e.g., "purge entries older than 30 days").
+// The original key is not surfaced: keys are SHA-256-hashed before
+// storage and the package does not maintain a reverse index.
 type CacheEntry struct {
 	// HashedKey is the hex-encoded SHA-256 of the original key.
-	// Stable across processes for the same key.
 	HashedKey string
 
 	// Size is the entry's value size in bytes.
 	Size int64
 
-	// ModTime is the entry's last-write time, which the cache also
-	// uses for TTL accounting.
+	// ModTime is the entry's last-write time.
 	ModTime time.Time
 }
 
 // Entries returns an iterator over every stored cache entry. Order
 // is unspecified.
 //
-// The iteration walks the cache directory ONCE up-front to build a
-// snapshot of (path, mtime, size) tuples, then yields each entry
-// from the snapshot. Consequences:
-//
-//   - Entries added after iteration begins are NOT visible.
-//   - Entries deleted during iteration are still yielded; the
-//     yielded ModTime / Size reflect their pre-deletion values.
-//   - Per-entry Size / ModTime are read at snapshot-build time;
-//     concurrent rewrites won't update them mid-iteration.
-//
-// This is a deliberate trade-off — a stable snapshot is more useful
-// for admin sweeps ("purge entries older than 30d") than a moving
-// view would be. Callers needing a moving view should call Entries
-// again after each sweep cycle.
-//
-// Returns nil after Close.
+// Iteration walks the cache directory once up-front to build a
+// snapshot. Entries added after iteration begins are not visible;
+// entries deleted during iteration are still yielded with their
+// pre-deletion metadata. Returns nil after Close.
 func (c *Cache) Entries() iter.Seq[CacheEntry] {
 	return func(yield func(CacheEntry) bool) {
 		c.mu.Lock()
@@ -404,9 +356,8 @@ func (c *Cache) Entries() iter.Seq[CacheEntry] {
 	}
 }
 
-// cacheHashFromPath reconstructs the hashed key (concatenated shard
-// + filename minus the .bin extension) from a stored entry's path.
-// Returns "" if the path doesn't match the expected layout.
+// cacheHashFromPath reconstructs the hashed key from a stored entry's
+// path. Returns "" if the path doesn't match the expected layout.
 func cacheHashFromPath(baseDir, entryPath string) string {
 	rel, err := filepath.Rel(baseDir, entryPath)
 	if err != nil {
@@ -414,35 +365,26 @@ func cacheHashFromPath(baseDir, entryPath string) string {
 	}
 	rel = filepath.ToSlash(rel)
 	rel = strings.TrimSuffix(rel, cacheEntryExt)
-	// Expected: "<shard>/<rest>". Collapse the separator.
 	if shard, rest, ok := strings.Cut(rel, "/"); ok {
 		return shard + rest
 	}
 	return rel
 }
 
-// entryPath maps key to its on-disk file path:
-//
-//	<dir>/<hashhex[:2]>/<hashhex[2:]>.bin
-//
-// The version, when present, is already part of c.dir.
 func (c *Cache) entryPath(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	h := hex.EncodeToString(sum[:])
 	return filepath.Join(c.dir, h[:cacheShardLen], h[cacheShardLen:]+cacheEntryExt)
 }
 
-// cacheEntryFile is the per-entry record returned by walkEntries.
 type cacheEntryFile struct {
 	path  string
 	mtime time.Time
 	size  int64
 }
 
-// walkEntries enumerates every <hash>.bin under c.dir. Non-entry
-// files and directories are ignored. Returns the entries plus the
-// total bytes for the convenience of callers that need both numbers
-// (eviction).
+// walkEntries enumerates every <hash>.bin under c.dir. Returns the
+// entries plus the total bytes (used by both Stats and eviction).
 func (c *Cache) walkEntries() ([]cacheEntryFile, int64, error) {
 	var (
 		entries []cacheEntryFile
@@ -480,9 +422,9 @@ func (c *Cache) walkEntries() ([]cacheEntryFile, int64, error) {
 }
 
 // evictIfOverBudget removes oldest-by-mtime entries until total bytes
-// is at or below cfg.maxBytes. Called under no lock; concurrent
-// callers may both run an eviction sweep which is fine: at worst the
-// cache is briefly more aggressively trimmed than configured.
+// is at or below cfg.maxBytes. Concurrent callers may both run a
+// sweep; at worst the cache is briefly more aggressively trimmed
+// than configured.
 func (c *Cache) evictIfOverBudget() error {
 	entries, total, err := c.walkEntries()
 	if err != nil {
@@ -513,9 +455,9 @@ func (c *Cache) evictIfOverBudget() error {
 	return nil
 }
 
-// sweepSiblingVersions removes every sibling of c.dir under base whose
-// name differs from cfg.version. Used at NewCache time to garbage-
-// collect entries from previous schema versions.
+// sweepSiblingVersions removes sibling subdirectories of c.dir whose
+// names differ from cfg.version. Garbage-collects previous-version
+// entries at NewCache time.
 func (c *Cache) sweepSiblingVersions(base string) error {
 	dirents, err := os.ReadDir(base)
 	if err != nil {
@@ -535,9 +477,6 @@ func (c *Cache) sweepSiblingVersions(base string) error {
 	return nil
 }
 
-// isValidVersion enforces a conservative allow-list for version
-// strings so they can serve as path segments on every supported
-// filesystem.
 func isValidVersion(v string) bool {
 	if v == "" || v == "." || v == ".." {
 		return false

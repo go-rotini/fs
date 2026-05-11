@@ -5,7 +5,7 @@ import (
 	"testing/fstest"
 )
 
-// MockFS returns a read-only [io/fs.FS] over a path → contents map.
+// MockFS returns a read-only [io/fs.FS] over a path to contents map.
 // Useful for testing read paths ([fs.Walk], [fs.Glob], [fs.Find],
 // [fs.ReadFile] against the io/fs.FS surface) without touching
 // disk.

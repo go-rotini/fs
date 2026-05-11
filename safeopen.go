@@ -19,14 +19,14 @@ const (
 // On Windows the implementation opens the path with
 // FILE_FLAG_OPEN_REPARSE_POINT and then inspects the resulting
 // handle's attributes; if FILE_ATTRIBUTE_REPARSE_POINT is set
-// (covers symbolic links, junctions, and mount points — every
+// (covers symbolic links, junctions, and mount points; every
 // link-like reparse Windows surfaces) the handle is closed and
 // [ErrSymlinkLoop] is returned. This is not strictly atomic the
 // way POSIX `O_NOFOLLOW` is, but the handle pins the inode that was
 // resolved at open time, so the attribute query reflects that inode,
 // not whatever sat at the path afterward.
 //
-// Intermediate components are still resolved normally — if `/a/b`
+// Intermediate components are still resolved normally; if `/a/b`
 // is a symlink and you open `/a/b/c`, the symlink at `b` is
 // followed but the final component `c` is not.
 //
@@ -37,7 +37,7 @@ func OpenNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 
 // OpenAt opens name relative to dir. On POSIX it uses the
 // `openat(2)` syscall, which resolves name through dir's underlying
-// inode rather than re-walking the path — this defends against
+// inode rather than re-walking the path; this defends against
 // directory-replace races where an attacker swaps a directory for a
 // symlink between calls.
 //

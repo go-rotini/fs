@@ -26,7 +26,7 @@ func newArchiveExtractOptions(opts []ArchiveExtractOption) archiveExtractOptions
 
 // WithPreserveMode preserves entry permission bits from the archive.
 // Default false (modes are masked to 0o644 for files, 0o755 for
-// dirs). Enable with care — archives from untrusted sources can
+// dirs). Enable with care; archives from untrusted sources can
 // contain setuid bits or other surprising mode flags.
 func WithPreserveMode(b bool) ArchiveExtractOption {
 	return func(o *archiveExtractOptions) { o.preserveMode = b }

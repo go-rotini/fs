@@ -16,7 +16,7 @@ import (
 // fault-injecting variants. The helpers here snapshot and restore
 // those vars so tests don't bleed state between runs.
 //
-// Tests that use [newFaultyHooks] MUST NOT call t.Parallel — the
+// Tests that use [newFaultyHooks] MUST NOT call t.Parallel; the
 // hook vars are package-global, so concurrent swappers race against
 // each other and against any other test that calls a hooked helper.
 

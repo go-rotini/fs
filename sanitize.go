@@ -16,13 +16,13 @@ import (
 // If the cleaned stem matches a Windows reserved device name (CON,
 // PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), regardless of case or
 // extension, an underscore is inserted IMMEDIATELY AFTER the stem
-// (before any extension): "CON" → "CON_", "CON.txt" → "CON_.txt".
+// (before any extension): "CON" to "CON_", "CON.txt" to "CON_.txt".
 // This ensures the result no longer parses as a reserved device name
-// on Windows — Windows recognizes the device by stem, so suffixing
+// on Windows; Windows recognizes the device by stem, so suffixing
 // the whole filename ("CON.txt_") leaves the file still reserved.
 //
 // An empty cleaned result falls back to `_`. SanitizeFilename does
-// NOT validate length — Windows MAX_PATH (260) and component-length
+// NOT validate length; Windows MAX_PATH (260) and component-length
 // limits are filesystem-dependent; callers constrain those
 // separately if they matter.
 func SanitizeFilename(name string) string {
@@ -60,7 +60,7 @@ func SanitizeFilename(name string) string {
 // LPT1–LPT9.
 //
 // On any platform that lacks these reservations, the result is still
-// returned — the predicate is portability-safe rather than
+// returned; the predicate is portability-safe rather than
 // platform-conditional, so callers writing files for cross-platform
 // consumption (archive extraction, scaffolding) catch reserved
 // names regardless of the host OS.

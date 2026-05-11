@@ -8,13 +8,13 @@ import "os"
 // these so tests can temporarily swap in fault-injecting variants
 // to exercise the otherwise-unreachable error branches.
 //
-// Hooks are package-global by design — wiring an interface plus a
+// Hooks are package-global; wiring an interface plus a
 // receiver through every call site would clutter the API surface
 // for the sake of test scaffolding. Tests that swap hooks must
 // NOT use t.Parallel; the [injectFailure] helper enforces serial
 // ordering via t.Cleanup.
 //
-// In production, none of these are ever reassigned — verified by
+// In production, none of these are ever reassigned; verified by
 // the absence of any non-test exports in this file and by the
 // var declarations being lowercase / unexported.
 var (

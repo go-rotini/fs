@@ -7,9 +7,9 @@ const archiveSniffSize = 264
 
 // detectArchiveFormat identifies the container in buf.
 //
-//	gzip  magic 0x1F 0x8B at offset 0      → tar.gz (assumed; bare gz is rare in this package's use case)
-//	zip   magic 0x50 0x4B 0x03 0x04        → zip
-//	tar   "ustar" at offset 257            → tar
+//	gzip  magic 0x1F 0x8B at offset 0      to tar.gz (assumed; bare gz is rare in this package's use case)
+//	zip   magic 0x50 0x4B 0x03 0x04        to zip
+//	tar   "ustar" at offset 257            to tar
 //
 // Anything else returns [ArchiveFormatUnknown].
 func detectArchiveFormat(buf []byte) ArchiveFormat {

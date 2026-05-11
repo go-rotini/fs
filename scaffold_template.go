@@ -10,7 +10,7 @@ import (
 // `{{.AppName}}.go` resolves to `myapp.go`) and file contents
 // (substitution into the rendered output).
 //
-// Templates have NO custom functions installed — text/template's
+// Templates have NO custom functions installed; text/template's
 // default builtins only. Avoiding e.g. `os.Exec`-exposing helpers
 // means a malicious template in a scaffolding source can only
 // transform the input variables, not invoke shell commands.

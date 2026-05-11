@@ -16,7 +16,7 @@ body:
       label: Environment Variables / `.env` Input
       description: |
         Env-var values, or `.env` file contents, that trigger the bug.
-        Redact any secrets — replace with `<redacted>` and note the type.
+        Redact any secrets: replace with `<redacted>` and note the type.
       render: shell
 
   - type: textarea

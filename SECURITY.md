@@ -26,7 +26,7 @@ Every entry point that consumes external bytes is bounded by default. Disabling 
 
 ## Path-Traversal Defense
 
-- **Zip-slip / tar-slip.** Every archive entry resolves through `MustBeChildOf(dst, ...)` before any filesystem write. A crafted entry named `../../../etc/passwd` (or an absolute path) errors with `ErrEscapesRoot` rather than writing outside the extraction root. Hand-rolled extraction using `archive/zip` or `archive/tar` directly is the classic vulnerability — always use `ExtractArchive`.
+- **Zip-slip / tar-slip.** Every archive entry resolves through `MustBeChildOf(dst, ...)` before any filesystem write. A crafted entry named `../../../etc/passwd` (or an absolute path) errors with `ErrEscapesRoot` rather than writing outside the extraction root. Hand-rolled extraction using `archive/zip` or `archive/tar` directly is the classic vulnerability; always use `ExtractArchive`.
 - **Symlink-escape inside archives.** Tar symlink entries whose target resolves outside `dst` are refused with `ErrEscapesRoot` at extraction time (see `archive_extract_tar.go:validateTarSymlinkTarget`).
 - **Mode masking.** Archive entries are masked to `0o644` for files and `0o755` for directories by default. Setuid, setgid, sticky, and other mode bits in the archive are stripped unless `WithPreserveMode(true)` is set explicitly. Don't enable mode preservation for archives from untrusted sources.
 - **`MustBeChildOf` / `IsSubpath`.** Public predicates for callers writing their own confined-path logic. Both perform `filepath.Abs` + `filepath.Clean` before comparison.
@@ -36,14 +36,14 @@ Every entry point that consumes external bytes is bounded by default. Disabling 
 
 Many filesystem APIs have time-of-check-to-time-of-use windows. The package provides primitives that close those windows where the platform allows.
 
-- **`OpenNoFollow`.** Opens a path with POSIX `O_NOFOLLOW`. If the final component is a symlink, returns `ErrSymlinkLoop`. Defends against link-replace attacks where an attacker swaps the target between a `Stat` and an `Open`. Intermediate components are still resolved normally — only the final component is protected.
+- **`OpenNoFollow`.** Opens a path with POSIX `O_NOFOLLOW`. If the final component is a symlink, returns `ErrSymlinkLoop`. Defends against link-replace attacks where an attacker swaps the target between a `Stat` and an `Open`. Intermediate components are still resolved normally; only the final component is protected.
 - **`OpenAt`.** Resolves a relative path through a held directory file descriptor via POSIX `openat(2)`. Defends against directory-replace races where a directory is swapped for a symlink mid-walk.
-- **Known limitation on Windows.** `OpenAt` falls back to `filepath.Join` + `os.OpenFile`; the fallback is **not** race-safe and is documented as such. Callers needing TOCTOU resistance on Windows must use other hardening (transactional NTFS, locked parent directories, etc.). `OpenNoFollow` opens the reparse point itself rather than following it — callers needing strict "refuse if final component is a symlink" semantics on Windows should inspect the returned file's mode.
-- **The `Exists` asymmetry.** `Exists(path)` returns `false` on permission errors as well as missing paths. This is deliberate for ergonomics but it means `if !Exists(p) { create(p) }` is unsafe in privileged contexts — a privilege-restricted attacker can hide an existing file. Use `Stat` directly and inspect the error when correctness depends on the distinction.
+- **Known limitation on Windows.** `OpenAt` falls back to `filepath.Join` + `os.OpenFile`; the fallback is **not** race-safe and is documented as such. Callers needing TOCTOU resistance on Windows must use other hardening (transactional NTFS, locked parent directories, etc.). `OpenNoFollow` opens the reparse point itself rather than following it; callers needing strict "refuse if final component is a symlink" semantics on Windows should inspect the returned file's mode.
+- **The `Exists` asymmetry.** `Exists(path)` returns `false` on permission errors as well as missing paths. This is deliberate for ergonomics but it means `if !Exists(p) { create(p) }` is unsafe in privileged contexts; a privilege-restricted attacker can hide an existing file. Use `Stat` directly and inspect the error when correctness depends on the distinction.
 
 ## Filename Sanitization
 
-- **`SanitizeFilename`** strips ASCII control bytes, the Windows-illegal characters (`< > : " | ? * / \`), and trailing dots and spaces. When the cleaned stem matches a Windows reserved device name (CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), an underscore is inserted **before** the extension — `CON.txt` becomes `CON_.txt`. Suffixing the whole filename (`CON.txt_`) would leave Windows still treating the file as the CON device.
+- **`SanitizeFilename`** strips ASCII control bytes, the Windows-illegal characters (`< > : " | ? * / \`), and trailing dots and spaces. When the cleaned stem matches a Windows reserved device name (CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), an underscore is inserted **before** the extension; `CON.txt` becomes `CON_.txt`. Suffixing the whole filename (`CON.txt_`) would leave Windows still treating the file as the CON device.
 - **`IsReservedName`** is portability-safe: it returns `true` for reserved names regardless of the host OS so callers writing files for cross-platform consumption (archive extraction, scaffolding) catch them before they hit a Windows reader.
 
 ## Hash and Integrity Operations
@@ -65,4 +65,4 @@ Many filesystem APIs have time-of-check-to-time-of-use windows. The package prov
 - **`ProjectRoot` caches results process-globally with no invalidation.** Long-lived processes that change project layouts on disk will see stale answers. Designed for CLI tools; consider it best-effort in daemons.
 - **The watcher's polling backend reads mtimes from `os.Lstat`.** On filesystems that round mtime to second resolution (FAT, some SMB mounts), back-to-back writes within one second can be missed. Use `WithPolling`-with-a-finer-interval where this matters; the platform-native backend (post-v0.1) will close this gap on supported filesystems.
 
-For the full list of caveats including TOCTOU, the `Exists` permission asymmetry, watcher debounce latency, and macOS `/var` → `/private/var` resolution, see the "Pitfalls" section of the package documentation in `doc.go`.
+For the full list of caveats including TOCTOU, the `Exists` permission asymmetry, watcher debounce latency, and macOS `/var` -> `/private/var` resolution, see the "Pitfalls" section of the package documentation in `doc.go`.

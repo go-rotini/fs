@@ -132,7 +132,7 @@ func expandVars(path string, strict bool) (string, error) {
 					Cause: fmt.Errorf("%w: %q", errUnsetExpansion, name),
 				}
 			}
-			// Unset → expand to "".
+			// Unset to expand to "".
 		}
 		b.WriteString(v)
 		i += consumed
@@ -294,7 +294,7 @@ func IsSubpath(parent, child string) (bool, error) {
 	// filepath.Rel can fail when the paths can't be made relative
 	// (different drive letters on Windows, mixed abs/rel inputs). A
 	// path that can't be made relative to parent is, by definition,
-	// not a subpath — surface that as ok=false rather than an error.
+	// not a subpath; surface that as ok=false rather than an error.
 	rel, relErr := filepath.Rel(pa, ca)
 	if relErr != nil {
 		return false, nil //nolint:nilerr // unrelatable paths are not subpaths
@@ -328,7 +328,7 @@ func MustBeChildOf(parent, child string) error {
 //
 // Both parent and path are themselves passed through
 // [filepath.EvalSymlinks] before the containment check, so symlinked
-// roots (e.g., macOS's /var → /private/var) compare correctly.
+// roots (e.g., macOS's /var to /private/var) compare correctly.
 func EvalSymlinksWithin(parent, path string) (string, error) {
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {

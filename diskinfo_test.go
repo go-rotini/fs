@@ -131,7 +131,7 @@ func TestIsCaseInsensitiveFS_MissingParent(t *testing.T) {
 	dir := t.TempDir()
 	// Pass a path whose grandparent doesn't exist.
 	_, err := IsCaseInsensitiveFS(filepath.Join(dir, "doesnt-exist", "child"))
-	// Either succeeds (using dir itself) or errors — both are tolerated;
+	// Either succeeds (using dir itself) or errors; both are tolerated;
 	// the test verifies the probe doesn't panic.
 	if err != nil {
 		t.Logf("probe error (acceptable): %v", err)
@@ -168,8 +168,8 @@ func TestPreflightSpace_ExhaustsCap(t *testing.T) {
 		t.Fatalf("DiskUsageOf: %v", err)
 	}
 	// Request a value greater than total (and thus available) capacity.
-	// Use uint64→int64 with safe clamping; if total exceeds int64 max,
-	// skip — extremely unlikely in real test environments.
+	// Use uint64toint64 with safe clamping; if total exceeds int64 max,
+	// skip; extremely unlikely in real test environments.
 	if u.TotalBytes > 1<<62 {
 		t.Skip("disk too large to construct an over-cap test value")
 	}

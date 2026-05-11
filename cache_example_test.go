@@ -30,9 +30,9 @@ func ExampleNewCache() {
 	if err := c.Set(key, computed); err != nil {
 		return
 	}
-	fmt.Println("miss → computed and stored")
+	fmt.Println("miss to computed and stored")
 	// Output:
-	// miss → computed and stored
+	// miss to computed and stored
 }
 
 // Versioned caches scope every entry under a per-app version string;

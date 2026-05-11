@@ -9,16 +9,15 @@ import (
 )
 
 // platformProcessStartTime reads /proc/<pid>/stat and extracts field
-// 22 (`starttime`), the jiffies-since-boot count when the process
-// started. Combined with the kernel boot ID this uniquely identifies
-// a process across PID reuse.
+// 22 (starttime), the jiffies-since-boot count when the process
+// started.
 //
 // /proc/<pid>/stat format:
 //
 //	<pid> (<comm-with-spaces>) <state> <ppid> ... <starttime> ...
 //
-// `comm` is parenthesized and may contain spaces, so we find the
-// closing `)` and split the suffix to address fields 3..N reliably.
+// `comm` is parenthesized and may contain spaces; the parser finds
+// the closing `)` and splits the suffix to address fields 3..N.
 func platformProcessStartTime(pid int) (string, error) {
 	path := fmt.Sprintf("/proc/%d/stat", pid)
 	data, err := os.ReadFile(path)
@@ -30,13 +29,12 @@ func platformProcessStartTime(pid int) (string, error) {
 	if rparen < 0 || rparen+2 >= len(s) {
 		return "", wrapPathError(opProcStartTime, path, ErrInvalidPath)
 	}
-	// Fields after `comm` are space-separated. starttime is the 22nd
-	// field overall; that's the 20th field after `)` (state, ppid,
+	// starttime is the 20th field after the closing `)`: state, ppid,
 	// pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt,
 	// cmajflt, utime, stime, cutime, cstime, priority, nice,
-	// num_threads, itrealvalue, starttime).
+	// num_threads, itrealvalue, starttime.
 	suffix := strings.Fields(s[rparen+2:])
-	const starttimeIdx = 19 // 0-indexed within the after-`)` slice
+	const starttimeIdx = 19
 	if len(suffix) <= starttimeIdx {
 		return "", wrapPathError(opProcStartTime, path, ErrInvalidPath)
 	}

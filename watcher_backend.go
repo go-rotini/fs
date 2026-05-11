@@ -24,7 +24,7 @@ type watcherBackend interface {
 	Close() error
 }
 
-// rawWatchEvent is the backend → cross-platform-shell event shape.
+// rawWatchEvent is the backend to cross-platform-shell event shape.
 // It carries no Time; the shell stamps Time at fan-out.
 type rawWatchEvent struct {
 	path string

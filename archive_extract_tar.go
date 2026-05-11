@@ -11,7 +11,7 @@ import (
 // extractTar reads a tar stream from r and writes entries under
 // dst. Every entry's name and (for symlinks) link target are
 // resolved through MustBeChildOf(dst, ...) before any filesystem
-// write — this defends against tar-slip attacks where a crafted
+// write; this defends against tar-slip attacks where a crafted
 // entry escapes the extraction root via `..` components.
 func extractTar(r io.Reader, dst string, cfg archiveExtractOptions) error {
 	tr := tar.NewReader(r)
@@ -54,7 +54,7 @@ func extractTarEntry(hdr *tar.Header, tr *tar.Reader, dst string, cfg archiveExt
 	case tar.TypeLink:
 		return extractTarHardlink(hdr, dst, target)
 	default:
-		// Skip device nodes, FIFOs, etc. — not safe to recreate
+		// Skip device nodes, FIFOs, etc.; not safe to recreate
 		// from untrusted archives.
 	}
 	return nil

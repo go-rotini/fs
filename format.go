@@ -12,7 +12,7 @@ const opMagic = "magic"
 
 // Magic returns the first n bytes of path. Useful for callers that
 // want to inspect a file's leading bytes against known signatures
-// (the package does not enumerate signatures itself — that's
+// (the package does not enumerate signatures itself; that's
 // thousands of formats; compose with your own table or a third-party
 // magic-bytes library).
 //
@@ -55,7 +55,7 @@ func ExtFormat(path string) string {
 }
 
 // extFormats maps lowercase extensions (without the leading dot) to
-// canonical format identifiers. The table is intentionally small —
+// canonical format identifiers. The table is intentionally small;
 // covers the formats CLI tools handle directly. Image, audio, and
 // video formats are deliberately omitted; tools that work with
 // those have purpose-built libraries.

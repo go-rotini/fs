@@ -14,35 +14,29 @@ import (
 
 // ErrTailRotated is yielded by [Tail]'s iterator each time it
 // detects a rotation (rename-style or in-place truncation) and
-// reopens the underlying file — but only when the caller opts in
-// via [WithTailNotifyRotation]. By default rotation is transparent.
+// reopens the underlying file, but only when the caller opts in via
+// [WithTailNotifyRotation]. By default rotation is transparent.
 //
-// The yield is `(zero-value-string, ErrTailRotated)`; the iterator
-// continues afterwards. Callers who pattern-match on this can log
-// "log file rotated" or flush partial state. errors.Is recognizes
-// it.
+// The yield is ("", ErrTailRotated); the iterator continues
+// afterwards. Callers who pattern-match on this can log a rotation
+// event or flush partial state. errors.Is recognizes it.
 var ErrTailRotated = errors.New("fs: tail: file rotated")
 
 const (
 	opTail = "tail"
 
-	// tailDefaultPollInterval is how long Tail sleeps between size
-	// checks when sitting at EOF. 200 ms is a good balance between
-	// responsiveness for interactive `cli logs -f` UX and not pinning
-	// a CPU core.
+	// tailDefaultPollInterval balances responsiveness for interactive
+	// follow against CPU cost.
 	tailDefaultPollInterval = 200 * time.Millisecond
 
-	// tailDefaultBufferSize sizes the underlying bufio.Reader. 4 KiB
-	// matches the default page size on every supported platform and
-	// is small enough to keep memory negligible across many tailed
-	// files.
+	// tailDefaultBufferSize matches the default page size on every
+	// supported platform.
 	tailDefaultBufferSize = 4096
 
-	// tailMaxLineBytes caps the length of a single line. Lines longer
-	// than this are truncated at the cap; the truncated chunk is
-	// yielded immediately so we never accumulate unbounded state for
-	// an adversarial input. 1 MiB is well above any realistic log
-	// line and protects callers tailing untrusted sources.
+	// tailMaxLineBytes caps a single line's length. Lines longer than
+	// this are truncated at the cap and yielded as separate chunks so
+	// an adversarial writer that never emits a newline cannot blow
+	// memory.
 	tailMaxLineBytes = 1 << 20
 )
 
@@ -60,7 +54,7 @@ func WithTailFromStart() TailOption {
 
 // WithTailPollInterval sets the cadence at which [Tail] checks for
 // new content after hitting EOF. Default is 200ms. Values below 10ms
-// are clamped to 10ms to avoid busy-loop polling.
+// are clamped to 10ms.
 func WithTailPollInterval(d time.Duration) TailOption {
 	return func(c *tailConfig) {
 		c.pollInterval = d
@@ -76,15 +70,14 @@ func WithTailBufferSize(n int) TailOption {
 }
 
 // WithTailNotifyRotation makes [Tail] yield ("", [ErrTailRotated])
-// once each time it detects a rotation and reopens the file. Off
-// by default — rotations are transparent unless the caller asks.
+// once each time it detects a rotation and reopens the file. Off by
+// default.
 func WithTailNotifyRotation() TailOption {
 	return func(c *tailConfig) {
 		c.notifyRotation = true
 	}
 }
 
-// tailConfig holds Tail's normalized options.
 type tailConfig struct {
 	fromStart      bool
 	pollInterval   time.Duration
@@ -101,11 +94,9 @@ type tailConfig struct {
 // tail. Following stdlib convention, a nil ctx panics on first poll.
 //
 // Rotation handling: between reads, [Tail] stats path and compares
-// the result against the held file descriptor via [os.SameFile]. If
-// the path now resolves to a different inode (logrotate-style rename-
-// and-create) or the held file's size has shrunk below the read
-// offset (in-place truncation), [Tail] reopens path from offset 0
-// and continues yielding.
+// against the held file descriptor via [os.SameFile]. A different
+// inode (logrotate-style rename-and-create) or a held file truncated
+// below the read offset causes a reopen from offset 0.
 //
 // On ctx.Done(), the iterator terminates without yielding an error.
 // On an unrecoverable IO error (path becomes permanently unreadable
@@ -113,8 +104,8 @@ type tailConfig struct {
 // and terminates.
 //
 // Lines are yielded without their trailing newline; both LF and CRLF
-// are stripped. The line length is capped at 1 MiB; lines longer
-// than the cap are truncated and yielded as separate chunks.
+// are stripped. Line length is capped at 1 MiB; longer lines are
+// truncated and yielded as separate chunks.
 //
 // Usage:
 //
@@ -145,8 +136,6 @@ func Tail(ctx context.Context, path string, opts ...TailOption) iter.Seq2[string
 	}
 }
 
-// runTail is the iterator body, split out so it isn't nested 5 deep
-// inside Tail's closure.
 func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string, error) bool) {
 	f, info, err := openTailFile(path, cfg.fromStart)
 	if err != nil {
@@ -158,16 +147,12 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 	reader := bufio.NewReaderSize(f, cfg.bufSize)
 	var partial strings.Builder
 
-	// One reusable timer drives the poll loop. We never observe its
-	// channel before resetting, so the standard NewTimer pattern
-	// (stop+drain on early exit) keeps zero goroutines and timers
-	// outstanding regardless of how the iterator terminates.
+	// One reusable timer drives the poll loop; stop+drain before each
+	// Reset keeps zero outstanding goroutines on early exit.
 	timer := time.NewTimer(cfg.pollInterval)
 	defer timer.Stop()
 
 	for {
-		// Drain whatever's currently readable. We stop at EOF inside
-		// drainLines and fall through to the poll/rotation check.
 		stop, derr := drainLines(reader, &partial, yield)
 		if stop {
 			return
@@ -177,7 +162,6 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 			return
 		}
 
-		// Sleep until the next poll or ctx-cancel.
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -191,9 +175,6 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 		case <-timer.C:
 		}
 
-		// Detect rotation/truncation. If detected, swap f + reader and
-		// flush any partial line accumulator (the truncation event
-		// invalidates whatever was mid-line).
 		rotated, newF, newInfo, rerr := checkRotation(path, f, info)
 		if rerr != nil {
 			yield("", wrapPathError(opTail, path, rerr))
@@ -212,9 +193,6 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 	}
 }
 
-// openTailFile opens path and seeks to EOF unless fromStart is set.
-// Returns the open file plus its stat snapshot for rotation
-// comparisons.
 func openTailFile(path string, fromStart bool) (*os.File, stdfs.FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -251,14 +229,12 @@ func drainLines(r *bufio.Reader, partial *strings.Builder, yield func(string, er
 					return true, nil
 				}
 			} else {
-				// EOF in the middle of a line — keep accumulating.
 				partial.WriteString(chunk)
 			}
 		}
 
-		// Cap the in-flight partial so an adversarial writer that
-		// never emits a newline cannot blow memory. Yield a cap-sized
-		// chunk and continue accumulating any overflow.
+		// Cap the in-flight partial. Yield a cap-sized chunk and keep
+		// accumulating any overflow.
 		for partial.Len() >= tailMaxLineBytes {
 			s := partial.String()
 			head := strings.TrimRight(s[:tailMaxLineBytes], "\r")
@@ -280,25 +256,23 @@ func drainLines(r *bufio.Reader, partial *strings.Builder, yield func(string, er
 }
 
 // checkRotation reports whether path now resolves to a different
-// inode than f, or whether f has been truncated to a shorter length.
-// On rotation, returns the freshly-opened file + its stat.
+// inode than f, or whether f has been truncated below the read
+// offset. On rotation, returns the freshly-opened file and its stat.
 func checkRotation(path string, f *os.File, prev stdfs.FileInfo) (rotated bool, newF *os.File, newInfo stdfs.FileInfo, err error) {
 	pathInfo, statErr := os.Stat(path)
 	if statErr != nil {
-		// Path vanished or briefly unreadable. logrotate sometimes
-		// renames-without-create; treat ErrNotExist as "wait for the
-		// path to come back" rather than a fatal error.
+		// logrotate sometimes renames without immediately creating
+		// the replacement; treat ErrNotExist as "wait for path to
+		// reappear" rather than fatal.
 		if errors.Is(statErr, stdfs.ErrNotExist) {
 			return false, nil, nil, nil
 		}
 		return false, nil, nil, statErr //nolint:wrapcheck // wrapped by caller
 	}
 
-	// In-place truncation: same inode but smaller than the held f's
-	// size. We compare against the held f's current end-of-file
-	// position, not the original prev.Size(), since drainLines has
-	// already advanced f.
 	if os.SameFile(prev, pathInfo) {
+		// Compare against f's current read offset (drainLines has
+		// already advanced it), not prev.Size().
 		curSize, sErr := f.Seek(0, io.SeekCurrent)
 		if sErr != nil {
 			return false, nil, nil, sErr //nolint:wrapcheck // wrapped by caller
@@ -313,7 +287,6 @@ func checkRotation(path string, f *os.File, prev stdfs.FileInfo) (rotated bool, 
 		return false, nil, nil, nil
 	}
 
-	// Different inode → rotation. Reopen at the new path.
 	fr, ri, rerr := openTailFile(path, true)
 	if rerr != nil {
 		return false, nil, nil, rerr

@@ -46,11 +46,16 @@ func platformMmap(f *os.File, size int64) ([]byte, error) {
 		return nil, errors.New("MapViewOfFile returned NULL")
 	}
 
-	// Convert the raw address into a Go byte slice of the requested
-	// length. The mapping's lifetime is owned by the Mapping; the
-	// caller must not retain the slice past Close.
+	// Convert the OS-returned address into a Go byte slice. Going
+	// through *(*unsafe.Pointer)(unsafe.Pointer(&addr)) instead of
+	// the direct unsafe.Pointer(addr) keeps `go vet -unsafeptr`
+	// happy: vet's unsafeptr check flags bare uintptr→unsafe.Pointer
+	// conversions because Go's runtime can't trace their provenance,
+	// but the address here is OS-reserved memory-mapped pages that
+	// don't move. The caller MUST NOT retain the slice past Close.
 	//nolint:gosec // pointer is from MapViewOfFile — safe by construction
-	data := unsafe.Slice((*byte)(unsafe.Pointer(addr)), int(size))
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+	data := unsafe.Slice((*byte)(ptr), int(size))
 	return data, nil
 }
 

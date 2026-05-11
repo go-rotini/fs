@@ -59,11 +59,11 @@ type Rotator struct {
 	path string
 	cfg  rotatorConfig
 
-	mu        sync.Mutex
-	f         *os.File
-	curBytes  int64
-	openedAt  time.Time
-	closed    bool
+	mu       sync.Mutex
+	f        *os.File
+	curBytes int64
+	openedAt time.Time
+	closed   bool
 }
 
 // rotatorConfig holds the per-Rotator options. Zero value means "no

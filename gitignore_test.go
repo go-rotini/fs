@@ -15,7 +15,7 @@ func TestGitignore_LiteralMatch(t *testing.T) {
 	cases := map[string]bool{
 		"foo.txt":         true,
 		"bar.txt":         false,
-		"sub/foo.txt":     true,  // unanchored — matches at any depth
+		"sub/foo.txt":     true, // unanchored — matches at any depth
 		"sub/sub/foo.txt": true,
 		"foo.txt.bak":     false, // different name
 	}
@@ -105,11 +105,11 @@ func TestGitignore_DoubleStarRecursive(t *testing.T) {
 	t.Parallel()
 	g := NewGitignore([]string{"foo/**/bar"})
 	cases := map[string]bool{
-		"foo/bar":         true,  // zero intermediate segments
-		"foo/x/bar":       true,
-		"foo/x/y/z/bar":   true,
-		"foo/bar/baz":     true, // parent-dir match
-		"other/foo/bar":   false, // anchored
+		"foo/bar":       true, // zero intermediate segments
+		"foo/x/bar":     true,
+		"foo/x/y/z/bar": true,
+		"foo/bar/baz":   true,  // parent-dir match
+		"other/foo/bar": false, // anchored
 	}
 	for in, want := range cases {
 		if got := g.Match(in, false); got != want {

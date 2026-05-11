@@ -482,4 +482,3 @@ func pidAliveSignal0(pid int) bool {
 	}
 	return errors.Is(err, syscall.EPERM)
 }
-

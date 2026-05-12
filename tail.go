@@ -194,7 +194,7 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 }
 
 func openTailFile(path string, fromStart bool) (*os.File, stdfs.FileInfo, error) {
-	f, err := os.Open(path)
+	f, err := openSharedRead(path)
 	if err != nil {
 		return nil, nil, wrapPathError(opTail, path, err)
 	}

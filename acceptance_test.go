@@ -56,9 +56,14 @@ func TestAcceptanceConfigSave(t *testing.T) {
 	if err := fs.WriteFile(cfg, []byte("token: abc123\n"), fs.WithPerm(fs.Mode0600)); err != nil {
 		t.Fatalf("WriteFile (secret): %v", err)
 	}
-	info, _ := os.Stat(cfg)
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("first-write mode = %o, want 0o600", got)
+	// Unix mode bits aren't meaningful on Windows (os.Stat reports a
+	// synthetic 0o666/0o444); only check the perm round-trip on POSIX.
+	checkPerm := runtime.GOOS != "windows"
+	if checkPerm {
+		info, _ := os.Stat(cfg)
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("first-write mode = %o, want 0o600", got)
+		}
 	}
 
 	// Overwrite with new content.
@@ -73,9 +78,11 @@ func TestAcceptanceConfigSave(t *testing.T) {
 
 	// Mode should be preserved across the overwrite (write.go
 	// snapshots the existing perm).
-	info, _ = os.Stat(cfg)
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("after overwrite mode = %o, want 0o600 (preserved)", got)
+	if checkPerm {
+		info, _ := os.Stat(cfg)
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("after overwrite mode = %o, want 0o600 (preserved)", got)
+		}
 	}
 }
 

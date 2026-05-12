@@ -54,9 +54,12 @@ type LockHandle struct {
 // exist. Returns a [*LockHandle] that the caller must Release.
 //
 // On POSIX, this is flock(LOCK_EX) via [syscall.Flock]. On Windows,
-// it is LockFileEx(LOCKFILE_EXCLUSIVE_LOCK) via kernel32.LockFileEx.
-// The lock is associated with the open file handle, not the path;
-// closing the file (via Release) releases it.
+// it is LockFileEx(LOCKFILE_EXCLUSIVE_LOCK) via kernel32.LockFileEx
+// over a single sentinel byte far past end-of-file, so the lockfile's
+// own content stays readable while the lock is held (Windows
+// byte-range locks are otherwise mandatory). The lock is associated
+// with the open file handle, not the path; closing the file (via
+// Release) releases it.
 //
 // Advisory only: cooperating processes must agree to call Lock to
 // see each other's locks. Direct file reads and writes ignore the

@@ -108,6 +108,9 @@ func WithVersionsMaxBytes(n int64) VersionedOption {
 // rename and new file write is sub-microsecond; readers using
 // read-and-handle-NotFound see at most a transient miss.
 func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (backup string, err error) {
+	if path == "" {
+		return "", wrapPathError(opWriteVersioned, path, ErrInvalidPath)
+	}
 	cfg := newVersionedConfig(opts)
 
 	dir := filepath.Dir(path)

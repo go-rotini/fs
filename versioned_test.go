@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -230,6 +231,9 @@ func TestListVersions_IgnoresMalformedSuffixes(t *testing.T) {
 
 func TestWriteFileVersioned_PermControlsBackupAndCurrent(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		t.Skip("Unix mode bits don't apply on Windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret.key")
 
@@ -252,8 +256,18 @@ func TestWriteFileVersioned_PermControlsBackupAndCurrent(t *testing.T) {
 
 func TestWriteFileVersioned_EmptyPathRejected(t *testing.T) {
 	t.Parallel()
+	if _, err := WriteFileVersioned("", []byte("data")); !errors.Is(err, ErrInvalidPath) {
+		t.Errorf("err = %v; want ErrInvalidPath", err)
+	}
+}
+
+func TestWriteFileVersioned_UnwritableParentRejected(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		t.Skip("CI runs elevated on Windows, so the drive root is writable")
+	}
 	if _, err := WriteFileVersioned("/nonexistent-root-XYZ123/nope/path", []byte("data")); err == nil {
-		t.Error("expected error for unwritable path")
+		t.Error("expected error for unwritable parent path")
 	}
 }
 

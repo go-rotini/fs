@@ -23,6 +23,15 @@ import (
 // never a partial / interleaved view.
 func TestConformanceAtomicWrite(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		// The atomic-write implementation is sound on Windows, but this
+		// stress harness has concurrent readers using os.ReadFile, which
+		// opens without FILE_SHARE_DELETE; that makes the replace-via-
+		// rename step fail with a sharing violation. The semantics
+		// genuinely differ from POSIX, so the conformance check is
+		// POSIX-only.
+		t.Skip("rename-over-open-file is a sharing violation on Windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config")
 

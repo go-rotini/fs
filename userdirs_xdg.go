@@ -64,14 +64,23 @@ func runtimeDir() (string, error) {
 	return v, nil
 }
 
+// Absolute system-config and system-data roots. Held as constants so
+// gocritic's filepathJoin check (which flags path separators inside
+// string literals passed to filepath.Join) doesn't fire on the
+// structural leading slash, which can't be expressed any other way.
+const (
+	systemEtcRoot    = "/etc"
+	systemVarLibRoot = "/var/lib"
+)
+
 func systemConfigDir(app string) (string, error) {
-	return filepath.Join("/etc", app), nil
+	return filepath.Join(systemEtcRoot, app), nil
 }
 
 func systemDataDir(app string) (string, error) {
-	return filepath.Join("/var", "lib", app), nil
+	return filepath.Join(systemVarLibRoot, app), nil
 }
 
 func systemStateDir(app string) (string, error) {
-	return filepath.Join("/var", "lib", app), nil
+	return filepath.Join(systemVarLibRoot, app), nil
 }

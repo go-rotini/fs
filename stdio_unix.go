@@ -3,10 +3,17 @@
 package fs
 
 import (
+	"errors"
 	"os"
 	"syscall"
 	"unsafe"
 )
+
+// isBrokenPipeErr reports whether err is the POSIX EPIPE returned
+// when writing to a pipe whose read end has closed.
+func isBrokenPipeErr(err error) bool {
+	return errors.Is(err, syscall.EPIPE)
+}
 
 // isTerminal queries termios via TIOCGETA/TCGETS. A successful
 // query indicates a TTY; ENOTTY (or any other error) indicates

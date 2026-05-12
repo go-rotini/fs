@@ -28,9 +28,14 @@ func TestChdir_AndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
 	}
-	t.Chdir(orig) // baseline checkpoint; t.Chdir restores cwd at test end.
 
 	dir := t.TempDir()
+	// t.Chdir is called after t.TempDir so its cwd-restore cleanup is
+	// registered last and therefore runs first (LIFO). On Windows a
+	// directory that is the process cwd cannot be removed, so the
+	// restore must happen before t.TempDir's RemoveAll cleanup.
+	t.Chdir(orig)
+
 	resolvedDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)

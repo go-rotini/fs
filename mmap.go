@@ -47,13 +47,13 @@ func Mmap(path string) (*Mapping, error) {
 		_ = f.Close()
 		return nil, wrapPathError(opMmap, path, err)
 	}
-	if info.Size() == 0 {
-		_ = f.Close()
-		return nil, wrapPathError(opMmap, path, errMmapEmpty)
-	}
 	if info.IsDir() {
 		_ = f.Close()
 		return nil, wrapPathError(opMmap, path, ErrIsDir)
+	}
+	if info.Size() == 0 {
+		_ = f.Close()
+		return nil, wrapPathError(opMmap, path, errMmapEmpty)
 	}
 
 	data, err := platformMmap(f, info.Size())

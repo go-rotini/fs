@@ -2,11 +2,9 @@ package fs
 
 import (
 	"bufio"
-	"errors"
 	"io"
 	"iter"
 	"os"
-	"syscall"
 )
 
 const (
@@ -55,11 +53,11 @@ func OpenStdinLines() iter.Seq[string] {
 	}
 }
 
-// WriteStdout writes data to [os.Stdout]. A write that fails with
-// [syscall.EPIPE] (typical when the consumer is `head` or another
-// tool that closes its input early) is reported as [ErrBrokenPipe],
-// which callers conventionally translate to a silent process exit
-// (matching `head`-friendly Unix idiom).
+// WriteStdout writes data to [os.Stdout]. A write that fails because
+// the consumer closed the pipe early (EPIPE on POSIX, ERROR_NO_DATA
+// or ERROR_BROKEN_PIPE on Windows; typical when piping to `head`) is
+// reported as [ErrBrokenPipe], which callers conventionally translate
+// to a silent process exit (matching `head`-friendly Unix idiom).
 func WriteStdout(data []byte) error {
 	return writeFD(opWriteStdout, "stdout", os.Stdout, data)
 }
@@ -71,7 +69,7 @@ func WriteStderr(data []byte) error {
 
 func writeFD(op, name string, w io.Writer, data []byte) error {
 	if _, err := w.Write(data); err != nil {
-		if errors.Is(err, syscall.EPIPE) {
+		if isBrokenPipeErr(err) {
 			return wrapPathError(op, name, ErrBrokenPipe)
 		}
 		return wrapPathError(op, name, err)

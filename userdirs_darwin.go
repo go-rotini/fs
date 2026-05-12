@@ -37,9 +37,12 @@ func runtimeDir() (string, error) {
 	return filepath.Join(home, "Library", "Caches", "TemporaryItems"), nil
 }
 
+// systemAppSupportRoot is held as a constant so gocritic's
+// filepathJoin check doesn't flag the structural leading slash.
+const systemAppSupportRoot = "/Library/Application Support"
+
 func systemConfigDir(app string) (string, error) {
-	//nolint:gocritic // POSIX absolute prefix; gocritic's filepathJoin rule is overzealous here
-	return filepath.Join("/Library", "Application Support", app), nil
+	return filepath.Join(systemAppSupportRoot, app), nil
 }
 
 func systemDataDir(app string) (string, error)  { return systemConfigDir(app) }

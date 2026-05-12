@@ -531,6 +531,13 @@ func TestExpand_UnknownUser(t *testing.T) {
 
 func TestExpand_KnownUser(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		// os/user.Lookup of a domain-qualified name (DOMAIN\user, which
+		// is what user.Current().Username returns on Windows) reports a
+		// domain SID rather than a user SID and fails; ~user expansion
+		// for an explicit name is therefore unreliable on Windows.
+		t.Skip("os/user.Lookup of DOMAIN\\user is unreliable on Windows")
+	}
 	// Look up the current user; ~current should successfully resolve.
 	u, err := user.Current()
 	if err != nil || u.Username == "" {

@@ -300,16 +300,21 @@ func compressRotatedFile(rotated string) error {
 	if err != nil {
 		return wrapPathError(opRotateCompr, rotated, err)
 	}
-	defer func() { _ = src.Close() }()
 
 	dst := rotated + rotateGzipExt
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, rotateFilePerm)
 	if err != nil {
+		_ = src.Close()
 		return wrapPathError(opRotateCompr, dst, err)
 	}
 	gw := gzip.NewWriter(out)
 
-	if _, copyErr := io.Copy(gw, src); copyErr != nil {
+	_, copyErr := io.Copy(gw, src)
+	// Close the source as soon as the copy is done: Windows refuses to
+	// remove a file that still has an open handle, and the remove below
+	// is the whole point of the rotation.
+	_ = src.Close()
+	if copyErr != nil {
 		_ = gw.Close()
 		_ = out.Close()
 		_ = os.Remove(dst)

@@ -1,6 +1,6 @@
 module github.com/go-rotini/fs
 
-go 1.26.2
+go 1.26
 
 tool (
 	github.com/go-gremlins/gremlins/cmd/gremlins

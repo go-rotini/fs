@@ -299,8 +299,8 @@ func (w *Watcher) worker() {
 	rawCh := w.backend.Events()
 	deboCh := w.debouncer.Out()
 
-	// Pump backend to debouncer in a sub-goroutine so the main loop can
-	// also handle workerStop cleanly.
+	// pump to debouncer so the main loop can
+	// handle workerStop cleanly.
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
@@ -310,6 +310,7 @@ func (w *Watcher) worker() {
 			}
 		}
 	}()
+	defer func() { <-pumpDone }()
 
 	for {
 		select {
@@ -358,10 +359,8 @@ func hasParentDir(child, parent string) bool {
 
 func (w *Watcher) fanOut(ev WatchEvent) {
 	w.mu.Lock()
-	subs := make([]*watcherSub, len(w.subs))
-	copy(subs, w.subs)
-	w.mu.Unlock()
-	for _, s := range subs {
+	defer w.mu.Unlock()
+	for _, s := range w.subs {
 		select {
 		case s.ch <- ev:
 		case <-s.ctx.Done():
@@ -404,12 +403,7 @@ func (w *Watcher) Close() error {
 	<-w.workerDone
 
 	for _, s := range subs {
-		// Channels close when removeSub runs via ctx-cancel; if a sub
-		// missed it (unlikely), drain to avoid leaks.
-		select {
-		case <-s.ch:
-		default:
-		}
+		close(s.ch)
 	}
 	return nil
 }

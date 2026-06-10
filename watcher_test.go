@@ -25,6 +25,7 @@ func newTestWatcher(t *testing.T, path string, dir bool, lazy bool) *Watcher {
 	opts := []WatcherOption{
 		WithPolling(pollInterval),
 		WithDebounce(debounceWait),
+		WithBufferSize(64),
 	}
 	var (
 		w   *Watcher

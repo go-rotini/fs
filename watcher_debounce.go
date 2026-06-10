@@ -38,9 +38,8 @@ func newDebouncer(delay time.Duration) *debouncer {
 func (d *debouncer) In(ev rawWatchEvent) {
 	if d.delay <= 0 {
 		d.mu.Lock()
-		closed := d.closed
-		d.mu.Unlock()
-		if closed {
+		defer d.mu.Unlock()
+		if d.closed {
 			return
 		}
 		select {
@@ -69,13 +68,12 @@ func (d *debouncer) In(ev rawWatchEvent) {
 	st := &timerState{op: ev.op}
 	st.timer = time.AfterFunc(d.delay, func() {
 		d.mu.Lock()
-		out := rawWatchEvent{path: path, op: st.op}
-		delete(d.timers, path)
-		closed := d.closed
-		d.mu.Unlock()
-		if closed {
+		defer d.mu.Unlock()
+		if d.closed {
 			return
 		}
+		out := rawWatchEvent{path: path, op: st.op}
+		delete(d.timers, path)
 		select {
 		case d.out <- out:
 		default:

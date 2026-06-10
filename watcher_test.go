@@ -25,6 +25,13 @@ func newTestWatcher(t *testing.T, path string, dir bool, lazy bool) *Watcher {
 	opts := []WatcherOption{
 		WithPolling(pollInterval),
 		WithDebounce(debounceWait),
+		// A single action can surface as more than one event in one
+		// tick (e.g. a dir watch sees the parent's WatchWrite plus the
+		// child's WatchCreate). The default buffer of 1 drops the
+		// second before a not-yet-scheduled test goroutine can drain
+		// the first, which flakes delivery assertions under load. Give
+		// the tests headroom; drop behavior itself is not asserted here.
+		WithBufferSize(64),
 	}
 	var (
 		w   *Watcher

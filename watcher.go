@@ -299,8 +299,13 @@ func (w *Watcher) worker() {
 	rawCh := w.backend.Events()
 	deboCh := w.debouncer.Out()
 
-	// Pump backend to debouncer in a sub-goroutine so the main loop can
-	// also handle workerStop cleanly.
+	// Pump backend events into the debouncer in a sub-goroutine so the
+	// main loop can handle workerStop promptly. The pump exits when the
+	// backend closes rawCh (which Close does via backend.Close). Wait
+	// for it before signaling workerDone — registered after the
+	// workerDone defer so it runs first on return — so that Close, which
+	// blocks on workerDone, is guaranteed the pump has fully stopped and
+	// will not touch the (by then closed) debouncer afterward.
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
@@ -310,6 +315,7 @@ func (w *Watcher) worker() {
 			}
 		}
 	}()
+	defer func() { <-pumpDone }()
 
 	for {
 		select {
@@ -357,11 +363,15 @@ func hasParentDir(child, parent string) bool {
 }
 
 func (w *Watcher) fanOut(ev WatchEvent) {
+	// Hold the lock across the sends so a concurrent removeSub (which
+	// closes s.ch under the same lock) cannot close a channel we are
+	// about to send on; otherwise the select below can pick a send on
+	// an already-closed channel and panic. The sends are non-blocking
+	// (buffered channel + default), so holding the lock cannot block
+	// the worker on a slow subscriber.
 	w.mu.Lock()
-	subs := make([]*watcherSub, len(w.subs))
-	copy(subs, w.subs)
-	w.mu.Unlock()
-	for _, s := range subs {
+	defer w.mu.Unlock()
+	for _, s := range w.subs {
 		select {
 		case s.ch <- ev:
 		case <-s.ctx.Done():
@@ -403,13 +413,14 @@ func (w *Watcher) Close() error {
 	w.debouncer.Close()
 	<-w.workerDone
 
+	// Close every subscriber channel so receivers blocked on the
+	// channel observe the watcher shutting down. We own these subs:
+	// w.subs was niled above before s.cancel() fired, so each sub's
+	// auto-remove goroutine runs removeSub against an empty slice and
+	// will not also close the channel (no double-close). The worker has
+	// stopped (workerDone above), so no fanOut can send concurrently.
 	for _, s := range subs {
-		// Channels close when removeSub runs via ctx-cancel; if a sub
-		// missed it (unlikely), drain to avoid leaks.
-		select {
-		case <-s.ch:
-		default:
-		}
+		close(s.ch)
 	}
 	return nil
 }

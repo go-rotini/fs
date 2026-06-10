@@ -37,10 +37,12 @@ func newDebouncer(delay time.Duration) *debouncer {
 // In ingests an event. If delay <= 0 the debouncer is a pass-through.
 func (d *debouncer) In(ev rawWatchEvent) {
 	if d.delay <= 0 {
+		// Send under the lock so we can't race Close's close(d.out):
+		// the channel is buffered with a select/default, so the send
+		// never blocks and holding the lock cannot deadlock.
 		d.mu.Lock()
-		closed := d.closed
-		d.mu.Unlock()
-		if closed {
+		defer d.mu.Unlock()
+		if d.closed {
 			return
 		}
 		select {
@@ -68,14 +70,16 @@ func (d *debouncer) In(ev rawWatchEvent) {
 	path := ev.path
 	st := &timerState{op: ev.op}
 	st.timer = time.AfterFunc(d.delay, func() {
+		// Send under the lock for the same reason as the pass-through
+		// path above: it serializes against Close's close(d.out) and
+		// the buffered/non-blocking send cannot deadlock.
 		d.mu.Lock()
-		out := rawWatchEvent{path: path, op: st.op}
-		delete(d.timers, path)
-		closed := d.closed
-		d.mu.Unlock()
-		if closed {
+		defer d.mu.Unlock()
+		if d.closed {
 			return
 		}
+		out := rawWatchEvent{path: path, op: st.op}
+		delete(d.timers, path)
 		select {
 		case d.out <- out:
 		default:

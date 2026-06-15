@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // FindOption configures the find-up family ([FindUp], [FindUpAll],
@@ -221,6 +222,19 @@ func FirstExisting(paths []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// FindWithExtensions returns the first existing file named stem+"."+ext (for
+// each ext in exts, in order) within dir, plus true; or ("", false) when none
+// exist. A leading "." on an ext is accepted and ignored, so both "yaml" and
+// ".yaml" address foo.yaml. It is the common "config.yml / config.yaml /
+// config.toml / config.json" fallback, built on [FirstExisting].
+func FindWithExtensions(dir, stem string, exts []string) (string, bool) {
+	candidates := make([]string, 0, len(exts))
+	for _, ext := range exts {
+		candidates = append(candidates, filepath.Join(dir, stem+"."+strings.TrimPrefix(ext, ".")))
+	}
+	return FirstExisting(candidates)
 }
 
 // Find returns paths under root whose basename matches pattern (a

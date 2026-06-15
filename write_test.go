@@ -1238,3 +1238,41 @@ func TestOpenWrite_NoWriteToReadonlyDir(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+func TestWriteIfChanged(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "out.txt")
+
+	// First write: file is absent → counts as changed.
+	wrote, err := WriteIfChanged(p, []byte("v1"))
+	if err != nil || !wrote {
+		t.Fatalf("first write: wrote=%v err=%v, want true/nil", wrote, err)
+	}
+
+	// Identical content → no write, mtime preserved.
+	before, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	wrote, err = WriteIfChanged(p, []byte("v1"))
+	if err != nil || wrote {
+		t.Fatalf("identical write: wrote=%v err=%v, want false/nil", wrote, err)
+	}
+	after, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("mtime changed on a no-op WriteIfChanged")
+	}
+
+	// Different content → write happens and the file updates.
+	wrote, err = WriteIfChanged(p, []byte("v2"))
+	if err != nil || !wrote {
+		t.Fatalf("changed write: wrote=%v err=%v, want true/nil", wrote, err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "v2" {
+		t.Fatalf("content = %q, want v2", got)
+	}
+}

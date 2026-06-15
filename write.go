@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sync"
@@ -134,6 +135,21 @@ func WriteFile(path string, data []byte, opts ...WriteOption) error {
 // WriteString is shorthand for WriteFile(path, []byte(s), opts...).
 func WriteString(path, s string, opts ...WriteOption) error {
 	return WriteFile(path, []byte(s), opts...)
+}
+
+// WriteIfChanged writes data to path only when it differs from the file
+// already there, reporting whether a write happened. A missing or unreadable
+// destination counts as changed. Skipping identical writes leaves the file's
+// mtime untouched, so file watchers and mtime-keyed build caches don't re-fire
+// on a no-op regeneration. Options match [WriteFile].
+func WriteIfChanged(path string, data []byte, opts ...WriteOption) (bool, error) {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return false, nil
+	}
+	if err := WriteFile(path, data, opts...); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // WriteFileExclusive writes data to path with O_CREATE|O_EXCL

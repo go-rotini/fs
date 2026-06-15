@@ -23,6 +23,8 @@ const (
 	opSystemStateDir  = "systemstatedir"
 	opExecutableDir   = "executabledir"
 	opBinaryPath      = "binarypath"
+	opXDGConfigHome   = "xdgconfighome"
+	opXDGConfigDir    = "xdgconfigdir"
 )
 
 // Home returns the current user's home directory. Wraps
@@ -170,6 +172,28 @@ func appDir(op, appName string, base func() (string, error)) (string, error) {
 		return "", err
 	}
 	return filepath.Join(b, appName), nil
+}
+
+// XDGConfigHome returns the XDG base config directory on every platform —
+// $XDG_CONFIG_HOME when set, else ~/.config — ignoring the platform-native
+// location that [ConfigDir] uses on macOS (~/Library/Application Support) and
+// Windows (%APPDATA%). Use it when a tool deliberately wants XDG-literal
+// locations everywhere, e.g. a cross-platform CLI documented as ~/.config/<app>.
+func XDGConfigHome() (string, error) {
+	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+		return v, nil
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", wrapPathError(opXDGConfigHome, "", err)
+	}
+	return filepath.Join(h, ".config"), nil
+}
+
+// XDGConfigDir returns [XDGConfigHome]/<appName> — the portable, XDG-literal
+// analog of [AppConfigDir]. See [AppConfigDir] for appName validation.
+func XDGConfigDir(appName string) (string, error) {
+	return appDir(opXDGConfigDir, appName, XDGConfigHome)
 }
 
 // SystemConfigDir returns the system-wide config directory for app:

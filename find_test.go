@@ -499,3 +499,24 @@ func TestMatchInDir_BadPattern(t *testing.T) {
 		t.Error("expected error from bad glob")
 	}
 }
+
+func TestFindWithExtensions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".app.config.toml"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// First match in extension order wins; a leading "." on an ext is ignored.
+	got, ok := FindWithExtensions(dir, ".app.config", []string{"yml", "yaml", ".toml", "json"})
+	if !ok {
+		t.Fatal("FindWithExtensions did not find the .toml file")
+	}
+	if want := filepath.Join(dir, ".app.config.toml"); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	if _, ok := FindWithExtensions(dir, "absent", []string{"yaml", "json"}); ok {
+		t.Error("expected no match for an absent stem")
+	}
+}

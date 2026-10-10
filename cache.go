@@ -243,7 +243,7 @@ func (c *Cache) Set(key string, value []byte) error {
 		return err
 	}
 	if c.cfg.maxBytes > 0 {
-		if err := c.evictIfOverBudget(); err != nil {
+		if err := c.evictIfOverBudget(path); err != nil {
 			return err
 		}
 	}
@@ -422,10 +422,13 @@ func (c *Cache) walkEntries() ([]cacheEntryFile, int64, error) {
 }
 
 // evictIfOverBudget removes oldest-by-mtime entries until total bytes
-// is at or below cfg.maxBytes. Concurrent callers may both run a
+// is at or below cfg.maxBytes. The entry at newest, which the caller
+// just wrote, goes last: file mtimes can tie or run behind the wall
+// clock (Linux stamps them at tick granularity), so mtime alone may
+// not rank it newest. Concurrent callers may both run a
 // sweep; at worst the cache is briefly more aggressively trimmed
 // than configured.
-func (c *Cache) evictIfOverBudget() error {
+func (c *Cache) evictIfOverBudget(newest string) error {
 	entries, total, err := c.walkEntries()
 	if err != nil {
 		return err
@@ -434,6 +437,9 @@ func (c *Cache) evictIfOverBudget() error {
 		return nil
 	}
 	sort.Slice(entries, func(i, j int) bool {
+		if ni, nj := entries[i].path == newest, entries[j].path == newest; ni != nj {
+			return nj
+		}
 		return entries[i].mtime.Before(entries[j].mtime)
 	})
 	evicted := 0

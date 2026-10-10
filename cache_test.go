@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -159,30 +160,21 @@ func TestCache_MaxBytesEviction(t *testing.T) {
 	t.Parallel()
 	c := newTestCache(t, WithCacheMaxBytes(50))
 
-	// Each entry is 20 bytes; cap is 50; entries 1-2 fit, entry 3
-	// triggers eviction of the oldest.
+	// Each entry is 20 bytes; cap is 50. k0 and k1 fit; k2 pushes the
+	// total to 60 and evicts the oldest. Backdate k0 and k1 so the
+	// order does not depend on how the filesystem stamps mtimes.
+	base := time.Now().Add(-time.Hour)
 	for i := 0; i < 3; i++ {
-		val := make([]byte, 20)
-		// Use distinct content so writes don't dedup at any layer.
-		for j := range val {
-			val[j] = byte('a' + i)
+		key := fmt.Sprintf("k%d", i)
+		if err := c.Set(key, bytes.Repeat([]byte{byte('a' + i)}, 20)); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
 		}
-		if err := c.Set(fmt.Sprintf("k%d", i), val); err != nil {
-			t.Fatalf("Set #%d: %v", i, err)
+		if i < 2 {
+			when := base.Add(time.Duration(i) * time.Second)
+			if err := os.Chtimes(c.entryPath(key), when, when); err != nil {
+				t.Fatalf("Chtimes %s: %v", key, err)
+			}
 		}
-		// Space out mtimes so eviction has a deterministic oldest.
-		path := c.entryPath(fmt.Sprintf("k%d", i))
-		when := time.Now().Add(time.Duration(i) * time.Second)
-		if err := os.Chtimes(path, when, when); err != nil {
-			t.Fatalf("Chtimes #%d: %v", i, err)
-		}
-	}
-
-	// k0 (oldest) should be evicted; k1, k2 remain.
-	// Trigger one more Set to force an eviction sweep at the now-
-	// settled mtimes.
-	if err := c.Set("trigger", []byte("xx")); err != nil {
-		t.Fatalf("Set trigger: %v", err)
 	}
 
 	stats, err := c.Stats()
@@ -192,9 +184,45 @@ func TestCache_MaxBytesEviction(t *testing.T) {
 	if stats.Bytes > 50 {
 		t.Errorf("Bytes = %d; want <= 50 after eviction", stats.Bytes)
 	}
-
 	if _, ok := c.Get("k0"); ok {
 		t.Error("k0 (oldest) was not evicted")
+	}
+	for _, key := range []string{"k1", "k2"} {
+		if _, ok := c.Get(key); !ok {
+			t.Errorf("%s was evicted; want only k0 evicted", key)
+		}
+	}
+}
+
+func TestCache_MaxBytesEvictionKeepsJustWritten(t *testing.T) {
+	t.Parallel()
+	c := newTestCache(t, WithCacheMaxBytes(50))
+
+	// Give the existing entries mtimes later than any the next write
+	// can get, as a coarse or skewed filesystem clock can. The entry
+	// just written must still be evicted last.
+	future := time.Now().Add(time.Hour)
+	for _, key := range []string{"k0", "k1"} {
+		if err := c.Set(key, bytes.Repeat([]byte("x"), 20)); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
+		}
+		if err := os.Chtimes(c.entryPath(key), future, future); err != nil {
+			t.Fatalf("Chtimes %s: %v", key, err)
+		}
+	}
+	if err := c.Set("k2", bytes.Repeat([]byte("y"), 20)); err != nil {
+		t.Fatalf("Set k2: %v", err)
+	}
+
+	if got, ok := c.Get("k2"); !ok || !bytes.Equal(got, bytes.Repeat([]byte("y"), 20)) {
+		t.Errorf("Get(k2) = %q, %v; want the value just written", got, ok)
+	}
+	stats, err := c.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Entries != 2 || stats.Bytes != 40 {
+		t.Errorf("Stats = %+v; want 2 entries, 40 bytes", stats)
 	}
 }
 

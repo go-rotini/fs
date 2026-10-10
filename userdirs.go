@@ -180,6 +180,9 @@ func appDir(op, appName string, base func() (string, error)) (string, error) {
 // (~/Library/Application Support) and Windows (%APPDATA%). Use it when a tool
 // deliberately wants XDG-literal locations everywhere, e.g. a cross-platform
 // CLI documented as ~/.config/<app>.
+//
+// On Windows an absolute path needs a drive letter or UNC prefix, so a
+// POSIX-style value such as /home/u/.config is ignored there.
 func XDGConfigHome() (string, error) {
 	if v := xdgEnv("XDG_CONFIG_HOME"); v != "" {
 		return v, nil

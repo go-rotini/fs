@@ -39,7 +39,7 @@ func Home() (string, error) {
 
 // ConfigDir returns the user's per-user config directory.
 //
-//	Linux/BSD: $XDG_CONFIG_HOME or ~/.config
+//	Linux/BSD: $XDG_CONFIG_HOME (if absolute) or ~/.config
 //	macOS:     ~/Library/Application Support
 //	Windows:   %APPDATA%
 func ConfigDir() (string, error) {
@@ -52,7 +52,7 @@ func ConfigDir() (string, error) {
 
 // CacheDir returns the user's per-user cache directory.
 //
-//	Linux/BSD: $XDG_CACHE_HOME or ~/.cache
+//	Linux/BSD: $XDG_CACHE_HOME (if absolute) or ~/.cache
 //	macOS:     ~/Library/Caches
 //	Windows:   %LOCALAPPDATA%
 func CacheDir() (string, error) {
@@ -65,7 +65,7 @@ func CacheDir() (string, error) {
 
 // DataDir returns the user's per-user data directory.
 //
-//	Linux/BSD: $XDG_DATA_HOME or ~/.local/share
+//	Linux/BSD: $XDG_DATA_HOME (if absolute) or ~/.local/share
 //	macOS:     ~/Library/Application Support
 //	Windows:   %APPDATA%
 func DataDir() (string, error) {
@@ -78,7 +78,7 @@ func DataDir() (string, error) {
 
 // StateDir returns the user's per-user state directory.
 //
-//	Linux/BSD: $XDG_STATE_HOME or ~/.local/state
+//	Linux/BSD: $XDG_STATE_HOME (if absolute) or ~/.local/state
 //	macOS:     ~/Library/Application Support
 //	Windows:   %LOCALAPPDATA%
 func StateDir() (string, error) {
@@ -92,7 +92,7 @@ func StateDir() (string, error) {
 // RuntimeDir returns the user's runtime directory.
 //
 //	Linux/BSD: $XDG_RUNTIME_DIR (no fallback per XDG spec; errors with
-//	           [ErrNotSupported] when unset).
+//	           [ErrNotSupported] when unset or relative).
 //	macOS:     ~/Library/Caches/TemporaryItems
 //	Windows:   %LOCALAPPDATA%\Temp
 func RuntimeDir() (string, error) {
@@ -175,12 +175,13 @@ func appDir(op, appName string, base func() (string, error)) (string, error) {
 }
 
 // XDGConfigHome returns the XDG base config directory on every platform —
-// $XDG_CONFIG_HOME when set, else ~/.config — ignoring the platform-native
-// location that [ConfigDir] uses on macOS (~/Library/Application Support) and
-// Windows (%APPDATA%). Use it when a tool deliberately wants XDG-literal
-// locations everywhere, e.g. a cross-platform CLI documented as ~/.config/<app>.
+// $XDG_CONFIG_HOME when set to an absolute path, else ~/.config — ignoring
+// the platform-native location that [ConfigDir] uses on macOS
+// (~/Library/Application Support) and Windows (%APPDATA%). Use it when a tool
+// deliberately wants XDG-literal locations everywhere, e.g. a cross-platform
+// CLI documented as ~/.config/<app>.
 func XDGConfigHome() (string, error) {
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+	if v := xdgEnv("XDG_CONFIG_HOME"); v != "" {
 		return v, nil
 	}
 	h, err := os.UserHomeDir()
@@ -263,4 +264,14 @@ func validateAppName(name string) error {
 		return ErrInvalidPath
 	}
 	return nil
+}
+
+// xdgEnv returns the named XDG base-directory variable when it holds an
+// absolute path. The XDG spec says relative values are invalid and must be
+// ignored, so a relative value reads as unset.
+func xdgEnv(name string) string {
+	if v := os.Getenv(name); filepath.IsAbs(v) {
+		return v
+	}
+	return ""
 }

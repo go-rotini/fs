@@ -9,7 +9,7 @@ import (
 )
 
 func configDir() (string, error) {
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+	if v := xdgEnv("XDG_CONFIG_HOME"); v != "" {
 		return v, nil
 	}
 	home, err := os.UserHomeDir()
@@ -20,7 +20,7 @@ func configDir() (string, error) {
 }
 
 func cacheDir() (string, error) {
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
+	if v := xdgEnv("XDG_CACHE_HOME"); v != "" {
 		return v, nil
 	}
 	home, err := os.UserHomeDir()
@@ -31,7 +31,7 @@ func cacheDir() (string, error) {
 }
 
 func dataDir() (string, error) {
-	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
+	if v := xdgEnv("XDG_DATA_HOME"); v != "" {
 		return v, nil
 	}
 	home, err := os.UserHomeDir()
@@ -42,7 +42,7 @@ func dataDir() (string, error) {
 }
 
 func stateDir() (string, error) {
-	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
+	if v := xdgEnv("XDG_STATE_HOME"); v != "" {
 		return v, nil
 	}
 	home, err := os.UserHomeDir()
@@ -57,9 +57,9 @@ func stateDir() (string, error) {
 // login with the user's uid/gid); without it, the package errors
 // rather than guessing a path that won't have the right ownership.
 func runtimeDir() (string, error) {
-	v := os.Getenv("XDG_RUNTIME_DIR")
+	v := xdgEnv("XDG_RUNTIME_DIR")
 	if v == "" {
-		return "", fmt.Errorf("%w: XDG_RUNTIME_DIR not set", ErrNotSupported)
+		return "", fmt.Errorf("%w: XDG_RUNTIME_DIR not set to an absolute path", ErrNotSupported)
 	}
 	return v, nil
 }

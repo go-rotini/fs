@@ -102,3 +102,30 @@ func TestXDG_SystemDataDir(t *testing.T) {
 		t.Errorf("got %s, want /var/lib/myapp", got)
 	}
 }
+
+func TestXDG_RelativeValuesIgnored(t *testing.T) {
+	t.Setenv("HOME", "/tmp/h")
+	for _, tc := range []struct {
+		env  string
+		fn   func() (string, error)
+		want string
+	}{
+		{"XDG_CONFIG_HOME", ConfigDir, filepath.Join("/tmp/h", ".config")},
+		{"XDG_CACHE_HOME", CacheDir, filepath.Join("/tmp/h", ".cache")},
+		{"XDG_DATA_HOME", DataDir, filepath.Join("/tmp/h", ".local", "share")},
+		{"XDG_STATE_HOME", StateDir, filepath.Join("/tmp/h", ".local", "state")},
+	} {
+		t.Setenv(tc.env, "relative/dir")
+		got, err := tc.fn()
+		if err != nil || got != tc.want {
+			t.Errorf("%s=relative/dir: got %q, %v; want %q", tc.env, got, err, tc.want)
+		}
+	}
+}
+
+func TestXDG_RuntimeDir_RelativeIsUnset(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "run/user/1000")
+	if _, err := RuntimeDir(); !errors.Is(err, ErrNotSupported) {
+		t.Errorf("got %v, want ErrNotSupported", err)
+	}
+}

@@ -316,11 +316,12 @@ func TestSystemStateDir_InvalidName(t *testing.T) {
 // --- Portable XDG helpers (XDG-literal on every platform) ---
 
 func TestXDGConfigDir_HonorsEnvOnEveryPlatform(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgcfg")
-	if got, err := XDGConfigHome(); err != nil || got != "/tmp/xdgcfg" {
-		t.Fatalf("XDGConfigHome() = %q, %v; want /tmp/xdgcfg", got, err)
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got, err := XDGConfigHome(); err != nil || got != dir {
+		t.Fatalf("XDGConfigHome() = %q, %v; want %q", got, err, dir)
 	}
-	if got, err := XDGConfigDir("myapp"); err != nil || got != filepath.Join("/tmp/xdgcfg", "myapp") {
+	if got, err := XDGConfigDir("myapp"); err != nil || got != filepath.Join(dir, "myapp") {
 		t.Fatalf("XDGConfigDir(myapp) = %q, %v", got, err)
 	}
 }
@@ -344,5 +345,22 @@ func TestXDGConfigDir_InvalidName(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdgcfg")
 	if _, err := XDGConfigDir("../escape"); !errors.Is(err, ErrInvalidPath) {
 		t.Errorf("XDGConfigDir(../escape) err = %v, want ErrInvalidPath", err)
+	}
+}
+
+func TestXDGConfigHome_IgnoresRelativeValue(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows resolves the home dir from USERPROFILE, not HOME")
+	}
+	t.Setenv("HOME", "/home/u")
+	want := filepath.Join("/home/u", ".config")
+	for _, v := range []string{"cfg", "./cfg", "~/cfg"} {
+		t.Setenv("XDG_CONFIG_HOME", v)
+		if got, err := XDGConfigHome(); err != nil || got != want {
+			t.Errorf("XDG_CONFIG_HOME=%q: XDGConfigHome() = %q, %v; want %q", v, got, err, want)
+		}
+		if got, err := XDGConfigDir("myapp"); err != nil || got != filepath.Join(want, "myapp") {
+			t.Errorf("XDG_CONFIG_HOME=%q: XDGConfigDir(myapp) = %q, %v", v, got, err)
+		}
 	}
 }

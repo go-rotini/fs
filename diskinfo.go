@@ -47,8 +47,8 @@ func DiskUsageOf(path string) (DiskUsage, error) { return diskUsageOf(path) }
 
 // MountPoint returns the absolute mount point of the filesystem
 // containing path. On Linux it reads /proc/self/mountinfo (resolving
-// symlinks in path first); on macOS and the BSDs it uses statfs(2);
-// on Windows, GetVolumePathName.
+// symlinks in path first); on macOS and the BSDs it uses statfs(2)
+// (statvfs(2) on NetBSD); on Windows, GetVolumePathName.
 func MountPoint(path string) (string, error) { return mountPointOf(path) }
 
 // FilesystemType returns a best-effort string identification of the

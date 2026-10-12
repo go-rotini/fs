@@ -132,7 +132,7 @@ func Hardlink(target, linkPath string) error {
 	}
 
 	if err := os.Link(target, linkPath); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
+		if isCrossDeviceErrno(err) {
 			return wrapPathError(opHardlink, linkPath, ErrCrossDevice)
 		}
 		return wrapPathError(opHardlink, linkPath, err)

@@ -1,4 +1,4 @@
-//go:build darwin || freebsd
+//go:build darwin || freebsd || netbsd || openbsd
 
 package fs
 
@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// platformProcessStartTime on darwin and freebsd shells out to `ps
+// platformProcessStartTime on darwin and the BSDs shells out to `ps
 // -o lstart=`. kinfo_proc layout varies across releases; hand-
 // parsing the timeval offset within the struct is brittle, and the
 // BSD `ps` variant ships on every supported release.

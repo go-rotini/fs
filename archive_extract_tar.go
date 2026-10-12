@@ -8,19 +8,20 @@ import (
 	"path/filepath"
 )
 
-// extractTar reads a tar stream from r and writes entries under
-// dst. Every entry's name and (for symlinks) link target are
-// resolved through MustBeChildOf(dst, ...) before any filesystem
-// write; this defends against tar-slip attacks where a crafted
-// entry escapes the extraction root via `..` components.
-func extractTar(r io.Reader, dst string, cfg archiveExtractOptions) error {
+// extractTar reads a tar stream from r and writes entries under root. Every entry's name and
+// link target must stay inside root: by name, and as the path resolves on disk through the
+// symlinks there at that moment, the archive's own included. Once every entry is written, each
+// symlink the archive made is checked again, since a later entry can change where it leads.
+func extractTar(r io.Reader, root extractRoot, cfg archiveExtractOptions) error {
+	dst := root.dir
 	tr := tar.NewReader(r)
 	var used int64
+	var links madeLinks
 
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return links.check(root)
 		}
 		if err != nil {
 			return wrapPathError(opExtractArchive, dst, err)
@@ -28,7 +29,7 @@ func extractTar(r io.Reader, dst string, cfg archiveExtractOptions) error {
 		if cfg.filter != nil && !cfg.filter(tarHeaderToArchiveHeader(hdr)) {
 			continue
 		}
-		if err := extractTarEntry(hdr, tr, dst, cfg, &used); err != nil {
+		if err := extractTarEntry(hdr, tr, root, &links, cfg, &used); err != nil {
 			return err
 		}
 	}
@@ -36,23 +37,29 @@ func extractTar(r io.Reader, dst string, cfg archiveExtractOptions) error {
 
 // extractTarEntry handles one tar entry. Split out from extractTar
 // to keep cognitive complexity manageable.
-func extractTarEntry(hdr *tar.Header, tr *tar.Reader, dst string, cfg archiveExtractOptions, used *int64) error {
-	target, terr := resolveEntryPath(dst, hdr.Name)
+func extractTarEntry(hdr *tar.Header, tr *tar.Reader, root extractRoot, links *madeLinks, cfg archiveExtractOptions, used *int64) error {
+	target, terr := resolveEntryPath(root.dir, hdr.Name)
 	if terr != nil {
 		return wrapPathError(opExtractArchive, hdr.Name, terr)
 	}
 
 	switch hdr.Typeflag {
 	case tar.TypeDir:
+		if err := root.confine(target); err != nil {
+			return err
+		}
 		if err := osMkdirAll(target, safeMode(os.FileMode(hdr.Mode), true, cfg.preserveMode)); err != nil {
 			return wrapPathError(opExtractArchive, target, err)
 		}
 	case tar.TypeReg:
-		return extractTarRegular(hdr, tr, target, cfg, used)
+		return extractTarRegular(hdr, tr, root, target, cfg, used)
 	case tar.TypeSymlink:
-		return extractTarSymlink(hdr, dst, target)
+		if err := validateTarSymlinkTarget(root.dir, target, hdr.Linkname); err != nil {
+			return wrapPathError(opExtractArchive, target, err)
+		}
+		return links.make(root, target, hdr.Linkname)
 	case tar.TypeLink:
-		return extractTarHardlink(hdr, dst, target)
+		return extractTarHardlink(hdr, root, target)
 	default:
 		// Skip device nodes, FIFOs, etc.; not safe to recreate
 		// from untrusted archives.
@@ -60,9 +67,9 @@ func extractTarEntry(hdr *tar.Header, tr *tar.Reader, dst string, cfg archiveExt
 	return nil
 }
 
-func extractTarRegular(hdr *tar.Header, tr *tar.Reader, target string, cfg archiveExtractOptions, used *int64) error {
-	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
-		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
+func extractTarRegular(hdr *tar.Header, tr *tar.Reader, root extractRoot, target string, cfg archiveExtractOptions, used *int64) error {
+	if err := prepareFile(root, target); err != nil {
+		return err
 	}
 	f, err := osOpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
 		safeMode(os.FileMode(hdr.Mode), false, cfg.preserveMode))
@@ -82,27 +89,18 @@ func extractTarRegular(hdr *tar.Header, tr *tar.Reader, target string, cfg archi
 	return nil
 }
 
-func extractTarSymlink(hdr *tar.Header, dst, target string) error {
-	if err := validateTarSymlinkTarget(dst, target, hdr.Linkname); err != nil {
-		return wrapPathError(opExtractArchive, target, err)
-	}
-	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
-		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
-	}
-	_ = osRemove(target) //nolint:errcheck // best-effort: missing target is the common case
-	if err := osSymlink(hdr.Linkname, target); err != nil {
-		return wrapPathError(opExtractArchive, target, err)
-	}
-	return nil
-}
-
-func extractTarHardlink(hdr *tar.Header, dst, target string) error {
-	linkTarget, lerr := resolveEntryPath(dst, hdr.Linkname)
+// extractTarHardlink links target to an entry already extracted. Both paths must resolve
+// inside root, so a link can't reach a file outside it through a symlink already in the tree.
+func extractTarHardlink(hdr *tar.Header, root extractRoot, target string) error {
+	linkTarget, lerr := resolveEntryPath(root.dir, hdr.Linkname)
 	if lerr != nil {
 		return wrapPathError(opExtractArchive, hdr.Linkname, lerr)
 	}
-	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
-		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
+	if err := root.confine(linkTarget); err != nil {
+		return err
+	}
+	if err := prepareFile(root, target); err != nil {
+		return err
 	}
 	_ = osRemove(target) //nolint:errcheck // best-effort: missing target is the common case
 	if err := osLink(linkTarget, target); err != nil {

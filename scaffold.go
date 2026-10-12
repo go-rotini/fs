@@ -101,6 +101,11 @@ var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflic
 // Templates run with missingkey=error and no functions beyond the
 // text/template builtins. A path template error aborts the plan; file
 // contents are not rendered until [ScaffoldApply].
+//
+// Every rendered path must stay inside dst, both as written and as it
+// resolves through the symlinks already on disk; one that doesn't,
+// such as a variable rendering to `../../x`, aborts the plan with an
+// error wrapping [ErrEscapesRoot].
 func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([]ScaffoldAction, error) {
 	cfg := newScaffoldOptions(opts)
 	if cfg.onConflict == ScaffoldPromptInteractive && cfg.promptFunc == nil {
@@ -115,8 +120,10 @@ func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([
 // ([ScaffoldSkipExisting]), so re-running over an applied scaffold is
 // a no-op.
 //
-// Every source file's contents are rendered as a template with vars
-// and written atomically (directories 0o755). A content template
+// Paths are confined to dst as in [ScaffoldPlan]; an escaping path
+// fails before anything is written. Every source file's contents are
+// rendered as a template with vars and written atomically
+// (directories 0o755). A content template
 // error stops the apply, leaving files already written in place.
 func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) error {
 	plan, err := ScaffoldPlan(src, dst, vars, opts...)
@@ -129,8 +136,12 @@ func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) e
 
 // scaffoldWalk traverses src and produces the action list.
 func scaffoldWalk(src stdfs.FS, dst string, vars any, cfg scaffoldOptions) ([]ScaffoldAction, error) {
+	root, err := newExtractRoot(opScaffoldPlan, dst)
+	if err != nil {
+		return nil, err
+	}
 	var plan []ScaffoldAction
-	err := stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
+	err = stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -142,6 +153,9 @@ func scaffoldWalk(src stdfs.FS, dst string, vars any, cfg scaffoldOptions) ([]Sc
 			return wrapPathError(opScaffoldPlan, path, terr)
 		}
 		dstPath := filepath.Join(dst, filepath.FromSlash(renderedPath))
+		if err := root.confine(filepath.Join(root.dir, filepath.FromSlash(renderedPath))); err != nil {
+			return err
+		}
 
 		action := ScaffoldAction{
 			SrcPath: path,

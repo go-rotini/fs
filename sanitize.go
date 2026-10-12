@@ -14,10 +14,10 @@ import (
 //     to surprising path resolution)
 //
 // If the cleaned name is a Windows reserved device name per
-// [IsReservedName], an underscore is inserted before the last
-// extension: "CON" becomes "CON_", "con.txt" becomes "con_.txt".
-// Windows recognizes the device by stem, so suffixing the whole
-// filename ("CON.txt_") would leave it reserved.
+// [IsReservedName], an underscore is inserted before the first dot:
+// "CON" becomes "CON_", "con.tar.gz" becomes "con_.tar.gz". Windows
+// recognizes the device by the part before the first dot, so
+// suffixing anywhere later ("CON.tar_.gz") would leave it reserved.
 //
 // An empty cleaned result falls back to `_`. Length is not checked.
 func SanitizeFilename(name string) string {
@@ -40,27 +40,28 @@ func SanitizeFilename(name string) string {
 	if !IsReservedName(out) {
 		return out
 	}
-	// Reserved-stem rewrite: insert "_" before the last dot, or
-	// append if there is no dot. Defends against Windows treating
-	// "CON.txt_" as the CON device.
-	if dot := strings.LastIndex(out, "."); dot > 0 {
+	// Reserved-stem rewrite: insert "_" before the first dot, or
+	// append if there is no dot.
+	if dot := strings.IndexByte(out, '.'); dot > 0 {
 		return out[:dot] + "_" + out[dot:]
 	}
 	return out + "_"
 }
 
-// IsReservedName reports whether name, with its last extension removed,
-// is a Windows reserved device name: CON, PRN, AUX, NUL, COM1–COM9 or
-// LPT1–LPT9, compared case-insensitively. The answer is the same on
-// every platform, so files meant for Windows can be checked anywhere.
-// Only the last extension is removed, so "CON.tar.gz" is not reported.
+// IsReservedName reports whether Windows treats name as a reserved
+// device name: CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9, or COM and
+// LPT followed by a superscript ¹, ² or ³, compared
+// case-insensitively. As on Windows, everything from the first dot
+// on is ignored, as are spaces before it, so "CON.tar.gz", "nul.txt"
+// and "AUX .log" are all reserved. The answer is the same on every
+// platform, so files meant for Windows can be checked anywhere.
 func IsReservedName(name string) bool {
-	base := name
-	if dot := strings.LastIndex(base, "."); dot >= 0 {
-		base = base[:dot]
+	stem := name
+	if dot := strings.IndexByte(stem, '.'); dot >= 0 {
+		stem = stem[:dot]
 	}
-	upper := strings.ToUpper(base)
-	_, ok := reservedNames[upper]
+	stem = strings.TrimRight(stem, " ")
+	_, ok := reservedNames[strings.ToUpper(stem)]
 	return ok
 }
 
@@ -68,9 +69,9 @@ var reservedNames = func() map[string]struct{} {
 	set := map[string]struct{}{
 		"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
 	}
-	for i := 1; i <= 9; i++ {
-		set["COM"+string(rune('0'+i))] = struct{}{}
-		set["LPT"+string(rune('0'+i))] = struct{}{}
+	for _, digit := range "123456789¹²³" {
+		set["COM"+string(digit)] = struct{}{}
+		set["LPT"+string(digit)] = struct{}{}
 	}
 	return set
 }()

@@ -31,12 +31,16 @@ type WalkParallelFunc func(path string, e stdfs.DirEntry) error
 // calls is unspecified; use [Walk] for a deterministic order.
 //
 // Cancel ctx to stop the walk early; fn calls already running
-// complete, and WalkParallel returns nil rather than ctx.Err(). ctx
-// must not be nil.
+// complete, and WalkParallel returns ctx.Err() unless fn or a
+// directory read failed first. A walk that finishes before ctx is
+// canceled returns nil. ctx must not be nil.
 //
 // Symlinks are not followed. For symlink following, max depth or
 // gitignore filtering, use [Walk].
 func WalkParallel(ctx context.Context, root string, fn WalkParallelFunc, workers int) error {
+	if err := ctx.Err(); err != nil {
+		return err //nolint:wrapcheck // returned as is, like the package's other context-aware functions
+	}
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
@@ -72,12 +76,20 @@ func WalkParallel(ctx context.Context, root string, fn WalkParallelFunc, workers
 		})
 	}
 	workersWG.Wait()
+	// The queue is closed only by an error or by ctx: a walk that
+	// drained on its own leaves it open until stopCancel below.
+	q.mu.Lock()
+	stopped := q.closed
+	q.mu.Unlock()
 	stopCancel()
 	watcherWG.Wait()
 
 	state.mu.Lock()
 	err = state.firstErr
 	state.mu.Unlock()
+	if err == nil && stopped {
+		return ctx.Err() //nolint:wrapcheck // returned as is, like the package's other context-aware functions
+	}
 	return err
 }
 

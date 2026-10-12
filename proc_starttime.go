@@ -4,7 +4,7 @@ package fs
 // start instant of the OS process with the given PID. A process that
 // later reuses the same PID gets a different string, so comparing
 // the two distinguishes the original process from a recycled one
-// (on macOS and FreeBSD the resolution is one second).
+// (on macOS and the BSDs the resolution is one second).
 //
 // It is the usual fingerprint for [WithPIDLockFingerprint]:
 //
@@ -19,7 +19,7 @@ package fs
 //
 //   - Linux: parses `starttime` (field 22) from /proc/<pid>/stat.
 //     The value is jiffies-since-boot.
-//   - Darwin / FreeBSD: shells out to `ps -o lstart=`.
+//   - Darwin and the BSDs: shells out to `ps -o lstart=`.
 //   - Windows: GetProcessTimes via kernel32.dll for the creation
 //     FILETIME (100-nanosecond ticks since 1601 UTC), rendered in
 //     decimal.

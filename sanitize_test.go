@@ -48,6 +48,9 @@ func TestSanitizeFilename_ReservedSuffixed(t *testing.T) {
 		{"CON", "CON_"},
 		{"con", "con_"},
 		{"CON.txt", "CON_.txt"},
+		{"CON.tar.gz", "CON_.tar.gz"},
+		{"nul .txt", "nul _.txt"},
+		{"COM¹.log", "COM¹_.log"},
 		{"COM1", "COM1_"},
 		{"com9.log", "com9_.log"},
 		{"LPT3", "LPT3_"},
@@ -79,6 +82,7 @@ func TestIsReservedName_Reserved(t *testing.T) {
 		"LPT1", "LPT9",
 		"con", "prn", "Con.txt", "NUL.log",
 		"com5.bin",
+		"CON.tar.gz", "nul.a.b.c", "AUX .log", "PRN ", "CON.", "com¹", "LPT³.txt",
 	} {
 		if !IsReservedName(name) {
 			t.Errorf("IsReservedName(%q) = false, want true", name)
@@ -91,7 +95,7 @@ func TestIsReservedName_NotReserved(t *testing.T) {
 	for _, name := range []string{
 		"", "FOO", "CON1", "COM0", "COM10", "LPT0", "LPT10",
 		"console", "com",
-		"normal.txt",
+		"normal.txt", "CONX.tar.gz", ".CON", "x.CON", "COM⁴",
 	} {
 		if IsReservedName(name) {
 			t.Errorf("IsReservedName(%q) = true, want false", name)

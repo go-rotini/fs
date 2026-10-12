@@ -5,7 +5,6 @@ import (
 	"fmt"
 	stdfs "io/fs"
 	"strings"
-	"syscall"
 )
 
 // unknownLabel is the canonical string returned by stringer-style
@@ -141,8 +140,9 @@ var (
 	ErrIsDir = errors.New("fs: is a directory")
 
 	// ErrCrossDevice is returned when a rename or hard link crosses
-	// filesystems (EXDEV). [Move] falls back to copy and remove on
-	// it; [Rename] and [Hardlink] return it.
+	// filesystems (EXDEV, or ERROR_NOT_SAME_DEVICE on Windows). [Move]
+	// falls back to copy and remove on it; [Rename] and [Hardlink]
+	// return it.
 	ErrCrossDevice = errors.New("fs: cross-device link")
 
 	// ErrFileTooLarge is returned when a bounded read exceeds the cap
@@ -171,7 +171,9 @@ var (
 	ErrHashMismatch = errors.New("fs: hash mismatch")
 
 	// ErrNotEmpty reports a directory that was expected to be empty
-	// but is not. No function in this package currently returns it.
+	// but is not, such as one passed to [Remove] or a [Rename] onto a
+	// directory with entries. Like the OS error it wraps, it also
+	// matches [io/fs.ErrExist].
 	ErrNotEmpty = errors.New("fs: directory not empty")
 
 	// ErrShortRead is returned by [ReadAt] when fewer bytes were
@@ -250,11 +252,13 @@ func normalizeCause(cause error) error {
 	switch {
 	case errors.Is(cause, stdfs.ErrNotExist):
 		return fmt.Errorf("%w: %w", ErrNotFound, cause)
+	case isNotEmptyErrno(cause):
+		return fmt.Errorf("%w: %w", ErrNotEmpty, cause)
 	case errors.Is(cause, stdfs.ErrExist):
 		return fmt.Errorf("%w: %w", ErrAlreadyExists, cause)
 	case errors.Is(cause, stdfs.ErrPermission):
 		return fmt.Errorf("%w: %w", ErrPermission, cause)
-	case errors.Is(cause, syscall.EXDEV):
+	case isCrossDeviceErrno(cause):
 		return fmt.Errorf("%w: %w", ErrCrossDevice, cause)
 	default:
 		return cause

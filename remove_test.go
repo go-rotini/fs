@@ -2,6 +2,7 @@ package fs
 
 import (
 	"errors"
+	stdfs "io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,8 +51,11 @@ func TestRemove_NonEmptyDir(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	err := Remove(sub)
-	if err == nil {
-		t.Error("expected error removing non-empty dir")
+	if !errors.Is(err, ErrNotEmpty) {
+		t.Errorf("got %v, want ErrNotEmpty", err)
+	}
+	if !errors.Is(err, stdfs.ErrExist) {
+		t.Errorf("got %v, want it to also match io/fs.ErrExist", err)
 	}
 }
 

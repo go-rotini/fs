@@ -36,9 +36,10 @@ func newReadOptions(opts []ReadOption) readOptions {
 }
 
 // WithMaxSize sets the maximum bytes [ReadFile] and [ReadLines] will
-// read, and the maximum line length for [OpenLines]. Zero or negative
-// disables the cap; only do that when the source is known to be of
-// trustworthy size. [ReadFirstLine] and [ReadAt] ignore it.
+// read, and the maximum line length for [OpenLines] and
+// [ReadFirstLine]. Zero or negative disables the cap; only do that
+// when the source is known to be of trustworthy size. [ReadAt]
+// ignores it.
 func WithMaxSize(n int64) ReadOption {
 	return func(o *readOptions) {
 		if n < 0 {
@@ -177,7 +178,9 @@ func splitLines(b []byte) []string {
 
 // ReadFirstLine returns the first line of path, without a leading
 // UTF-8 BOM or the trailing LF or CRLF. Only LF ends a line. For an
-// empty file the error wraps [ErrEmptyFile].
+// empty file the error wraps [ErrEmptyFile]. A first line longer than
+// the [WithMaxSize] cap (default [DefaultMaxReadSize]) stops the read
+// with an error wrapping [ErrFileTooLarge].
 func ReadFirstLine(path string, opts ...ReadOption) (string, error) {
 	cfg := newReadOptions(opts)
 	p, err := resolveReadPath(path, cfg)
@@ -194,14 +197,30 @@ func ReadFirstLine(path string, opts ...ReadOption) (string, error) {
 	if err := skipBOM(br); err != nil {
 		return "", wrapPathError(opRead, p, err)
 	}
-	line, err := br.ReadString('\n')
-	if errors.Is(err, io.EOF) && line == "" {
+	line, err := readFirstLine(br, cfg.maxSize)
+	if errors.Is(err, io.EOF) && len(line) == 0 {
 		return "", wrapPathError(opRead, p, ErrEmptyFile)
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", wrapPathError(opRead, p, err)
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return strings.TrimRight(string(line), "\r\n"), nil
+}
+
+// readFirstLine reads through the first LF, failing with [ErrFileTooLarge] once the line,
+// without its LF or CRLF, is longer than maxSize (when maxSize > 0).
+func readFirstLine(br *bufio.Reader, maxSize int64) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		line = append(line, chunk...)
+		if maxSize > 0 && int64(len(bytes.TrimRight(line, "\r\n"))) > maxSize {
+			return nil, ErrFileTooLarge
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err //nolint:wrapcheck // the caller wraps via *PathError
+		}
+	}
 }
 
 // OpenLines returns an iterator over path's lines. A leading UTF-8 BOM

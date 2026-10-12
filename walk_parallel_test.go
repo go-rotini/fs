@@ -136,9 +136,33 @@ func TestWalkParallel_ContextCancel(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("got %v, want context.Canceled", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("WalkParallel did not terminate after ctx cancel")
+	}
+}
+
+// Canceling ctx mid-walk returns ctx.Err(), not nil.
+func TestWalkParallel_CancelMidWalk(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for i := range 100 {
+		mustWrite(t, filepath.Join(root, fmt.Sprintf("f%03d.txt", i)), "x")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	err := WalkParallel(ctx, root, func(path string, _ stdfs.DirEntry) error {
+		if path == root {
+			cancel()
+			time.Sleep(50 * time.Millisecond) // let the walk observe the cancellation
+		}
+		return nil
+	}, 4)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got %v, want context.Canceled", err)
 	}
 }
 

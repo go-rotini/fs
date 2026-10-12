@@ -39,8 +39,9 @@ const (
 // [WithStrict] to error on missing paths (mirroring stdlib's
 // [os.Remove]).
 //
-// For directories, only empty directories succeed; use [RemoveAll]
-// for recursive removal.
+// For directories, only empty directories succeed; a non-empty one
+// fails with an error wrapping [ErrNotEmpty]. Use [RemoveAll] for
+// recursive removal.
 func Remove(path string, opts ...RemoveOption) error {
 	cfg := newRemoveOptions(opts)
 	err := os.Remove(path)

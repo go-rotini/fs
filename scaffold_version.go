@@ -23,6 +23,10 @@ import (
 // The conflict policy still applies: by default existing files are
 // kept, even when the source has changed. Use [ScaffoldOverwriteAll]
 // to replace them.
+//
+// A path that resolves outside dst through a symlink already on disk
+// fails with an error wrapping [ErrEscapesRoot]; entries before it
+// stay written.
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
 
@@ -92,6 +96,10 @@ func scaffoldHashFS(src stdfs.FS) (string, error) {
 // conflict policy. No template rendering; identical contents to the
 // embedded FS.
 func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
+	root, err := newExtractRoot(opScaffoldExtract, dst)
+	if err != nil {
+		return err
+	}
 	//nolint:wrapcheck // per-entry errors are already wrapped via wrapPathError below
 	return stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
@@ -101,6 +109,9 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 			return nil
 		}
 		dstPath := filepath.Join(dst, filepath.FromSlash(path))
+		if err := root.confine(filepath.Join(root.dir, filepath.FromSlash(path))); err != nil {
+			return err
+		}
 
 		if d.IsDir() {
 			if err := osMkdirAll(dstPath, Mode0755); err != nil {

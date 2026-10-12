@@ -123,8 +123,10 @@ func Walk(root string, fn WalkFunc, opts ...WalkOption) error {
 
 func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 	cleanRoot := filepath.Clean(root)
-	rootDepth := pathSeparatorCount(cleanRoot)
 
+	// filepath.WalkDir reports root exactly as given and every entry
+	// beneath it cleaned, so root is recognized by its spelling as
+	// given: "./.hidden" must not be filtered as a hidden entry.
 	//nolint:wrapcheck // outer Walk wraps via *PathError
 	return filepath.WalkDir(root, func(path string, d stdfs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -134,9 +136,9 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 			return walkErr
 		}
 
-		if cfg.maxDepth > 0 {
-			depth := pathSeparatorCount(filepath.Clean(path)) - rootDepth
-			if depth > cfg.maxDepth {
+		isRoot := path == root
+		if cfg.maxDepth > 0 && !isRoot {
+			if walkDepth(cleanRoot, path) > cfg.maxDepth {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -144,14 +146,14 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 			}
 		}
 
-		if path != cleanRoot && shouldSkip(path, d, cfg) {
+		if !isRoot && shouldSkip(path, d, cfg) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		if path != cleanRoot && cfg.gitignore != nil {
+		if !isRoot && cfg.gitignore != nil {
 			if skip, prune := gitignoreSkip(cfg.gitignore, toRelPosix(cleanRoot, path), d.IsDir()); skip {
 				if prune {
 					return filepath.SkipDir
@@ -254,8 +256,13 @@ func shouldSkip(path string, e stdfs.DirEntry, cfg walkOptions) bool {
 	return false
 }
 
-// pathSeparatorCount counts os-separator characters in the cleaned
-// path, providing a stable depth metric.
-func pathSeparatorCount(path string) int {
-	return strings.Count(path, string(filepath.Separator))
+// walkDepth returns how many levels path lies below cleanRoot: 1 for
+// a direct child. Counting from the relative path keeps roots such as
+// "." and "/" right, where a separator count of the whole path is not.
+func walkDepth(cleanRoot, path string) int {
+	rel, err := filepath.Rel(cleanRoot, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
 }

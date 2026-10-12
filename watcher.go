@@ -94,12 +94,14 @@ func NewLazyWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 }
 
 // NewDirWatcher watches a directory and, by default, every
-// subdirectory that exists when it is called; pass
-// [WithRecursive](false) to watch only the top level. It reports
+// subdirectory beneath it, including ones created after it is called;
+// pass [WithRecursive](false) to watch only the top level. It reports
 // entries appearing ([WatchCreate]) and disappearing ([WatchRemove])
-// in watched directories, and changes to the directories themselves.
-// It does not report writes to files inside them, and subdirectories
-// created later are reported but not watched.
+// in watched directories, writes and permission changes to the files
+// in them ([WatchWrite], [WatchChmod]), and changes to the directories
+// themselves. When a new subdirectory appears, its contents are
+// reported as created too. Each poll stats every entry of every
+// watched directory, so cost grows with the size of the tree.
 func NewDirWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -166,7 +168,7 @@ func newWatcher(path string, isDir, lazy bool, opts []WatcherOption) (*Watcher, 
 // availability.
 func (w *Watcher) selectBackend() (watcherBackend, error) {
 	if w.cfg.forcePolling {
-		return newPollingBackend(w.cfg.pollingInterval), nil
+		return w.newPolling(w.cfg.pollingInterval), nil
 	}
 	native, err := newNativeWatcherBackend(w.cfg)
 	if err == nil {
@@ -180,7 +182,17 @@ func (w *Watcher) selectBackend() (watcherBackend, error) {
 	if interval <= 0 {
 		interval = defaultWatcherPollingInterval
 	}
-	return newPollingBackend(interval), nil
+	return w.newPolling(interval), nil
+}
+
+// newPolling returns a polling backend; a directory watcher's also
+// reports writes to the files in watched directories.
+func (w *Watcher) newPolling(interval time.Duration) *pollingBackend {
+	b := newPollingBackend(interval)
+	if w.isDir {
+		b.reportChildWrites()
+	}
+	return b
 }
 
 // registerInitial adds the appropriate paths to the backend.
@@ -307,9 +319,11 @@ func (w *Watcher) worker() {
 	go func() {
 		defer close(pumpDone)
 		for ev := range rawCh {
-			if w.shouldEmit(ev.path) {
-				w.debouncer.In(ev)
+			if !w.shouldEmit(ev.path) {
+				continue
 			}
+			w.debouncer.In(ev)
+			w.followSubdirectory(ev)
 		}
 	}()
 	defer func() { <-pumpDone }()
@@ -325,6 +339,43 @@ func (w *Watcher) worker() {
 			w.fanOut(WatchEvent{Path: ev.path, Op: ev.op, Time: time.Now()})
 		}
 	}
+}
+
+// followSubdirectory keeps a recursive directory watch in step with
+// the tree: a directory that appears beneath the target is watched,
+// with everything already inside it reported as created, and one that
+// disappears is no longer watched.
+func (w *Watcher) followSubdirectory(ev rawWatchEvent) {
+	if !w.isDir || !w.recursive || ev.path == w.target {
+		return
+	}
+	if ev.op&WatchRemove != 0 && ev.op&WatchCreate == 0 {
+		_ = w.backend.RemovePath(ev.path) //nolint:errcheck // only fails to resolve an absolute path, which ev.path already is
+		return
+	}
+	if ev.op&WatchCreate == 0 {
+		return
+	}
+	if info, err := os.Lstat(ev.path); err != nil || !info.IsDir() {
+		return
+	}
+	// The directory is registered before it is read, so an entry
+	// created in between is either listed here or reported by the
+	// next poll.
+	_ = filepath.WalkDir(ev.path, func(path string, d stdfs.DirEntry, err error) error { //nolint:errcheck // the callback never returns an error
+		if err != nil {
+			return nil //nolint:nilerr // tolerate inaccessible entries and keep walking
+		}
+		if d.IsDir() {
+			if aerr := w.backend.AddPath(path); aerr != nil {
+				w.logger.Debug("watcher: AddPath failed", "path", path, "err", aerr)
+			}
+		}
+		if path != ev.path {
+			w.debouncer.In(rawWatchEvent{path: path, op: WatchCreate})
+		}
+		return nil
+	})
 }
 
 // shouldEmit applies the basename filter for file watchers. For

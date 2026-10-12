@@ -483,3 +483,63 @@ func TestScaffoldActionOp_String_Unknown(t *testing.T) {
 		t.Error("expected unknown label, got empty string")
 	}
 }
+
+// --- confinement ---
+
+// A path variable that renders outside dst fails before anything is written.
+func TestScaffoldApply_RenderedPathEscapes(t *testing.T) {
+	t.Parallel()
+	parent, dst := sandbox(t)
+	src := fstest.MapFS{
+		"a.txt":         {Data: []byte("a")},
+		"{{.Name}}.txt": {Data: []byte("x")},
+	}
+	for _, name := range []string{"../../x", "../x", "sub/../../x"} {
+		if err := ScaffoldApply(src, dst, scaffoldVars{Name: name}); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("Name=%q: got %v, want ErrEscapesRoot", name, err)
+		}
+		if _, err := ScaffoldPlan(src, dst, scaffoldVars{Name: name}); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("Plan Name=%q: got %v, want ErrEscapesRoot", name, err)
+		}
+	}
+	assertAbsent(t, filepath.Join(parent, "x.txt"))
+	assertAbsent(t, filepath.Join(filepath.Dir(parent), "x.txt"))
+	assertAbsent(t, filepath.Join(dst, "a.txt"))
+}
+
+// A rendered path that stays inside dst after cleaning is allowed.
+func TestScaffoldApply_RenderedPathInside(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	src := fstest.MapFS{"{{.Name}}.txt": {Data: []byte("x")}}
+	if err := ScaffoldApply(src, dst, scaffoldVars{Name: "sub/../ok"}); err != nil {
+		t.Fatalf("ScaffoldApply: %v", err)
+	}
+	if !Exists(filepath.Join(dst, "ok.txt")) {
+		t.Error("ok.txt not written")
+	}
+}
+
+// A symlink already in dst that leads outside is not written through.
+func TestScaffold_ExistingSymlinkEscapes(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	parent, dst := sandbox(t)
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dst, "out")); err != nil {
+		t.Fatal(err)
+	}
+	src := fstest.MapFS{"out/file.txt": {Data: []byte("x")}}
+	if err := ScaffoldApply(src, dst, nil); !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("ScaffoldApply: got %v, want ErrEscapesRoot", err)
+	}
+	if err := ScaffoldExtract(src, dst); !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("ScaffoldExtract: got %v, want ErrEscapesRoot", err)
+	}
+	if names, _ := os.ReadDir(outside); len(names) != 0 {
+		t.Errorf("wrote %v outside the destination", names)
+	}
+}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // extractZipFromStream materializes the zip stream to a temp file
@@ -14,7 +13,8 @@ import (
 //
 // The buffer step is bounded: we copy at most cfg.maxBytes+1 bytes
 // to the temp file before aborting.
-func extractZipFromStream(r io.Reader, dst string, cfg archiveExtractOptions) error {
+func extractZipFromStream(r io.Reader, root extractRoot, cfg archiveExtractOptions) error {
+	dst := root.dir
 	tmp, err := os.CreateTemp("", "rotini-zip-stream-*.zip")
 	if err != nil {
 		return wrapPathError(opExtractArchive, dst, err)
@@ -53,10 +53,11 @@ func extractZipFromStream(r io.Reader, dst string, cfg archiveExtractOptions) er
 	if err != nil {
 		return wrapPathError(opExtractArchive, dst, err)
 	}
-	return extractZipReader(zr, dst, cfg)
+	return extractZipReader(zr, root, cfg)
 }
 
-func extractZipReader(zr *zip.Reader, dst string, cfg archiveExtractOptions) error {
+func extractZipReader(zr *zip.Reader, root extractRoot, cfg archiveExtractOptions) error {
+	dst := root.dir
 	var used int64
 	for _, file := range zr.File {
 		if cfg.filter != nil && !cfg.filter(zipFileToArchiveHeader(file)) {
@@ -67,12 +68,15 @@ func extractZipReader(zr *zip.Reader, dst string, cfg archiveExtractOptions) err
 			return wrapPathError(opExtractArchive, file.Name, terr)
 		}
 		if file.FileInfo().IsDir() {
+			if err := root.confine(target); err != nil {
+				return err
+			}
 			if err := osMkdirAll(target, safeMode(file.Mode(), true, cfg.preserveMode)); err != nil {
 				return wrapPathError(opExtractArchive, target, err)
 			}
 			continue
 		}
-		if err := extractZipEntry(file, target, cfg, &used); err != nil {
+		if err := extractZipEntry(file, root, target, cfg, &used); err != nil {
 			return err
 		}
 	}
@@ -84,9 +88,9 @@ func extractZipReader(zr *zip.Reader, dst string, cfg archiveExtractOptions) err
 // return path via defer; close errors are joined into the return
 // chain via [errors.Join] so the caller doesn't lose a Close
 // failure that follows a Copy failure.
-func extractZipEntry(file *zip.File, target string, cfg archiveExtractOptions, used *int64) (rerr error) {
-	if err := osMkdirAll(filepath.Dir(target), Mode0755); err != nil {
-		return wrapPathError(opExtractArchive, filepath.Dir(target), err)
+func extractZipEntry(file *zip.File, root extractRoot, target string, cfg archiveExtractOptions, used *int64) (rerr error) {
+	if err := prepareFile(root, target); err != nil {
+		return err
 	}
 	rc, err := file.Open()
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -278,9 +277,9 @@ func Rename(src, dst string, opts ...CopyOption) error {
 
 // Move renames src to dst, falling back to copy+remove when the
 // rename fails because src and dst live on different filesystems
-// (EXDEV). The fallback uses [CopyDir] or [CopyFile] with opts and is
-// not atomic: the destination appears after the copy succeeds, and
-// the source is removed last.
+// (EXDEV, or ERROR_NOT_SAME_DEVICE on Windows). The fallback uses
+// [CopyDir] or [CopyFile] with opts and is not atomic: the destination
+// appears after the copy succeeds, and the source is removed last.
 //
 // With [WithOverwrite](false), an existing dst returns
 // [ErrAlreadyExists] before anything is moved.
@@ -326,8 +325,7 @@ func Move(src, dst string, opts ...CopyOption) error {
 }
 
 // isCrossDevice reports whether err is a cross-filesystem rename
-// error. On Windows syscall.EXDEV is a Go-defined value that the OS
-// never returns, so ERROR_NOT_SAME_DEVICE is not matched there.
+// error: EXDEV, or ERROR_NOT_SAME_DEVICE on Windows.
 func isCrossDevice(err error) bool {
-	return errors.Is(err, syscall.EXDEV) || errors.Is(err, ErrCrossDevice)
+	return isCrossDeviceErrno(err) || errors.Is(err, ErrCrossDevice)
 }

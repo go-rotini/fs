@@ -17,17 +17,18 @@ func isBrokenPipeErr(err error) bool {
 
 // isTerminal queries termios via TIOCGETA/TCGETS. A successful
 // query indicates a TTY; ENOTTY (or any other error) indicates
-// non-terminal. The exact ioctl number differs between Linux/freebsd
-// and darwin; the syscall package's TIOCGETA / TCGETS constants
-// provide the right value per platform via build-tagged shims.
+// non-terminal. The exact ioctl number differs between Linux and
+// the BSDs; the syscall package's TIOCGETA / TCGETS constants
+// provide the right value per platform via build-tagged shims. The
+// three-argument [syscall.Syscall] is used because OpenBSD routes
+// only that form of SYS_IOCTL through libc.
 func isTerminal(f *os.File) bool {
 	var t syscall.Termios
-	_, _, errno := syscall.Syscall6(
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		f.Fd(),
 		uintptr(ioctlGetTermios),
 		uintptr(unsafe.Pointer(&t)),
-		0, 0, 0,
 	)
 	return errno == 0
 }

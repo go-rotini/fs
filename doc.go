@@ -18,10 +18,11 @@
 // # Dependencies
 //
 // All production code lives in this one package. It imports only the
-// standard library, except that one Windows-only file
-// (mmap_windows.go) imports [golang.org/x/sys/windows] for the
-// CreateFileMapping, MapViewOfFile and UnmapViewOfFile wrappers used
-// by [Mmap]. No x/sys types appear in the public API. Other
+// standard library, except that mmap_windows.go imports
+// [golang.org/x/sys/windows] for the CreateFileMapping, MapViewOfFile
+// and UnmapViewOfFile wrappers used by [Mmap], and the NetBSD and
+// OpenBSD files import golang.org/x/sys/unix for statvfs(2) and the
+// libc openat(2) wrapper. No x/sys types appear in the public API. Other
 // platform-specific calls (flock and LockFileEx for locks, mmap on
 // POSIX) go through stdlib's [syscall] package.
 //

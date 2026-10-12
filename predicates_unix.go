@@ -2,7 +2,10 @@
 
 package fs
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
 // IsExecutable reports whether path is a regular file the calling
 // process can execute. On POSIX it uses access(2) with X_OK, so the
@@ -49,3 +52,13 @@ const (
 	wOK = 0x2 // writable
 	rOK = 0x4 // readable
 )
+
+// isNotEmptyErrno reports whether err is the OS's directory-not-empty error.
+func isNotEmptyErrno(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY)
+}
+
+// isCrossDeviceErrno reports whether err is the OS's cross-filesystem rename or link error.
+func isCrossDeviceErrno(err error) bool {
+	return errors.Is(err, syscall.EXDEV)
+}

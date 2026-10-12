@@ -471,3 +471,41 @@ func TestWalk_FollowSymlinks_LoopDetection(t *testing.T) {
 		t.Errorf("Walk: %v", err)
 	}
 }
+
+// A root spelled un-cleaned is still the root: filters never apply to it, and depth counts
+// from it. Not parallel: it changes the working directory.
+func TestWalk_UncleanRoot(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{".hidden/a/b/c.txt", ".hidden/.inner/x.txt"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+
+	collect := func(root string, opts ...WalkOption) []string {
+		var got []string
+		err := Walk(root, func(path string, _ stdfs.DirEntry, _ error) error {
+			got = append(got, filepath.ToSlash(path))
+			return nil
+		}, opts...)
+		if err != nil {
+			t.Fatalf("Walk(%q): %v", root, err)
+		}
+		return got
+	}
+
+	got := collect("./.hidden", WalkSkipHidden(true))
+	want := []string{"./.hidden", ".hidden/a", ".hidden/a/b", ".hidden/a/b/c.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("skip hidden from ./.hidden: got %v, want %v", got, want)
+	}
+
+	got = collect(".", WalkMaxDepth(1))
+	if strings.Join(got, ",") != ".,.hidden" {
+		t.Errorf("max depth 1 from .: got %v, want [. .hidden]", got)
+	}
+}

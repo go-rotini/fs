@@ -39,7 +39,7 @@ func Home() (string, error) {
 
 // ConfigDir returns the user's per-user config directory.
 //
-//	Linux/FreeBSD: $XDG_CONFIG_HOME (if absolute) or ~/.config
+//	Linux/BSD:     $XDG_CONFIG_HOME (if absolute) or ~/.config
 //	macOS:         ~/Library/Application Support
 //	Windows:       %APPDATA%
 func ConfigDir() (string, error) {
@@ -52,7 +52,7 @@ func ConfigDir() (string, error) {
 
 // CacheDir returns the user's per-user cache directory.
 //
-//	Linux/FreeBSD: $XDG_CACHE_HOME (if absolute) or ~/.cache
+//	Linux/BSD:     $XDG_CACHE_HOME (if absolute) or ~/.cache
 //	macOS:         ~/Library/Caches
 //	Windows:       %LOCALAPPDATA%
 func CacheDir() (string, error) {
@@ -65,7 +65,7 @@ func CacheDir() (string, error) {
 
 // DataDir returns the user's per-user data directory.
 //
-//	Linux/FreeBSD: $XDG_DATA_HOME (if absolute) or ~/.local/share
+//	Linux/BSD:     $XDG_DATA_HOME (if absolute) or ~/.local/share
 //	macOS:         ~/Library/Application Support
 //	Windows:       %APPDATA%
 func DataDir() (string, error) {
@@ -78,7 +78,7 @@ func DataDir() (string, error) {
 
 // StateDir returns the user's per-user state directory.
 //
-//	Linux/FreeBSD: $XDG_STATE_HOME (if absolute) or ~/.local/state
+//	Linux/BSD:     $XDG_STATE_HOME (if absolute) or ~/.local/state
 //	macOS:         ~/Library/Application Support
 //	Windows:       %LOCALAPPDATA%
 func StateDir() (string, error) {
@@ -91,11 +91,11 @@ func StateDir() (string, error) {
 
 // RuntimeDir returns the user's runtime directory.
 //
-//	Linux/FreeBSD: $XDG_RUNTIME_DIR
+//	Linux/BSD:     $XDG_RUNTIME_DIR
 //	macOS:         ~/Library/Caches/TemporaryItems
 //	Windows:       %LOCALAPPDATA%\Temp
 //
-// On Linux and FreeBSD there is no fallback, per the XDG spec: an
+// On Linux and the BSDs there is no fallback, per the XDG spec: an
 // unset or relative $XDG_RUNTIME_DIR is an error wrapping
 // [ErrNotSupported].
 func RuntimeDir() (string, error) {
@@ -210,7 +210,7 @@ func XDGConfigDir(appName string) (string, error) {
 // SystemConfigDir returns the system-wide config directory for
 // appName (validated as in [AppConfigDir]):
 //
-//	Linux/FreeBSD: /etc/<appName>
+//	Linux/BSD:     /etc/<appName>
 //	macOS:         /Library/Application Support/<appName>
 //	Windows:       %PROGRAMDATA%\<appName>
 //
@@ -230,7 +230,7 @@ func SystemConfigDir(appName string) (string, error) {
 
 // SystemDataDir is the system-wide analog of [DataDir].
 //
-//	Linux/FreeBSD: /var/lib/<appName>
+//	Linux/BSD:     /var/lib/<appName>
 //	macOS:         /Library/Application Support/<appName>
 //	Windows:       %PROGRAMDATA%\<appName>
 func SystemDataDir(appName string) (string, error) {
@@ -246,7 +246,7 @@ func SystemDataDir(appName string) (string, error) {
 
 // SystemStateDir is the system-wide analog of [StateDir].
 //
-//	Linux/FreeBSD: /var/lib/<appName>
+//	Linux/BSD:     /var/lib/<appName>
 //	macOS:         /Library/Application Support/<appName>
 //	Windows:       %PROGRAMDATA%\<appName>
 func SystemStateDir(appName string) (string, error) {

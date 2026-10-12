@@ -3,6 +3,7 @@
 package fs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,4 +84,22 @@ func IsWritable(path string) bool {
 	}
 	_ = f.Close()
 	return true
+}
+
+// errNotSameDevice is ERROR_NOT_SAME_DEVICE, which Windows returns for a rename or link
+// across volumes. syscall.EXDEV is a Go-defined value Windows never returns.
+const errNotSameDevice syscall.Errno = 17
+
+// errDirNotEmpty is ERROR_DIR_NOT_EMPTY, which Windows returns for removing or renaming
+// onto a directory that has entries.
+const errDirNotEmpty syscall.Errno = 145
+
+// isNotEmptyErrno reports whether err is the OS's directory-not-empty error.
+func isNotEmptyErrno(err error) bool {
+	return errors.Is(err, errDirNotEmpty) || errors.Is(err, syscall.ENOTEMPTY)
+}
+
+// isCrossDeviceErrno reports whether err is the OS's cross-filesystem rename or link error.
+func isCrossDeviceErrno(err error) bool {
+	return errors.Is(err, errNotSameDevice) || errors.Is(err, syscall.EXDEV)
 }

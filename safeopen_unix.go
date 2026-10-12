@@ -23,9 +23,9 @@ func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 // openAt resolves name through dir's underlying file descriptor via
 // the platform's openat(2) syscall. Per-platform `openAtSyscall`
 // shims handle the divergence: linux exposes [syscall.Openat]
-// directly; darwin/freebsd require [syscall.Syscall6] with a
-// hardcoded syscall number because their stdlib syscall packages
-// don't surface SYS_OPENAT.
+// directly; darwin, freebsd and netbsd use [syscall.Syscall6] with
+// the syscall number; openbsd, which allows system calls only
+// through libc, uses golang.org/x/sys/unix.
 func openAt(dir *os.File, name string, flag int, perm os.FileMode) (*os.File, error) {
 	if dir == nil {
 		return nil, wrapPathError(opOpenAt, name, ErrInvalidPath)

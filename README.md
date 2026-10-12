@@ -11,7 +11,7 @@ This package is used as the default filesystem package for [rotini](https://gith
 - Idempotent removal: `Remove`, `RemoveAll`, `RemoveContents`, plus symlink-safe `RemoveAllNoFollow`
 - Path safety primitives: `IsSubpath`, `MustBeChildOf`, `EvalSymlinksWithin`, `SanitizeFilename`, `IsReservedName`, `LongPath`
 - TOCTOU-safe open: `OpenNoFollow` (refuses final-component symlinks) and `OpenAt` (resolves through a held directory FD on POSIX)
-- Cross-platform user and system directories (XDG on Linux/FreeBSD, Apple guidelines on macOS, `%APPDATA%` / `%LOCALAPPDATA%` / `%PROGRAMDATA%` on Windows): `Home`, `ConfigDir`, `CacheDir`, `DataDir`, `StateDir`, `RuntimeDir`, `ExecutableDir`, `BinaryPath`, plus `App*Dir(appName)` and `System*Dir(appName)` variants
+- Cross-platform user and system directories (XDG on Linux and the BSDs, Apple guidelines on macOS, `%APPDATA%` / `%LOCALAPPDATA%` / `%PROGRAMDATA%` on Windows): `Home`, `ConfigDir`, `CacheDir`, `DataDir`, `StateDir`, `RuntimeDir`, `ExecutableDir`, `BinaryPath`, plus `App*Dir(appName)` and `System*Dir(appName)` variants
 - Path expansion: `Expand` handles `~`, `~user`, `$VAR`, `${VAR}` with opt-in strict mode
 - Find-up project discovery: `FindUp`, `FindUpAll`, `ProjectRoot`, `FirstExisting`
 - Directory walking: `Walk` with `WalkSkipHidden`, `WalkSkipNames`, `WalkSkipPatterns`, `WalkMaxDepth`, `WalkFollowSymlinks`, `WalkErrorHandler`, `WithWalkGitignore`; concurrent variant `WalkParallel(ctx, ...)`
@@ -38,7 +38,7 @@ This package is used as the default filesystem package for [rotini](https://gith
 - Bi-directional sentinel matching: `errors.Is(err, fs.ErrNotFound)` matches both the package sentinel AND stdlib's `io/fs.ErrNotExist`; `*MultiError` with Go 1.20 `Unwrap() []error`
 - Pluggable `slog.Logger` for `Apply` / `Cache` / `Rotator` debug output via package-level `SetLogger`
 - DoS protection: bounded reads by default, archive extraction size cap, plan/apply journal size split, content-search size cap, gitignore + workspace parser size limits
-- Zero non-stdlib runtime dependencies; cross-platform on Linux, macOS, Windows, FreeBSD
+- No runtime dependencies beyond the standard library and `golang.org/x/sys`; cross-platform on Linux, macOS, Windows, FreeBSD, NetBSD, OpenBSD
 
 ## Installation
 

@@ -82,13 +82,20 @@ const (
 // dst if needed. An unrecognized stream returns
 // [ErrArchiveFormatUnknown].
 //
-// Every entry path, and every tar symlink or hard-link target, is
-// checked with [MustBeChildOf] before anything is written, so a
-// crafted entry such as `../../etc/passwd` fails with
-// [ErrEscapesRoot] instead of escaping dst (zip-slip / tar-slip). A
-// leading slash on an entry name is dropped, so absolute entries
-// land under dst. Device nodes, FIFOs and other special entries are
-// skipped.
+// Every entry path, and every tar symlink or hard-link target, must
+// stay inside dst before anything is written: as written, and as it
+// resolves on disk through the symlinks there at that moment,
+// including ones already in dst and ones the archive made. A
+// crafted entry such as `../../etc/passwd`, or one that reaches out
+// through a chain of links, fails with [ErrEscapesRoot] instead of
+// escaping dst (zip-slip / tar-slip). An entry at a path that holds
+// a symlink replaces the link rather than writing through it. Once
+// every entry is written, each symlink the archive made is checked
+// again; one that a later entry made lead outside is removed and the
+// call fails. A leading slash on an entry name is dropped, so
+// absolute entries land under dst. Device nodes, FIFOs and other
+// special entries are skipped. Another process changing dst during
+// the extraction can still race these checks.
 //
 // Modes are masked to 0o644 for files and 0o755 for directories
 // unless [WithPreserveMode]. Cumulative bytes written are capped by
@@ -221,19 +228,23 @@ func extractArchive(r io.Reader, dst string, cfg archiveExtractOptions) error {
 	if err := osMkdirAll(dst, 0o755); err != nil {
 		return wrapPathError(opExtractArchive, dst, err)
 	}
+	root, err := newExtractRoot(opExtractArchive, dst)
+	if err != nil {
+		return err
+	}
 
 	switch format {
 	case ArchiveFormatTar:
-		return extractTar(br, dst, cfg)
+		return extractTar(br, root, cfg)
 	case ArchiveFormatTarGz:
 		gz, err := gzip.NewReader(br)
 		if err != nil {
 			return wrapPathError(opExtractArchive, dst, err)
 		}
 		defer gz.Close()
-		return extractTar(gz, dst, cfg)
+		return extractTar(gz, root, cfg)
 	case ArchiveFormatZip:
-		return extractZipFromStream(br, dst, cfg)
+		return extractZipFromStream(br, root, cfg)
 	default:
 		return wrapPathError(opExtractArchive, dst, ErrArchiveFormatUnknown)
 	}

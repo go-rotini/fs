@@ -1,4 +1,4 @@
-//go:build freebsd || netbsd || openbsd || dragonfly
+//go:build freebsd
 
 package fs
 

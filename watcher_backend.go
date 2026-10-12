@@ -11,8 +11,9 @@ type watcherBackend interface {
 	// Events().
 	AddPath(path string) error
 
-	// RemovePath unregisters a previously-added path. Removing a
-	// path that wasn't registered is a no-op (no error).
+	// RemovePath unregisters a previously-added path and every path
+	// registered beneath it. Removing a path that wasn't registered
+	// is a no-op (no error).
 	RemovePath(path string) error
 
 	// Events returns the channel of raw events the backend emits.

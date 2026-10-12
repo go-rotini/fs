@@ -1,7 +1,9 @@
 package fs
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -11,16 +13,21 @@ import (
 // 1024 are returned as raw byte counts ("999 B"). Output uses one
 // decimal place for non-integer mantissas.
 func FormatBytes(n int64) string {
-	const unit = 1024
 	if n < 0 {
-		return "-" + FormatBytes(-n)
+		// The magnitude of math.MinInt64 doesn't fit in an int64, so negate in uint64.
+		return "-" + formatMagnitude(-uint64(n))
 	}
+	return formatMagnitude(uint64(n))
+}
+
+func formatMagnitude(n uint64) string {
+	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
 
 	suffixes := []string{"KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
-	div := int64(unit)
+	div := uint64(unit)
 	exp := 0
 	for n >= div*unit && exp < len(suffixes)-1 {
 		div *= unit
@@ -28,8 +35,8 @@ func FormatBytes(n int64) string {
 	}
 	value := float64(n) / float64(div)
 
-	if value == float64(int64(value)) {
-		return fmt.Sprintf("%d %s", int64(value), suffixes[exp])
+	if value == math.Trunc(value) {
+		return fmt.Sprintf("%d %s", uint64(value), suffixes[exp])
 	}
 	return fmt.Sprintf("%.1f %s", value, suffixes[exp])
 }
@@ -56,7 +63,8 @@ func FormatBytes(n int64) string {
 // number (no unit) is treated as bytes. Decimal mantissas are
 // supported ("1.5GB" is 1500000000); a fractional byte count is
 // truncated. A leading sign is accepted. Errors wrap
-// [ErrInvalidByteSize].
+// [ErrInvalidByteSize], including a size that doesn't fit in an
+// int64 ("10EB").
 func ParseBytes(s string) (int64, error) {
 	return parseBytes(s, false)
 }
@@ -96,16 +104,40 @@ func parseBytes(raw string, iec bool) (int64, error) {
 	numStr := s[:end]
 	unit := strings.TrimSpace(strings.ToLower(s[end:]))
 
-	value, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: invalid number %q: %w", ErrInvalidByteSize, numStr, err)
-	}
-
 	mult, ok := unitMultiplier(unit, iec)
 	if !ok {
 		return 0, fmt.Errorf("%w: unknown unit %q", ErrInvalidByteSize, unit)
 	}
-	return int64(value * float64(mult)), nil
+	overflow := fmt.Errorf("%w: %q overflows int64", ErrInvalidByteSize, raw)
+
+	// Whole numbers are multiplied exactly; a float64 would round
+	// values near the int64 limits.
+	if !strings.Contains(numStr, ".") {
+		n, err := strconv.ParseInt(numStr, 10, 64)
+		if errors.Is(err, strconv.ErrRange) {
+			return 0, overflow
+		}
+		if err != nil {
+			return 0, fmt.Errorf("%w: invalid number %q: %w", ErrInvalidByteSize, numStr, err)
+		}
+		if n > math.MaxInt64/mult || n < math.MinInt64/mult {
+			return 0, overflow
+		}
+		return n * mult, nil
+	}
+
+	value, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: invalid number %q: %w", ErrInvalidByteSize, numStr, err)
+	}
+	// 2⁶³ is exact in float64: anything at or above it overflows,
+	// while -2⁶³ itself fits.
+	const limit = float64(1 << 63)
+	v := value * float64(mult)
+	if v >= limit || v < -limit {
+		return 0, overflow
+	}
+	return int64(v), nil
 }
 
 // unitMultiplier resolves a normalized (lowercase, trimmed) unit

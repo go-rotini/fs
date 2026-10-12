@@ -22,9 +22,10 @@ const (
 // Match reports whether a path is ignored. The matcher implements
 // the standard gitignore syntax: leading `!` negation, trailing `/`
 // directory-only, leading or embedded `/` anchoring, `**` recursive
-// wildcard, and the `*`/`?`/`[...]` per-segment globs. Edge cases
-// outside the standard syntax (interaction with git's index,
-// non-POSIX character-class collation) are out of scope.
+// wildcard, and the `*`/`?`/`[...]` per-segment globs ([path.Match]
+// syntax). Not supported: escaped trailing spaces (`\ `), and
+// patterns with more than 16 `**` segments, which are dropped. A
+// pattern that matches a directory also matches every path below it.
 //
 // A Gitignore is immutable after construction and safe for concurrent
 // use.
@@ -40,9 +41,9 @@ type gitignorePattern struct {
 	segments []string
 }
 
-// NewGitignore compiles patterns into a [*Gitignore]. The input has
-// the same format as a .gitignore file body: one pattern per line,
-// `#` comments, blank lines ignored.
+// NewGitignore compiles patterns into a [*Gitignore]. Each element is
+// one line of a .gitignore file; blank lines and `#` comments are
+// skipped.
 func NewGitignore(patterns []string) *Gitignore {
 	g := &Gitignore{}
 	for _, line := range patterns {
@@ -80,8 +81,8 @@ func LoadGitignore(filePath string) (*Gitignore, error) {
 //
 // Match implements the gitignore precedence rule: later patterns
 // override earlier ones. A negation (leading `!`) re-includes a
-// previously-ignored path; see [WithWalkGitignore] for ancestor-
-// directory enforcement during walks.
+// previously-ignored path; see [WithWalkGitignore] for
+// ancestor-directory enforcement during walks.
 func (g *Gitignore) Match(relPath string, isDir bool) bool {
 	if g == nil || len(g.patterns) == 0 {
 		return false
@@ -230,7 +231,7 @@ func gitignoreSkip(g *Gitignore, rel string, isDir bool) (skip, pruneDir bool) {
 }
 
 // toRelPosix converts an absolute walk path to a root-relative POSIX
-// path suitable for [*Gitignore.Match].
+// path suitable for [Gitignore.Match].
 func toRelPosix(root, abs string) string {
 	rel, err := filepath.Rel(root, abs)
 	if err != nil {

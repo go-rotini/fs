@@ -9,14 +9,17 @@ import (
 	"strings"
 )
 
-// WalkFunc is the per-entry callback invoked by [Walk]. Return
-// [filepath.SkipDir] to skip the parent directory; return
-// [filepath.SkipAll] to terminate the walk early. Any other non-nil
-// error aborts the walk and is returned by [Walk].
+// WalkFunc is the per-entry callback invoked by [Walk]. [Walk] always
+// passes a nil err: entry errors go to [WalkErrorHandler] instead.
+// Return [filepath.SkipDir] from a directory to skip its contents, or
+// [filepath.SkipAll] to end the walk early; neither is reported as an
+// error. Any other non-nil error aborts the walk and is returned by
+// [Walk].
 type WalkFunc func(path string, e stdfs.DirEntry, err error) error
 
 // WalkOption configures [Walk] and the walk-backed search functions
-// ([Find], [FindByRegex], [FindFunc]).
+// ([Find], [FindByRegex], [FindFunc], [FindByContent],
+// [FindByContentRegex]).
 type WalkOption func(*walkOptions)
 
 type walkOptions struct {
@@ -47,10 +50,6 @@ func newWalkOptions(opts []WalkOption) walkOptions {
 // WalkSkipHidden skips hidden entries during the walk. Hidden is
 // dot-prefix on POSIX and (additionally) the FILE_ATTRIBUTE_HIDDEN
 // bit on Windows. Skipping a directory prunes its subtree.
-//
-// Named "WalkSkipHidden" rather than "WithSkipHidden" because the
-// latter is already taken by [WithSkipHidden] on [ListOption]; Go
-// doesn't allow function-name overloading across return types.
 func WalkSkipHidden(b bool) WalkOption {
 	return func(o *walkOptions) { o.skipHidden = b }
 }
@@ -74,38 +73,35 @@ func WalkMaxDepth(n int) WalkOption {
 	return func(o *walkOptions) { o.maxDepth = n }
 }
 
-// WalkFollowSymlinks dereferences symlinks during the walk. Symlink
-// loops are detected by tracking resolved real paths via
-// [filepath.EvalSymlinks]; an already-visited target is silently
-// skipped.
-//
-// Named "WalkFollowSymlinks" to disambiguate from
-// [WithFollowSymlinks] on [CopyOption].
+// WalkFollowSymlinks dereferences symlinks during the walk, so the
+// [WalkFunc] sees each link's target. Symlink loops are detected by
+// tracking resolved real paths; an already-visited target is
+// silently skipped.
 func WalkFollowSymlinks(b bool) WalkOption {
 	return func(o *walkOptions) { o.followSymlinks = b }
 }
 
-// WalkErrorHandler intercepts per-entry errors during the walk.
-// Return nil to continue, [filepath.SkipDir] to skip the parent, or
-// any non-nil error to abort.
+// WalkErrorHandler intercepts per-entry errors (an unreadable or
+// vanished entry) during the walk. Return nil to continue past the
+// failing entry, or a non-nil error to abort the walk.
 func WalkErrorHandler(fn func(path string, err error) error) WalkOption {
 	return func(o *walkOptions) { o.errorHandler = fn }
 }
 
 const opWalk = "walk"
 
-// Walk visits every entry under root, invoking fn for each. It wraps
-// [filepath.WalkDir] when [WalkFollowSymlinks] is false (default)
-// and uses a custom recursive walker that tracks resolved real paths
-// when symlinks are followed.
+// Walk visits root and every entry under it, invoking fn for each in
+// lexical order. Symlinks are not followed unless
+// [WalkFollowSymlinks] is set.
 //
 // Filter options ([WalkSkipHidden], [WalkSkipNames],
-// [WalkSkipPatterns]) prune subtrees: when a directory matches a
-// skip rule, the entire subtree is omitted.
+// [WalkSkipPatterns], [WithWalkGitignore]) never filter root itself;
+// when a directory matches a skip rule, its entire subtree is
+// omitted.
 //
 // [WalkMaxDepth] bounds recursion. [WalkErrorHandler] intercepts
 // per-entry errors so a single unreadable directory doesn't abort
-// the walk.
+// the walk. Any other error is returned wrapped in a [*PathError].
 func Walk(root string, fn WalkFunc, opts ...WalkOption) error {
 	cfg := newWalkOptions(opts)
 

@@ -21,16 +21,19 @@ type WorkspaceRoot struct {
 
 // WorkspaceRoots discovers the member roots of a multi-root
 // workspace anchored at root. The detector inspects a small set of
-// canonical manifest files:
+// canonical manifest files in root:
 //
 //   - go.work: each `use` directive.
 //   - package.json with a `workspaces` field: array of globs or an
-//     object with a `packages` array. Globs are expanded via [Glob].
-//   - pnpm-workspace.yaml: the `packages:` list form. See
-//     [parsePnpmWorkspaces] for the supported subset.
+//     object with a `packages` array. A malformed file yields no
+//     members.
+//   - pnpm-workspace.yaml: only a single top-level `packages:` key
+//     followed by `- glob` lines; any other form returns an error.
 //
-// Returns an empty slice when no manifest is present. Duplicate
-// member paths across manifests are deduplicated.
+// Globs are expanded with [Glob] relative to root; an entry that
+// matches nothing is kept as a literal path. Returns no roots when no
+// manifest is present. Duplicate member paths across manifests are
+// deduplicated.
 func WorkspaceRoots(root string) ([]WorkspaceRoot, error) {
 	root = filepath.Clean(root)
 	var out []WorkspaceRoot

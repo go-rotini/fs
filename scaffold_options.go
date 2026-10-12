@@ -1,6 +1,6 @@
 package fs
 
-// ScaffoldOption configures [ScaffoldApply], [ScaffoldPlan], and
+// ScaffoldOption configures [ScaffoldApply], [ScaffoldPlan] and
 // [ScaffoldExtract].
 type ScaffoldOption func(*scaffoldOptions)
 
@@ -33,8 +33,9 @@ func WithScaffoldOnConflict(c ScaffoldOnConflict) ScaffoldOption {
 // under [ScaffoldPromptInteractive]. The function receives the
 // destination path and the planned action, and returns the action
 // to execute (typically [ScaffoldActionOverwrite] or
-// [ScaffoldActionSkip]). Required when onConflict is
-// PromptInteractive; a missing prompt with that policy errors.
+// [ScaffoldActionSkip]; under [ScaffoldExtract] anything but
+// [ScaffoldActionSkip] writes the file). Required with
+// [ScaffoldPromptInteractive]; see [ErrScaffoldPromptRequired].
 func WithScaffoldPromptFunc(fn func(path string, plan ScaffoldAction) ScaffoldActionOp) ScaffoldOption {
 	return func(o *scaffoldOptions) { o.promptFunc = fn }
 }

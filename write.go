@@ -7,7 +7,10 @@ import (
 	"sync"
 )
 
-// WriteOption configures write operations.
+// WriteOption configures [WriteFile], [WriteString], [WriteIfChanged],
+// [WriteFileExclusive], [EnsureFile], [Append], [AppendString],
+// [WriteAt] and [OpenWrite]. Each function honors only the options
+// that apply to it.
 type WriteOption func(*writeOptions)
 
 type writeOptions struct {
@@ -36,8 +39,10 @@ func newWriteOptions(opts []WriteOption) writeOptions {
 	return cfg
 }
 
-// WithPerm sets the file mode for new files. Existing files preserve
-// their current mode unless WithPerm is also set on the call.
+// WithPerm sets the file's permission bits. Without it, new files get
+// 0o644 and an atomic overwrite keeps the existing file's permissions.
+// Atomic writes apply the mode exactly; for other writes it only
+// applies when the file is created, and the process umask applies.
 func WithPerm(mode os.FileMode) WriteOption {
 	return func(o *writeOptions) {
 		o.perm = mode.Perm()
@@ -53,15 +58,18 @@ func WithDirPerm(mode os.FileMode) WriteOption {
 	}
 }
 
-// WithMkdirAll creates missing parent directories before writing.
+// WithMkdirAll creates missing parent directories before writing
+// (mode from [WithDirPerm]). Default false.
 func WithMkdirAll(b bool) WriteOption {
 	return func(o *writeOptions) { o.mkdirAll = b }
 }
 
-// WithSync forces an fsync on the temp file (and parent directory on
-// POSIX) before/after the rename. Default-on for overwrites of
-// existing files; default-off for new files. Setting it explicitly
-// overrides the default in either direction.
+// WithSync controls fsync. For atomic writes ([WriteFile] and
+// [OpenWrite]) the temp file is synced before the rename and, on
+// POSIX, the parent directory after it; this is on by default when
+// overwriting an existing file and off for a new one, and WithSync
+// overrides either way. Other writes sync the file only when
+// WithSync(true) is given.
 func WithSync(b bool) WriteOption {
 	return func(o *writeOptions) {
 		o.sync = b
@@ -69,32 +77,34 @@ func WithSync(b bool) WriteOption {
 	}
 }
 
-// WithAtomic toggles the temp-file + rename strategy. Default true.
-// Disable for very large files where doubled disk usage is
-// prohibitive; at the cost of writes that can leave torn content
-// visible to concurrent readers.
+// WithAtomic toggles the temp-file + rename strategy of [WriteFile].
+// Default true. Disable for very large files where doubled disk usage
+// is prohibitive, at the cost of writes that can leave torn content
+// visible to concurrent readers. [WithBackup] and [WithTempPattern]
+// apply only to atomic writes.
 func WithAtomic(b bool) WriteOption {
 	return func(o *writeOptions) { o.atomic = b }
 }
 
-// WithLocked acquires an advisory flock on the file before writing
-// (POSIX only; no-op on Windows where O_APPEND is already serialized
-// by the OS). Used by [Append] / [AppendString].
+// WithLocked makes [Append] and [AppendString] hold an exclusive
+// advisory flock(2) on the file while writing. It is a no-op on
+// Windows, where appends are already serialized by the OS.
 func WithLocked(b bool) WriteOption {
 	return func(o *writeOptions) { o.locked = b }
 }
 
 // WithTempPattern overrides the default temp-file naming pattern
-// used by atomic writes. Pattern is a [os.CreateTemp] template
+// used by atomic writes. Pattern is an [os.CreateTemp] template
 // (`*` is replaced by the random suffix). Default
 // `<basename>.tmp.*`.
 func WithTempPattern(pattern string) WriteOption {
 	return func(o *writeOptions) { o.tempPattern = pattern }
 }
 
-// WithBackup renames the existing destination to `<dest><suffix>`
-// before the rename completes. Empty suffix defaults to ".bak".
-// A pre-existing backup at the same path is overwritten.
+// WithBackup makes an atomic write first rename the existing file at
+// the destination to `<dest><suffix>`, replacing any earlier backup.
+// An empty suffix means ".bak". Nothing is backed up when the
+// destination does not exist.
 func WithBackup(suffix string) WriteOption {
 	return func(o *writeOptions) {
 		if suffix == "" {
@@ -113,17 +123,16 @@ const (
 	opOpenWrite = "openwrite"
 )
 
-// resolveWritePath returns path unchanged. The package's writeOptions
-// type does not expose a tilde / $VAR expansion knob; callers that
-// need expansion compose [Expand] themselves before calling the
-// write API. Kept as a function so future expansion options have a
-// natural insertion point.
+// resolveWritePath returns path unchanged: writes do not expand ~ or
+// $VAR, so callers that need it call [Expand] first.
 func resolveWritePath(path string, _ writeOptions) string { return path }
 
 // WriteFile writes data to path atomically (write-temp + rename).
-// Default mode 0o644 for new files; existing files preserve their
-// mode unless [WithPerm] is set. Errors if the parent directory
-// doesn't exist; pass [WithMkdirAll] to create it.
+// The temp file lives in the destination's directory. Default mode
+// 0o644 for new files; existing files keep their mode unless
+// [WithPerm] is set. Errors if the parent directory doesn't exist;
+// pass [WithMkdirAll] to create it. See [WithSync] for durability and
+// [WithAtomic] to write in place instead.
 //
 // For files containing secrets (tokens, keys), pass
 // `WithPerm(fs.Mode0600)` so the result is owner-only.
@@ -153,12 +162,12 @@ func WriteIfChanged(path string, data []byte, opts ...WriteOption) (bool, error)
 }
 
 // WriteFileExclusive writes data to path with O_CREATE|O_EXCL
-// semantics: errors with [ErrAlreadyExists] if path already exists.
-// Useful for "create only if not present" idempotent setups.
+// semantics: if path already exists the error wraps
+// [ErrAlreadyExists]. Useful for "create only if not present" setups.
 //
-// Atomic-write internals are disabled (the temp+rename strategy
-// would race against a concurrent creator); the file is opened
-// directly with O_EXCL.
+// The file is written in place, not via temp+rename, so concurrent
+// readers can see partial content; if the write fails the file is
+// removed.
 func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
 	p := resolveWritePath(path, cfg)
@@ -233,8 +242,8 @@ func writeDirect(path string, data []byte, cfg writeOptions) error {
 }
 
 // writeAtomic performs the temp-file + rename atomic write. Sync
-// behavior follows the spec: default-on for overwrites, default-off
-// for new files; explicit WithSync overrides either direction.
+// defaults on for overwrites and off for new files; an explicit
+// WithSync overrides either.
 func writeAtomic(path string, data []byte, cfg writeOptions) error {
 	mode, existed := resolveMode(path, cfg)
 	doSync := existed
@@ -329,9 +338,8 @@ func openTempForWrite(dest string, mode os.FileMode, pattern string) (*os.File, 
 	return tmp, nil
 }
 
-// Append appends data to path. NOT atomic with respect to other
-// writers. Pass [WithLocked] for advisory-flock-protected append on
-// POSIX; on Windows, O_APPEND is already serialized by the OS.
+// Append appends data to path. It is not atomic with respect to other
+// writers; pass [WithLocked] for an advisory-lock-protected append.
 //
 // Creates the file with [WithPerm] (default 0o644) if missing.
 func Append(path string, data []byte, opts ...WriteOption) error {
@@ -370,9 +378,8 @@ func AppendString(path, s string, opts ...WriteOption) error {
 	return Append(path, []byte(s), opts...)
 }
 
-// WriteAt writes data to path starting at offset. Path must exist;
-// the underlying file is opened with O_RDWR. NOT atomic by
-// definition.
+// WriteAt writes data to path starting at offset, in place. path must
+// exist. A negative offset returns an error wrapping [ErrInvalidPath].
 func WriteAt(path string, offset int64, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
 	p := resolveWritePath(path, cfg)
@@ -396,17 +403,15 @@ func WriteAt(path string, offset int64, data []byte, opts ...WriteOption) error 
 }
 
 // OpenWrite opens path for streaming writes. The first return is the
-// open file the caller writes through; the second is a finalize
-// function that closes the file and atomically renames the
-// underlying temp file over path. Until finalize is called the
-// destination is unchanged.
+// temp file, in path's directory, that the caller writes through; the
+// second is a finalize function that closes it and atomically renames
+// it over path. Until finalize is called the destination is
+// unchanged. The [WriteFile] options for mode, sync and backup apply.
 //
-// If finalize is not called (or returns an error), the temp file is
-// removed on the second call so the destination is never affected.
+// If finalize fails, the temp file is removed. To abandon the write
+// without calling finalize, close the file and remove its Name.
 //
-// Finalize is idempotent: calling it twice returns the same result
-// the first call did (success returns nil; failure returns the
-// original error).
+// Finalize runs once; later calls return the first call's result.
 func OpenWrite(path string, opts ...WriteOption) (*os.File, func() error, error) {
 	cfg := newWriteOptions(opts)
 	p := resolveWritePath(path, cfg)

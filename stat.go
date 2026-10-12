@@ -19,8 +19,7 @@ const (
 	opSameDev  = "samedevice"
 )
 
-// Stat wraps [os.Stat] with the package's error chain. The returned
-// FileInfo is the stdlib type.
+// Stat wraps [os.Stat], returning errors as a [*PathError].
 func Stat(path string) (os.FileInfo, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -122,9 +121,9 @@ func WithTouchPerm(mode os.FileMode) TouchOption {
 	}
 }
 
-// Touch creates path with the given mode (default 0o644) if missing,
-// or updates its mtime to "now" if it exists. [WithTimes] overrides
-// the default "now" behavior.
+// Touch creates path if missing (mode 0o644 unless [WithTouchPerm])
+// and then sets its access and modification times to now, or to the
+// times given by [WithTimes].
 func Touch(path string, opts ...TouchOption) error {
 	cfg := touchOptions{perm: Mode0644}
 	for _, opt := range opts {

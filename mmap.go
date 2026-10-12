@@ -16,8 +16,8 @@ var errMmapEmpty = errors.New("fs: mmap: cannot map empty file")
 // file is held open for the lifetime of the Mapping; Close releases
 // both the mapping and the file.
 //
-// Mapping is safe for concurrent reads but not for concurrent Close.
-// The byte slice returned by Data must not be retained past Close.
+// Data may be read from many goroutines, but not while Close runs, and
+// the slice must not be used after Close.
 type Mapping struct {
 	path string
 	f    *os.File
@@ -26,17 +26,10 @@ type Mapping struct {
 	err  error
 }
 
-// Mmap opens path and memory-maps its entire contents read-only.
-//
-// POSIX: mmap(2) via [syscall.Mmap] with PROT_READ | MAP_SHARED. The
-// file is opened O_RDONLY.
-//
-// Windows: CreateFileMapping + MapViewOfFile with PAGE_READONLY |
-// FILE_MAP_READ.
-//
-// Empty files cannot be mapped (POSIX EINVAL, Windows
-// ERROR_FILE_INVALID); Mmap returns an error rather than papering
-// over the platform behavior.
+// Mmap opens path and memory-maps its entire contents read-only
+// (mmap(2) on POSIX, MapViewOfFile on Windows). A directory returns an
+// error wrapping [ErrIsDir]; an empty file cannot be mapped and also
+// returns an error.
 func Mmap(path string) (*Mapping, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -64,9 +57,8 @@ func Mmap(path string) (*Mapping, error) {
 	return &Mapping{path: path, f: f, data: data}, nil
 }
 
-// Data returns the mapped byte slice. Writes to the slice produce
-// undefined behavior; the mapping is opened read-only but Go does
-// not enforce that at the slice level.
+// Data returns the mapped byte slice. The memory is read-only: writing
+// to the slice crashes the program.
 func (m *Mapping) Data() []byte {
 	if m == nil {
 		return nil

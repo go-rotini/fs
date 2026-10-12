@@ -21,8 +21,8 @@ const (
 	ArchiveFormatTar
 	// ArchiveFormatTarGz is a gzip-compressed tar.
 	ArchiveFormatTarGz
-	// ArchiveFormatZip is a zip archive (zlib-compressed inside the
-	// container; archive/zip handles per-entry decompression).
+	// ArchiveFormatZip is a zip archive. [CreateArchive] writes its
+	// entries with Deflate.
 	ArchiveFormatZip
 )
 
@@ -41,12 +41,12 @@ func (f ArchiveFormat) String() string {
 	}
 }
 
-// ArchiveHeader is the package's normalized archive-entry header.
-// Both [ExtractArchive] and the create-side filters operate on this
-// shape so callers don't have to handle tar.Header / zip.FileHeader
-// separately.
+// ArchiveHeader is a format-neutral view of one archive entry, passed
+// to the [WithArchiveFilter] predicate during [ExtractArchive].
 type ArchiveHeader struct {
-	// Name is the archive-internal path (no leading slash, no `..`).
+	// Name is the entry's path exactly as recorded in the archive.
+	// The filter sees it before it is validated, so it may start
+	// with a slash or contain `..`.
 	Name string
 	// Size is the entry's byte size.
 	Size int64
@@ -56,8 +56,8 @@ type ArchiveHeader struct {
 	ModTime time.Time
 	// IsDir is true for directory entries.
 	IsDir bool
-	// LinkTarget is populated for symlink entries (tar); zip doesn't
-	// surface symlinks natively.
+	// LinkTarget is the link target of a tar symlink or hard-link
+	// entry. It is always empty for zip entries.
 	LinkTarget string
 }
 
@@ -77,17 +77,24 @@ const (
 	opOpenArchive    = "openautoarchive"
 )
 
-// ExtractArchive auto-detects the format of r and extracts entries
-// under dst. Every entry path is resolved through
-// [MustBeChildOf](dst, ...) before any filesystem write; this
-// defends against zip-slip / tar-slip attacks where a crafted entry
-// named `../../etc/passwd` would otherwise escape the extraction
-// root.
+// ExtractArchive detects the format of r (tar, gzip-compressed tar or
+// zip, by magic bytes) and extracts its entries under dst, creating
+// dst if needed. An unrecognized stream returns
+// [ErrArchiveFormatUnknown].
 //
-// Modes are masked to safe defaults (0o644 files, 0o755 dirs)
+// Every entry path, and every tar symlink or hard-link target, is
+// checked with [MustBeChildOf] before anything is written, so a
+// crafted entry such as `../../etc/passwd` fails with
+// [ErrEscapesRoot] instead of escaping dst (zip-slip / tar-slip). A
+// leading slash on an entry name is dropped, so absolute entries
+// land under dst. Device nodes, FIFOs and other special entries are
+// skipped.
+//
+// Modes are masked to 0o644 for files and 0o755 for directories
 // unless [WithPreserveMode]. Cumulative bytes written are capped by
-// [WithArchiveMaxBytes] (default 10 GiB); over-cap aborts with
-// [ErrArchiveTooLarge].
+// [WithArchiveMaxBytes] (default 10 GiB); exceeding it aborts with
+// [ErrArchiveTooLarge]. Zip input is first buffered to a temporary
+// file, and that copy is held to the same cap.
 //
 // [WithArchiveFilter] skips entries when its predicate returns false.
 func ExtractArchive(r io.Reader, dst string, opts ...ArchiveExtractOption) error {
@@ -106,9 +113,12 @@ func ExtractArchiveFile(path, dst string, opts ...ArchiveExtractOption) error {
 	return ExtractArchive(f, dst, opts...)
 }
 
-// CreateArchive walks root and writes every regular file and
-// directory entry to w as an archive in the format selected by
-// [WithArchiveFormat] (default [ArchiveFormatTar]).
+// CreateArchive walks root and writes its contents to w as an archive
+// in the format selected by [WithArchiveFormat] (default
+// [ArchiveFormatTar]). Entry names are relative to root and use
+// forward slashes; root itself is not an entry. Source modes are
+// recorded. Tar archives also record symlinks (with their target);
+// zip archives skip symlinks and other non-regular files.
 //
 // [WithArchiveCreateFilter] skips entries when its predicate returns
 // false.
@@ -126,8 +136,9 @@ func CreateArchive(w io.Writer, root string, opts ...ArchiveCreateOption) error 
 	}
 }
 
-// CreateArchiveFile is shorthand for creating a file at path and
-// calling [CreateArchive]. The file is closed on return.
+// CreateArchiveFile creates (or truncates) the file at path and
+// writes the archive into it with [CreateArchive], syncing it before
+// it is closed. The file is not removed on failure.
 func CreateArchiveFile(path, root string, opts ...ArchiveCreateOption) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -141,9 +152,10 @@ func CreateArchiveFile(path, root string, opts ...ArchiveCreateOption) error {
 }
 
 // OpenAutoArchive opens path, sniffs its leading bytes, and returns
-// a transparent decompressor. Currently supports gzip (`.gz`); a
-// plain (uncompressed) input is returned as-is. Other codecs (xz,
-// zstd, lz4) are deferred to post-v0.1 because none ship in stdlib.
+// a transparent decompressor. Gzip input (detected by its magic bytes,
+// not the file extension) is decompressed; any other input is returned
+// as-is. Other codecs such as xz, zstd and lz4 are not supported.
+// Closing the result closes the file.
 func OpenAutoArchive(path string) (io.ReadCloser, error) {
 	f, err := os.Open(path)
 	if err != nil {

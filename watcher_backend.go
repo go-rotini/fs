@@ -4,7 +4,7 @@ import "errors"
 
 // watcherBackend is the contract every kernel-API or polling
 // implementation must satisfy. Backends are constructed by
-// [selectWatcherBackend] and owned exclusively by one [*Watcher].
+// Watcher.selectBackend and owned exclusively by one [*Watcher].
 type watcherBackend interface {
 	// AddPath registers a directory or file for monitoring. The
 	// backend reports any subsequent change as a [rawWatchEvent] on

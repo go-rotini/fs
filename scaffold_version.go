@@ -9,22 +9,20 @@ import (
 	"sort"
 )
 
-// ScaffoldExtract is a non-templated copy of src into dst. Used for
-// "extract default resources on first run" workflows where templates
-// aren't needed; the source files are written verbatim.
+// ScaffoldExtract copies src into dst verbatim, without templating.
+// Used for "extract default resources on first run" workflows.
 //
-// On every call, the package computes a content-hash of src (a
-// stable SHA-256 over sorted-name + content concatenation) and
-// compares it to the marker file at `<dst>/<versionMarker>` (default
-// `.scaffold-version`; override via [WithScaffoldVersionMarker]):
+// On every call it computes a SHA-256 over src's names and contents
+// and compares it with the marker file `<dst>/<versionMarker>`
+// (default `.scaffold-version`; see [WithScaffoldVersionMarker]):
 //
-//   - Same hash to no-op.
-//   - Different hash to re-extract and update the marker.
-//   - Marker missing to first extract, write marker.
+//   - Same hash: nothing is done.
+//   - Different hash, or no marker: src is extracted and the marker
+//     is written.
 //
-// Conflict policy still applies: by default existing destinations
-// are kept. Use [ScaffoldOverwriteAll] to force re-extracts to
-// replace user edits when the source version changes.
+// The conflict policy still applies: by default existing files are
+// kept, even when the source has changed. Use [ScaffoldOverwriteAll]
+// to replace them.
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
 

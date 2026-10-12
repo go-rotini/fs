@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// CopyOption configures [CopyFile], [CopyDir], [Move], and [Rename].
+// CopyOption configures [CopyFile], [CopyDir] and [Move]. [Rename]
+// accepts but ignores them.
 type CopyOption func(*copyOptions)
 
 type copyOptions struct {
@@ -43,8 +44,8 @@ func WithPreserveMtime(b bool) CopyOption {
 
 // WithFilter installs a per-entry predicate for [CopyDir]. Returning
 // false skips the entry; for directories, the entire subtree is
-// skipped. The path passed to fn is the absolute walk path under the
-// source root.
+// skipped. fn receives the walk path (src joined with the entry, so
+// absolute only when src is).
 func WithFilter(fn func(path string, e stdfs.DirEntry) bool) CopyOption {
 	return func(o *copyOptions) { o.filter = fn }
 }
@@ -74,8 +75,10 @@ const (
 // the symlink itself is recreated at dst; the link target is not
 // dereferenced.
 //
-// Non-regular, non-symlink sources (devices, FIFOs, sockets) error
-// with [ErrNotSupported].
+// Non-regular, non-symlink sources (directories, devices, FIFOs,
+// sockets) error with [ErrNotSupported]. With [WithOverwrite](false)
+// an existing dst returns [ErrAlreadyExists]. dst's parent must
+// exist.
 func CopyFile(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 	return copyFileInternal(src, dst, cfg)
@@ -184,7 +187,9 @@ func copySymlink(src, dst string, cfg copyOptions) error {
 
 // CopyDir recursively copies src to dst. dst is created if missing
 // (mode mirrors src). Symlinks are recreated as symlinks unless
-// [WithFollowSymlinks]. Per-entry errors aggregate into a
+// [WithFollowSymlinks]; when following, a symlink to a directory is
+// reported as [ErrNotSupported] rather than copied. src must be a
+// directory ([ErrNotDir] otherwise). Per-entry errors aggregate into a
 // [*MultiError]; the walk continues so a partial copy surfaces every
 // problem entry.
 //
@@ -260,10 +265,9 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 }
 
 // Rename renames src to dst via [os.Rename]. Strict: a cross-device
-// rename returns the underlying error (typically [ErrCrossDevice] /
-// EXDEV) without falling back. Use [Move] when you want the
-// copy+remove fallback. opts is accepted for signature symmetry but
-// unused; rename is atomic only within a single filesystem.
+// rename returns an error wrapping [ErrCrossDevice] without falling
+// back; use [Move] for the copy-and-remove fallback. opts is accepted
+// for symmetry with [Move] and ignored.
 func Rename(src, dst string, opts ...CopyOption) error {
 	_ = opts
 	if err := osRename(src, dst); err != nil {
@@ -274,13 +278,12 @@ func Rename(src, dst string, opts ...CopyOption) error {
 
 // Move renames src to dst, falling back to copy+remove when the
 // rename fails because src and dst live on different filesystems
-// (EXDEV on POSIX, ERROR_NOT_SAME_DEVICE on Windows). The fallback is
-// NOT atomic from the caller's perspective: the destination appears
-// after the copy succeeds, the source is removed last.
+// (EXDEV). The fallback uses [CopyDir] or [CopyFile] with opts and is
+// not atomic: the destination appears after the copy succeeds, and
+// the source is removed last.
 //
-// Honors [WithOverwrite]. The atomic-rename path overwrites
-// unconditionally on POSIX; a Lstat pre-check enforces
-// [WithOverwrite(false)] before the rename attempt.
+// With [WithOverwrite](false), an existing dst returns
+// [ErrAlreadyExists] before anything is moved.
 func Move(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 
@@ -323,9 +326,8 @@ func Move(src, dst string, opts ...CopyOption) error {
 }
 
 // isCrossDevice reports whether err is a cross-filesystem rename
-// error. syscall.EXDEV is defined on every supported platform with
-// the platform-appropriate value (POSIX EXDEV / Windows
-// ERROR_NOT_SAME_DEVICE).
+// error. On Windows syscall.EXDEV is a Go-defined value that the OS
+// never returns, so ERROR_NOT_SAME_DEVICE is not matched there.
 func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV) || errors.Is(err, ErrCrossDevice)
 }

@@ -12,14 +12,13 @@ import (
 	"sync"
 )
 
-// DefaultMaxReadSize bounds the default size cap on every read
-// operation in the package. 100 MiB defends against accidental DoS
-// via /dev/zero, runaway log files, and similar pathological inputs
-// without rejecting any plausible CLI config / fixture / corpus
-// input.
+// DefaultMaxReadSize is the default [WithMaxSize] cap: 100 MiB, enough
+// for any plausible config or fixture while stopping runaway reads of
+// inputs such as /dev/zero.
 const DefaultMaxReadSize int64 = 100 << 20
 
-// ReadOption configures read operations.
+// ReadOption configures [ReadFile], [ReadLines], [ReadFirstLine],
+// [OpenLines] and [ReadAt].
 type ReadOption func(*readOptions)
 
 type readOptions struct {
@@ -36,10 +35,10 @@ func newReadOptions(opts []ReadOption) readOptions {
 	return cfg
 }
 
-// WithMaxSize sets the maximum bytes the read will consume. Zero or
-// negative disables the cap (the read becomes unbounded; only do
-// this when you know the source is a regular file of trustworthy
-// size).
+// WithMaxSize sets the maximum bytes [ReadFile] and [ReadLines] will
+// read, and the maximum line length for [OpenLines]. Zero or negative
+// disables the cap; only do that when the source is known to be of
+// trustworthy size. [ReadFirstLine] and [ReadAt] ignore it.
 func WithMaxSize(n int64) ReadOption {
 	return func(o *readOptions) {
 		if n < 0 {
@@ -49,7 +48,8 @@ func WithMaxSize(n int64) ReadOption {
 	}
 }
 
-// WithExpand expands ~ and $VAR in the path before reading.
+// WithExpand expands ~ and $VAR in the path with [Expand] before
+// reading.
 func WithExpand() ReadOption {
 	return func(o *readOptions) { o.expand = true }
 }
@@ -96,11 +96,9 @@ func skipBOM(br *bufio.Reader) error {
 
 // ReadFile reads path and returns its contents. Bounded by
 // [WithMaxSize] (default [DefaultMaxReadSize]); a file exceeding the
-// cap returns [ErrFileTooLarge].
-//
-// For sources whose size cannot be determined via Stat (FIFOs,
-// character devices), the cap is enforced through an [io.LimitReader]
-// at cap+1, so over-size streams still error rather than read forever.
+// cap returns an error wrapping [ErrFileTooLarge]. The cap also holds
+// for sources whose size Stat cannot report, such as FIFOs and
+// character devices.
 func ReadFile(path string, opts ...ReadOption) ([]byte, error) {
 	cfg := newReadOptions(opts)
 	p, err := resolveReadPath(path, cfg)
@@ -177,8 +175,9 @@ func splitLines(b []byte) []string {
 	return out
 }
 
-// ReadFirstLine returns the first line of path. Returns
-// [ErrEmptyFile] when the file is empty.
+// ReadFirstLine returns the first line of path, without a leading
+// UTF-8 BOM or the trailing LF or CRLF. Only LF ends a line. For an
+// empty file the error wraps [ErrEmptyFile].
 func ReadFirstLine(path string, opts ...ReadOption) (string, error) {
 	cfg := newReadOptions(opts)
 	p, err := resolveReadPath(path, cfg)
@@ -205,15 +204,16 @@ func ReadFirstLine(path string, opts ...ReadOption) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// OpenLines returns an iterator over path's lines. Trailing line
-// endings are stripped per line. The caller MUST invoke the returned
-// close function to release the file handle; the close function is
-// idempotent and safe to call from a `defer`.
+// OpenLines returns an iterator over path's lines. A leading UTF-8 BOM
+// is skipped, and each line's trailing LF or CRLF is stripped. The
+// caller must invoke the returned close function to release the file;
+// it is idempotent and safe to defer.
 //
-// The iterator yields (line, nil) for each successfully read line,
-// and (zero-value, err) once at the end if the underlying scanner
-// failed (line too long, mid-stream I/O error, etc.). Callers should
-// always check the error in the loop body:
+// The iterator yields (line, nil) for each line, and ("", err) once
+// at the end if reading failed, for example on an I/O error or a line
+// longer than the [WithMaxSize] cap (never less than 64 KiB, and
+// exactly 64 KiB when the cap is disabled). Check the error in the
+// loop body:
 //
 //	seq, closeFn, err := fs.OpenLines("/tmp/log")
 //	if err != nil { return err }
@@ -263,10 +263,9 @@ func OpenLines(path string, opts ...ReadOption) (iter.Seq2[string, error], func(
 }
 
 // OpenChunked returns an iterator that streams path's contents in
-// chunks of size bytes. The iterator stops at EOF; callers can break
-// early. The returned cleanup function closes the underlying file
-// and is idempotent; safe to call multiple times (e.g., once via
-// `defer` and again explicitly).
+// chunks of size bytes (the last may be shorter); each chunk is a
+// new slice. The iterator stops at EOF; callers can break early. The
+// returned cleanup function closes the file and is idempotent.
 //
 // If size <= 0, a 64 KiB default is used.
 func OpenChunked(path string, size int) (iter.Seq2[[]byte, error], func() error, error) {
@@ -320,9 +319,10 @@ func idempotentClose(f *os.File, op, path string) func() error {
 	}
 }
 
-// ReadAt reads n bytes from path starting at offset. By default
-// returns [ErrShortRead] if fewer than n bytes are available; pass
-// [WithAllowShort] to return whatever was readable.
+// ReadAt reads n bytes from path starting at offset. If fewer than n
+// bytes are available the error wraps [ErrShortRead], unless
+// [WithAllowShort] is set. A negative n returns an error wrapping
+// [ErrInvalidPath].
 func ReadAt(path string, offset int64, n int, opts ...ReadOption) ([]byte, error) {
 	cfg := newReadOptions(opts)
 	p, err := resolveReadPath(path, cfg)

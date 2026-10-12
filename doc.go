@@ -1,67 +1,51 @@
 // Package fs is a filesystem helpers library for CLI tools. It covers
-// atomic writes, safe reads, path resolution, cross-platform user-
-// directory lookup, directory walking, file watching, archive
-// extraction, scaffolding, disk-info queries, advisory file locking,
-// directory-backed caching, log rotation, tail-follow with rotation
-// handling, versioned backups, transactional plan/apply, gitignore-
-// aware walks, and the dozens of small operations a CLI tool
+// atomic writes, bounded reads, path resolution, cross-platform
+// user-directory lookup, directory walking, file watching, archive
+// creation and extraction, scaffolding, disk-info queries, advisory file
+// locking, directory-backed caching, log rotation, tail-follow with
+// rotation handling, versioned backups, transactional plan/apply,
+// gitignore-aware walks, and the many small operations a CLI tool
 // repeatedly needs to get right.
 //
 // The package sits on top of stdlib's [os], [io/fs], and
 // [path/filepath], turning common CLI operations into one-line calls
 // with safe defaults and useful errors. It is not a virtual
-// filesystem abstraction (see afero / go-billy); every operation
-// touches the real filesystem. For tests against a fixture without
-// disk I/O, use [github.com/go-rotini/fs/fstest]: fstest.MockFS for
-// read paths or fstest.NewTestHarness for write paths in a
-// [testing.T.TempDir].
+// filesystem abstraction; every operation touches the real
+// filesystem. For tests, use [github.com/go-rotini/fs/fstest]:
+// fstest.MockFS for an in-memory read-only [io/fs.FS], or
+// fstest.NewTestHarness for a sandbox in [testing.T.TempDir].
 //
-// # Zero third-party dependencies
+// # Dependencies
 //
-// The fs package is a single flat root for production code: watcher,
-// lock, cache, rotator, plan, archive, scaffold, gitignore, mmap, and
-// disk-info helpers all live in the same package. The production
-// surface has zero non-stdlib runtime imports except for one
-// narrowly-scoped exception (see below) and does not import [testing].
-// Platform-native syscalls (flock and LockFileEx for the lock
-// helpers; mmap and MapViewOfFile for the memory-map helpers; the
-// native watcher backends are a planned follow-up, see Stability) go
-// through stdlib's [syscall] package or the documented
-// [golang.org/x/sys] exception.
+// All production code lives in this one package. It imports only the
+// standard library, except that one Windows-only file
+// (mmap_windows.go) imports [golang.org/x/sys/windows] for the
+// CreateFileMapping, MapViewOfFile and UnmapViewOfFile wrappers used
+// by [Mmap]. No x/sys types appear in the public API. Other
+// platform-specific calls (flock and LockFileEx for locks, mmap on
+// POSIX) go through stdlib's [syscall] package.
 //
-// # The x/sys exception
-//
-// [golang.org/x/sys/windows] is imported by exactly one Windows-only
-// file (mmap_windows.go) for typed Handle, CreateFileMapping,
-// MapViewOfFile, and UnmapViewOfFile wrappers around kernel32.dll.
-// The package is Go-team-maintained, MIT-licensed, and has zero non-
-// stdlib transitive deps. The exception is scoped to platform-syscall
-// files; no public API surface leaks x/sys types. The same exception
-// applies to future syscall surfaces where x/sys carries a wrapper
-// materially safer than hand-rolling syscall.Syscall6 against a DLL
-// proc.
-//
-// The one sub-package is [github.com/go-rotini/fs/fstest], which
-// holds the test helpers (TestHarness, MockFS, WithTempEnv,
-// TempFileT, TempDirT). Keeping those out of the main package lets
-// production binaries avoid pulling stdlib's [testing] package, and
-// its global flag registration, into their import graph.
+// The package does not import [testing]. The test helpers (TestHarness,
+// MockFS, WithTempEnv, TempFileT, TempDirT) live in the sub-package
+// [github.com/go-rotini/fs/fstest], so production binaries do not pull
+// in [testing] and its global flag registration.
 //
 // # API conventions
 //
-// Every operation that touches a path returns a [*PathError]
-// wrapping the operation name, the path, and the underlying cause.
-// [errors.Is] matches both this package's sentinels (e.g.,
-// [ErrNotFound]) and the equivalent stdlib sentinels (e.g.,
-// [io/fs.ErrNotExist]) on the same error. Bulk operations aggregate
-// errors into a [*MultiError] whose Unwrap returns every component,
-// so [errors.Is] works across the aggregate.
+// Nearly every operation that touches a path returns errors as a
+// [*PathError] holding the operation name, the path, and the
+// underlying cause. [errors.Is] matches both this package's sentinels
+// (e.g., [ErrNotFound]) and the equivalent stdlib sentinels (e.g.,
+// [io/fs.ErrNotExist]) on the same error. [CopyDir] and
+// [RemoveContents] aggregate per-entry errors into a [*MultiError]
+// whose Unwrap returns every component, so [errors.Is] works across
+// the aggregate.
 //
-// Defaults are safe by default: writes are atomic via temp+rename;
-// reads are bounded ([WithMaxSize], default 100 MiB); removal is
-// idempotent ([Remove], [RemoveAll], [RemoveContents]) unless
-// [WithStrict]; archive extraction confines every entry through
-// [MustBeChildOf] (zip-slip / tar-slip defense).
+// The defaults are safe: writes are atomic via temp+rename; reads are
+// bounded ([WithMaxSize], default 100 MiB); removal is idempotent
+// ([Remove], [RemoveAll], [RemoveContents]) unless [WithStrict];
+// archive extraction confines every entry through [MustBeChildOf]
+// (zip-slip / tar-slip defense).
 //
 // # Pitfalls
 //
@@ -73,8 +57,8 @@
 //     a copy + delete, not atomic.
 //   - TOCTOU (time-of-check to time-of-use) races are real. An
 //     Exists(path) && ReadFile(path) sequence is racy. The package's
-//     predicates exist for ergonomics, not security; security-
-//     critical code should use [OpenNoFollow] or [OpenAt] and
+//     predicates exist for ergonomics, not security;
+//     security-critical code should use [OpenNoFollow] or [OpenAt] and
 //     read-and-handle-error.
 //   - [Exists] returns false on permission errors. Callers who need
 //     to distinguish use [Stat] directly. Do not write
@@ -99,23 +83,18 @@
 //     [testing.T.TempDir] against /var/folders/... should resolve via
 //     [path/filepath.EvalSymlinks] on both sides before comparing.
 //   - On Windows, symlink creation typically requires Administrator
-//     or Developer Mode. The package's symlink-using helpers return
-//     a clear error when the privilege isn't held.
-//   - v0.1 ships polling-only watching. The platform-native backends
-//     (inotify on Linux, kqueue on macOS/BSD, ReadDirectoryChangesW
-//     on Windows) are not yet wired up; every [Watcher] uses the
-//     polling backend regardless of [WithPolling]. Default interval
-//     is 1 second; pass [WithPolling] with a finer interval when
-//     latency matters. The API will not change when native backends
-//     land.
+//     or Developer Mode; without it the symlink helpers return the
+//     OS error.
+//   - Watching is polling-only: every [Watcher] stats its paths at the
+//     [WithPolling] interval, 1 second by default. Pass a finer
+//     interval when latency matters.
 //   - The watcher's debouncer adds 75 ms of trailing-edge latency by
 //     default ([WithDebounce]). Tests that need immediate event
 //     visibility should pass WithDebounce(0).
-//   - The polling backend reads file mtimes from [os.Lstat]; on
-//     filesystems that round mtime to second resolution (FAT,
-//     network-attached SMB), back-to-back writes within one second
-//     can be missed. Until native backends land, [WithPolling] with
-//     a finer interval is the only mitigation.
+//   - The watcher compares file size and modification time from
+//     [os.Lstat]. On filesystems that round mtime to whole seconds
+//     (FAT, network-attached SMB), two writes within one second that
+//     leave the size unchanged can be missed.
 //   - [Hash], [HashCompare], and [HashWriter] expose MD5 and SHA-1
 //     for non-security uses (legacy compat, content-addressed
 //     caches); they are not secure for integrity defense against
@@ -123,20 +102,6 @@
 //   - [ParseBytes] uses strict SI semantics: 1KB == 1000, matching
 //     kubectl / docker / kafka. IEC binary units (1KiB == 1024) keep
 //     their canonical meaning. For the legacy disk-vendor idiom
-//     where bare KB means 1024, use [ParseBytesIEC]. This is the
-//     opposite of what some older Go libraries do, so callers must
-//     choose deliberately.
-//
-// # Stability
-//
-// The public API is stable starting at v0.1.0. New features may
-// arrive in minor releases; breaking changes are reserved for major
-// version bumps. Items still on the roadmap for a later minor
-// release: the platform-native watcher backends (inotify, kqueue,
-// ReadDirectoryChangesW; today every Watcher uses the polling
-// fallback) and the Tier-C items recorded in the package's design
-// doc (umask helpers, xattrs, sparse/preallocate, reflink,
-// MoveToTrash, bind-mount introspection). All future additions land
-// in the fs package itself; the only sub-package is fstest for test
-// helpers.
+//     where bare KB means 1024, use [ParseBytesIEC]. Some other
+//     libraries treat KB as 1024, so choose deliberately.
 package fs

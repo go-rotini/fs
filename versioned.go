@@ -29,7 +29,8 @@ const (
 
 // VersionInfo describes a single on-disk backup version.
 type VersionInfo struct {
-	// Path is the absolute path to the backup file.
+	// Path is the backup file's path, in the same directory as the
+	// original (absolute when the original path was).
 	Path string
 
 	// Created is the wall-clock time recorded in the version's
@@ -40,7 +41,7 @@ type VersionInfo struct {
 	Size int64
 }
 
-// VersionedOption configures versioned backup behavior.
+// VersionedOption configures [WriteFileVersioned] and [RestoreVersion].
 type VersionedOption func(*versionedConfig)
 
 type versionedConfig struct {
@@ -68,9 +69,9 @@ func WithVersionsMaxAge(d time.Duration) VersionedOption {
 	}
 }
 
-// WithVersionsPerm overrides the file mode used for newly-written
-// backup files. Default 0o644 (matches [WriteFile]); use 0o600 for
-// secret files.
+// WithVersionsPerm sets the mode of the new file written at path
+// (default 0o644; use 0o600 for secret files). Backups keep the mode
+// of the file they were renamed from.
 func WithVersionsPerm(perm os.FileMode) VersionedOption {
 	return func(c *versionedConfig) {
 		c.perm = perm
@@ -86,8 +87,8 @@ func WithVersionsClock(now func() time.Time) VersionedOption {
 }
 
 // WithVersionsMaxBytes caps the byte size [RestoreVersion] will read
-// from a backup file into memory. Default 100 MiB. Larger files fail
-// with [ErrFileTooLarge].
+// from a backup file into memory. Default 100 MiB, also used for
+// n <= 0. Larger files fail with an error wrapping [ErrFileTooLarge].
 func WithVersionsMaxBytes(n int64) VersionedOption {
 	return func(c *versionedConfig) {
 		c.maxBytes = n
@@ -95,18 +96,18 @@ func WithVersionsMaxBytes(n int64) VersionedOption {
 }
 
 // WriteFileVersioned writes data to path atomically. If path already
-// exists, its current contents are first renamed to
-// "<path>.bak.<timestamp>" so the prior version is preserved.
-// Returns the backup path (empty if there was no prior file)
-// alongside any write error.
+// exists, it is first renamed to "<path>.bak.<UTC timestamp>"
+// (layout 20060102-150405.000, with a "_N" suffix if that name is
+// taken) so the prior version is preserved. Missing parent
+// directories are created. Returns the backup path (empty if there
+// was no prior file) alongside any write error.
 //
 // After the write, pruning runs per [WithVersionsKeep] and
 // [WithVersionsMaxAge]. Pruning errors are returned but do not
 // invalidate the just-completed write.
 //
-// The rename-to-backup step is atomic. On POSIX the window between
-// rename and new file write is sub-microsecond; readers using
-// read-and-handle-NotFound see at most a transient miss.
+// Between the backup rename and the new write, path does not exist,
+// so a concurrent reader may briefly find it missing.
 func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (backup string, err error) {
 	if path == "" {
 		return "", wrapPathError(opWriteVersioned, path, ErrInvalidPath)
@@ -139,7 +140,8 @@ func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (back
 }
 
 // ListVersions returns the on-disk backup versions of path, newest
-// first. Returns an empty slice if path has no backups.
+// first. Returns no versions, and no error, if path has no backups or
+// its directory does not exist.
 func ListVersions(path string) ([]VersionInfo, error) {
 	dir := filepath.Dir(path)
 	base := filepath.Base(path)

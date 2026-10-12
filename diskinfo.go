@@ -13,12 +13,19 @@ import (
 // containing a path. InodesTotal / InodesFree are zero on Windows
 // (and on other filesystems that don't surface inode counts).
 type DiskUsage struct {
-	TotalBytes     uint64
-	FreeBytes      uint64 // free for any user (root may use more)
-	AvailableBytes uint64 // free for the calling user (after reserved blocks)
-	UsedBytes      uint64
-	InodesTotal    uint64
-	InodesFree     uint64
+	// TotalBytes is the size of the filesystem.
+	TotalBytes uint64
+	// FreeBytes is the free space, including any blocks reserved for
+	// the superuser.
+	FreeBytes uint64
+	// AvailableBytes is the free space usable by the calling user.
+	AvailableBytes uint64
+	// UsedBytes is TotalBytes minus FreeBytes.
+	UsedBytes uint64
+	// InodesTotal is the total number of inodes.
+	InodesTotal uint64
+	// InodesFree is the number of free inodes.
+	InodesFree uint64
 }
 
 // ErrInsufficientSpace is returned by [PreflightSpace] when a
@@ -35,15 +42,13 @@ const (
 )
 
 // DiskUsageOf returns the [DiskUsage] for the filesystem containing
-// path. POSIX uses `syscall.Statfs`; Windows uses
-// `GetDiskFreeSpaceExW` via `syscall.Syscall6`. Inode fields are
-// zero on Windows where the concept doesn't apply.
+// path. Inode fields are zero on Windows.
 func DiskUsageOf(path string) (DiskUsage, error) { return diskUsageOf(path) }
 
 // MountPoint returns the absolute mount point of the filesystem
-// containing path. POSIX walks the kernel-supplied mount table
-// (Linux: `/proc/self/mountinfo`; BSD/macOS: `getmntinfo` via
-// `syscall.Statfs`). Windows uses `GetVolumePathName`.
+// containing path. On Linux it reads /proc/self/mountinfo (resolving
+// symlinks in path first); on macOS and the BSDs it uses statfs(2);
+// on Windows, GetVolumePathName.
 func MountPoint(path string) (string, error) { return mountPointOf(path) }
 
 // FilesystemType returns a best-effort string identification of the
@@ -53,9 +58,9 @@ func MountPoint(path string) (string, error) { return mountPointOf(path) }
 func FilesystemType(path string) (string, error) { return filesystemTypeOf(path) }
 
 // IsNetworkFS reports whether path lives on a network filesystem
-// (NFS, SMB, FUSE-network, AFP). Used to recommend
-// [WithPolling]-based watching where kernel notifications are
-// unreliable. A type-detection error is folded to false.
+// (NFS, SMB/CIFS, AFP, WebDAV), judged from [FilesystemType]. Every
+// FUSE filesystem counts as network. A type-detection error is folded
+// to false.
 func IsNetworkFS(path string) bool {
 	fsType, err := FilesystemType(path)
 	if err != nil {
@@ -79,10 +84,10 @@ func isNetworkFSType(fsType string) bool {
 }
 
 // IsCaseInsensitiveFS reports whether path lives on a case-insensitive
-// volume. Probe-based: writes a temp file with a known case in the
-// parent directory and checks whether the inverse case resolves to
-// the same inode. Best-effort; a probe error returns
-// (false, error).
+// volume. It creates a short-lived probe file in path (or in its
+// parent, when path is not a directory) and checks whether the
+// same name in a different case is found, so it needs write access
+// there. A probe error returns (false, err).
 func IsCaseInsensitiveFS(path string) (bool, error) {
 	parent := path
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
@@ -110,7 +115,8 @@ func IsCaseInsensitiveFS(path string) (bool, error) {
 }
 
 // PreflightSpace returns nil if the filesystem containing path has
-// at least requiredBytes available; otherwise [ErrInsufficientSpace].
+// at least requiredBytes available to the calling user; otherwise an
+// error wrapping [ErrInsufficientSpace].
 // Use before large copies, archive extractions, downloads, etc.
 //
 // requiredBytes <= 0 is a no-op (returns nil).

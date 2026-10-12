@@ -198,7 +198,7 @@ func FuzzGitignore(f *testing.F) {
 		" leading-space",
 		"a\nb",
 		// Adversarial: many `**` segments should be refused by the
-		// parser (P16 cap). Seed both at-cap and over-cap so the
+		// parser (the 16-segment cap). Seed both at-cap and over-cap so the
 		// fuzzer can explore the boundary.
 		"**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/x",
 		"**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/**/x",

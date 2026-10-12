@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// MkdirOption configures [Mkdir] / [MkdirAll].
+// MkdirOption configures [MkdirAll] and [EnsureDir].
 type MkdirOption func(*mkdirOptions)
 
 type mkdirOptions struct {
@@ -53,7 +53,7 @@ func WithSkipHidden(b bool) ListOption {
 }
 
 // WithSorted makes [ListDir] sort entries by name. Default unsorted
-// (filesystem order from [*os.File.ReadDir]).
+// (filesystem order from [os.File.ReadDir]).
 func WithSorted(b bool) ListOption {
 	return func(o *listOptions) { o.sorted = b }
 }
@@ -80,8 +80,8 @@ const (
 	opDirSize  = "dirsize"
 )
 
-// Mkdir creates a single directory. Returns [ErrAlreadyExists] if path
-// already exists. Use [MkdirAll] to silently create-if-missing.
+// Mkdir creates a single directory. If path already exists the error
+// wraps [ErrAlreadyExists]. Use [MkdirAll] to create-if-missing.
 func Mkdir(path string, perm os.FileMode) error {
 	if err := os.Mkdir(path, perm); err != nil {
 		return wrapPathError(opMkdir, path, err)
@@ -211,9 +211,9 @@ func ListDir(path string, opts ...ListOption) ([]stdfs.DirEntry, error) {
 	return entries, nil
 }
 
-// IsEmpty reports whether path is an empty directory. A non-directory
-// returns ([ErrNotDir]); a missing path returns the wrapped
-// [ErrNotFound].
+// IsEmpty reports whether path is an empty directory. For a
+// non-directory the error wraps [ErrNotDir]; for a missing path it
+// wraps [ErrNotFound].
 func IsEmpty(path string) (bool, error) {
 	info, err := osStat(path)
 	if err != nil {
@@ -242,7 +242,8 @@ func IsEmpty(path string) (bool, error) {
 // DirSize sums the sizes of all regular files under path. Symlinks
 // are not followed; non-regular entries (devices, FIFOs, sockets) are
 // counted as zero. ctx is checked between entries; cancellation
-// returns the partial total and ctx.Err().
+// returns the partial total and ctx.Err(). Any other error, such as an
+// unreadable subdirectory, stops the walk.
 func DirSize(ctx context.Context, path string) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err //nolint:wrapcheck // surfacing context error directly

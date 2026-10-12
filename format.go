@@ -10,11 +10,9 @@ import (
 
 const opMagic = "magic"
 
-// Magic returns the first n bytes of path. Useful for callers that
-// want to inspect a file's leading bytes against known signatures
-// (the package does not enumerate signatures itself; that's
-// thousands of formats; compose with your own table or a third-party
-// magic-bytes library).
+// Magic returns the first n bytes of path, for checking a file's
+// leading bytes against known signatures. The package does not ship a
+// signature table.
 //
 // If path is shorter than n bytes, the returned slice is shorter
 // than n (no error). n <= 0 returns an empty slice without opening
@@ -41,11 +39,11 @@ func Magic(path string, n int) ([]byte, error) {
 }
 
 // ExtFormat returns a lowercase format identifier inferred from the
-// extension of path. Returns "" for unrecognized or absent
-// extensions. Multi-extension filenames (e.g., `foo.tar.gz`) are
-// resolved by the LAST extension only, mirroring [filepath.Ext];
-// callers that need compound-extension awareness compose with
-// [filepath.Ext] themselves.
+// extension of path, matched case-insensitively. Recognized: json,
+// yaml (.yaml, .yml), toml, xml, ini, csv, tsv, html (.html, .htm),
+// markdown (.md), txt, log, tar, gz (.gz, .tgz), bz2, xz, zst, zip
+// and 7z. Returns "" for unrecognized or absent extensions. Only the
+// last extension counts, so `foo.tar.gz` is "gz".
 func ExtFormat(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == "" {

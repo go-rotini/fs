@@ -55,7 +55,7 @@ func StripUTF8BOM(b []byte) []byte {
 
 // DetectLineEnding scans b and reports which line-ending family is
 // in use. [LineMixed] is returned when more than one family appears.
-// A trailing CR followed by LF is counted as a single CRLF.
+// A CR immediately followed by LF counts as one CRLF.
 func DetectLineEnding(b []byte) LineEnding {
 	var hasLF, hasCRLF, hasCR bool
 	for i := 0; i < len(b); i++ {
@@ -98,7 +98,8 @@ func DetectLineEnding(b []byte) LineEnding {
 // NormalizeLineEndings rewrites every CR / LF / CRLF in b as target.
 // A final line without a terminator is preserved as-is.
 //
-// target = [LineNone] is a no-op (returns b unchanged).
+// For [LineNone], [LineMixed] or any other value b is returned
+// unchanged; otherwise the result is a new slice.
 func NormalizeLineEndings(b []byte, target LineEnding) []byte {
 	var sep string
 	switch target {

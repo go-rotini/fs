@@ -51,8 +51,11 @@ func WithStrictExpansion() PathOption {
 //	Expand("${XDG_CACHE_HOME}/data") -> "/Users/alice/.cache/data"
 //	Expand("~bob/notes")             -> "/Users/bob/notes"  (or error)
 //
-// An unset env var expands to "" by default; pass [WithStrictExpansion]
-// to error instead.
+// The tilde is only recognized at the start of path. A `$` not
+// followed by a name, or an unclosed `${`, is kept literally. An unset
+// env var expands to "" by default; pass [WithStrictExpansion] to
+// error instead. A path containing a NUL byte returns an error
+// wrapping [ErrInvalidPath].
 func Expand(path string, opts ...PathOption) (string, error) {
 	cfg := pathOptions{}
 	for _, opt := range opts {
@@ -178,8 +181,8 @@ func isVarRefByte(c byte) bool {
 	return false
 }
 
-// Abs returns the absolute form of path, resolving any leading ~ and
-// $VAR via [Expand] first.
+// Abs returns the absolute form of path, resolving ~ and $VAR via
+// [Expand] first. opts are passed to [Expand].
 func Abs(path string, opts ...PathOption) (string, error) {
 	expanded, err := Expand(path, opts...)
 	if err != nil {
@@ -198,8 +201,9 @@ func Clean(path string) string { return filepath.Clean(path) }
 // Join wraps [filepath.Join].
 func Join(elem ...string) string { return filepath.Join(elem...) }
 
-// JoinSlash returns elem joined with `/` regardless of platform.
-// Useful for portable URI-like paths.
+// JoinSlash returns elem joined with `/` regardless of platform,
+// skipping empty elements. Unlike [Join] it does not clean the
+// result. Useful for portable URI-like paths.
 func JoinSlash(elem ...string) string {
 	clean := make([]string, 0, len(elem))
 	for _, e := range elem {
@@ -245,7 +249,7 @@ func Split(path string) (dir, file string) { return filepath.Split(path) }
 // IsAbs wraps [filepath.IsAbs].
 func IsAbs(path string) bool { return filepath.IsAbs(path) }
 
-// Rel wraps [filepath.Rel].
+// Rel wraps [filepath.Rel], returning errors as a [*PathError].
 func Rel(base, target string) (string, error) {
 	r, err := filepath.Rel(base, target)
 	if err != nil {
@@ -272,12 +276,14 @@ func EqualPath(a, b string) bool {
 	return ca == cb
 }
 
-// IsSubpath reports whether child resolves to a path inside parent
-// after [Abs] + [Clean]. Returns (false, nil) for paths outside
-// (never returning a permissive answer on resolution error). Returns
-// (false, err) only on resolution failure.
+// IsSubpath reports whether child is parent or a path inside it,
+// after making both absolute with [filepath.Abs] (no ~ or $VAR
+// expansion). Returns (false, nil) for paths outside, including
+// paths that cannot be made relative to parent (such as a different
+// Windows drive); (false, err) only when a path cannot be made
+// absolute. The comparison is case-sensitive on every platform.
 //
-// IsSubpath does not follow symlinks. Use [EvalSymlinksWithin] when
+// IsSubpath is lexical and does not follow symlinks. Use [EvalSymlinksWithin] when
 // the constraint must hold even after symlink resolution.
 func IsSubpath(parent, child string) (bool, error) {
 	pa, err := filepath.Abs(parent)
@@ -308,7 +314,8 @@ func IsSubpath(parent, child string) (bool, error) {
 	return true, nil
 }
 
-// MustBeChildOf returns nil when child resolves inside parent, or
+// MustBeChildOf returns nil when [IsSubpath] reports child inside
+// parent (child equal to parent counts), or a [*PathError] wrapping
 // [ErrEscapesRoot] otherwise. Use to constrain user-supplied paths to
 // a sandbox.
 func MustBeChildOf(parent, child string) error {
@@ -322,9 +329,9 @@ func MustBeChildOf(parent, child string) error {
 	return nil
 }
 
-// EvalSymlinksWithin resolves all symlinks in path while ensuring the
-// resolved path stays inside parent. Returns [ErrEscapesRoot] when
-// the resolution leaves the parent.
+// EvalSymlinksWithin resolves all symlinks in path and returns the
+// absolute result, or an error wrapping [ErrEscapesRoot] when the
+// resolved path is outside parent. path must exist.
 //
 // Both parent and path are themselves passed through
 // [filepath.EvalSymlinks] before the containment check, so symlinked

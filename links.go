@@ -20,14 +20,9 @@ const (
 // target, returns nil. If linkPath exists but points elsewhere or is
 // not a symlink, returns [ErrAlreadyExists].
 //
-// Concurrent callers: the idempotency check (Readlink to Symlink)
-// is NOT atomic. Between the two syscalls another process can
-// create the link with a different target; the loser of that race
-// sees [ErrAlreadyExists]. POSIX `symlink(2)` is atomic for the
-// create-if-not-exists case but Go's stdlib does not expose the
-// flag needed to thread that through. For strict
-// "exactly one creator wins" semantics, accept [ErrAlreadyExists]
-// from one of the concurrent callers as a successful outcome.
+// The idempotency check is not atomic: when callers race to create
+// the same link, the losers may see [ErrAlreadyExists] even if the
+// winner used the same target.
 //
 // The target is stored verbatim in the link; it is not validated,
 // resolved, or required to exist (a "dangling" symlink is allowed,
@@ -59,9 +54,10 @@ func ReadLink(linkPath string) (string, error) {
 	return target, nil
 }
 
-// EvalSymlinks resolves all symlinks in path and returns the
-// canonical absolute path. Wraps [filepath.EvalSymlinks]. A symlink
-// loop or excessive hop count returns [ErrSymlinkLoop].
+// EvalSymlinks resolves all symlinks in path. Wraps
+// [filepath.EvalSymlinks], so the result is relative when path is
+// relative. A symlink loop or excessive hop count returns an error
+// wrapping [ErrSymlinkLoop].
 //
 // For constrained resolution that won't escape a parent directory,
 // use [EvalSymlinksWithin].
@@ -90,14 +86,11 @@ func EvalSymlinks(path string) (string, error) {
 // tripwire is [TestConformanceSymlinkLoopDetection] in
 // conformance_test.go; it constructs a real `a to b to a` loop and
 // asserts that EvalSymlinks to isSymlinkLoop returns
-// [ErrSymlinkLoop]. CI runs this on every supported Go version on
-// every supported platform; a stdlib message rename will surface
-// there before any user-visible regression.
+// [ErrSymlinkLoop]. CI runs it on Linux, macOS and Windows, so a
+// stdlib message change surfaces there first.
 //
-// Once a public sentinel exists upstream (track:
-// https://github.com/golang/go; search "EvalSymlinks too many links"
-// in proposals), this function should switch to errors.Is against it
-// and drop the string match.
+// If the standard library ever exports a sentinel for this, switch to
+// errors.Is against it and drop the string match.
 func isSymlinkLoop(err error) bool {
 	if err == nil {
 		return false
@@ -124,10 +117,11 @@ func isSymlinkLoop(err error) bool {
 // Idempotent: if linkPath already refers to the same inode as
 // target, returns nil. If linkPath exists but is a different file,
 // returns [ErrAlreadyExists]. Cross-device links surface as
-// [ErrCrossDevice].
+// [ErrCrossDevice]. The same-file check follows symlinks, so a
+// linkPath that is a symlink to target also returns nil.
 //
-// target must exist and be a regular file (most filesystems forbid
-// hard-linking directories).
+// target must exist; most filesystems forbid hard-linking
+// directories.
 func Hardlink(target, linkPath string) error {
 	if same, err := SameFile(target, linkPath); err == nil && same {
 		return nil

@@ -15,15 +15,15 @@ type ScaffoldAction struct {
 	// DstPath is the resolved on-disk destination path.
 	DstPath string
 	// Reason is a short human-readable explanation suitable for
-	// dry-run output. Examples: "would create", "skipped: exists",
+	// dry-run output, such as "would create", "exists; skipped" or
 	// "would overwrite".
 	Reason string
 	// IsDir is true for directory entries.
 	IsDir bool
 }
 
-// ScaffoldActionOp classifies a [ScaffoldAction]. Apply uses this to
-// decide whether to touch the filesystem.
+// ScaffoldActionOp classifies a [ScaffoldAction]. [ScaffoldApply] uses
+// it to decide whether to touch the filesystem.
 type ScaffoldActionOp int
 
 const (
@@ -33,9 +33,9 @@ const (
 	ScaffoldActionSkip
 	// ScaffoldActionOverwrite replaces DstPath with rendered content.
 	ScaffoldActionOverwrite
-	// ScaffoldActionConflict means the conflict resolution failed
-	// (typically a prompt callback returned an unsupported value);
-	// apply aborts.
+	// ScaffoldActionConflict marks an existing file under
+	// [ScaffoldPromptInteractive]; [ScaffoldApply] asks the prompt
+	// function how to resolve it.
 	ScaffoldActionConflict
 )
 
@@ -55,8 +55,9 @@ func (o ScaffoldActionOp) String() string {
 	}
 }
 
-// ScaffoldOnConflict configures how [ScaffoldApply] handles an
-// existing destination path.
+// ScaffoldOnConflict configures how [ScaffoldApply] and
+// [ScaffoldExtract] handle an existing destination file. Existing
+// directories are always reused.
 type ScaffoldOnConflict int
 
 const (
@@ -77,27 +78,29 @@ const (
 
 // ErrScaffoldPromptRequired is returned when [ScaffoldPromptInteractive]
 // is selected without a prompt function provided via
-// [WithScaffoldPromptFunc].
+// [WithScaffoldPromptFunc]. [ScaffoldPlan] and [ScaffoldApply] check
+// up front; [ScaffoldExtract] fails at the first existing file.
 var ErrScaffoldPromptRequired = errors.New("fs: scaffold: prompt function required for PromptInteractive")
 
-// ErrScaffoldPromptUnsupported is returned when [WithScaffoldPromptFunc]
-// returns an action that isn't [ScaffoldActionSkip] /
-// [ScaffoldActionOverwrite] / [ScaffoldActionCreate].
+// ErrScaffoldPromptUnsupported is returned by [ScaffoldApply] when the
+// [WithScaffoldPromptFunc] callback returns an action other than
+// [ScaffoldActionSkip], [ScaffoldActionOverwrite] or
+// [ScaffoldActionCreate].
 var ErrScaffoldPromptUnsupported = errors.New("fs: scaffold: prompt returned unsupported action")
 
-// ErrScaffoldUnresolvedConflict is returned when a conflict makes
-// it through to the apply phase without being resolved (typically
-// only happens when the prompt callback is misconfigured).
+// ErrScaffoldUnresolvedConflict is returned by [ScaffoldApply] if a
+// planned conflict reaches the write phase without being resolved.
 var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflict")
 
 // ScaffoldPlan walks src, renders every path through [text/template]
 // with vars (so a source named `{{.AppName}}.go` becomes
 // `myapp.go`), and returns the actions [ScaffoldApply] would
-// perform; without any filesystem writes. Useful for `--dry-run`
+// perform, without any filesystem writes. Useful for `--dry-run`
 // flags.
 //
-// Template syntax errors in source paths or contents abort the
-// plan.
+// Templates run with missingkey=error and no functions beyond the
+// text/template builtins. A path template error aborts the plan; file
+// contents are not rendered until [ScaffoldApply].
 func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([]ScaffoldAction, error) {
 	cfg := newScaffoldOptions(opts)
 	if cfg.onConflict == ScaffoldPromptInteractive && cfg.promptFunc == nil {
@@ -108,9 +111,13 @@ func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([
 
 // ScaffoldApply walks src, renders templates with vars, and writes
 // the rendered tree under dst. Conflict policy is configured via
-// [WithScaffoldOnConflict]. By default existing destinations are
-// kept (ScaffoldSkipExisting); a re-run on a previously-applied
-// scaffold is therefore a no-op.
+// [WithScaffoldOnConflict]. By default existing files are kept
+// ([ScaffoldSkipExisting]), so re-running over an applied scaffold is
+// a no-op.
+//
+// Every source file's contents are rendered as a template with vars
+// and written atomically (directories 0o755). A content template
+// error stops the apply, leaving files already written in place.
 func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) error {
 	plan, err := ScaffoldPlan(src, dst, vars, opts...)
 	if err != nil {

@@ -7,17 +7,15 @@ import (
 	"path/filepath"
 )
 
-// RemoveOption configures remove operations.
+// RemoveOption configures [Remove], [RemoveAll] and [RemoveContents].
 type RemoveOption func(*removeOptions)
 
 type removeOptions struct {
 	strict bool
 }
 
-// WithStrict makes the operation error on missing paths instead of
-// returning nil. Mirrors stdlib's [os.Remove] / [os.RemoveAll]
-// behavior; the package's default is the opposite (idempotent
-// missing-target removal).
+// WithStrict makes the operation fail on a missing path (the error
+// wraps [ErrNotFound]) instead of returning nil.
 func WithStrict(b bool) RemoveOption {
 	return func(o *removeOptions) { o.strict = b }
 }
@@ -56,8 +54,8 @@ func Remove(path string, opts ...RemoveOption) error {
 }
 
 // RemoveAll is the recursive variant of [Remove]. Idempotent by
-// default. With [WithStrict] enabled, a missing target errors with
-// [ErrNotFound].
+// default. With [WithStrict] enabled, a missing target returns an
+// error wrapping [ErrNotFound].
 func RemoveAll(path string, opts ...RemoveOption) error {
 	cfg := newRemoveOptions(opts)
 	if cfg.strict {
@@ -79,7 +77,7 @@ func RemoveAll(path string, opts ...RemoveOption) error {
 // Idempotent on a missing path by default (returns nil); pass
 // [WithStrict] to error instead. A path that exists but is not a
 // directory always errors with [ErrNotDir], regardless of the strict
-// flag.
+// flag. Symlinks inside path are removed, not followed.
 func RemoveContents(path string, opts ...RemoveOption) error {
 	cfg := newRemoveOptions(opts)
 	info, err := os.Stat(path)

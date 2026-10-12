@@ -14,22 +14,20 @@ import (
 const unknownLabel = "unknown"
 
 // PathError wraps an underlying filesystem error with the operation
-// and path that produced it. The package returns *PathError from every
-// op-with-a-path entry point; Cause is typically a *os.PathError or a
-// syscall.Errno.
+// and path that produced it. The package returns *PathError from
+// nearly every function that touches a path.
 type PathError struct {
-	Op    string
-	Path  string
+	// Op names the operation, such as "copyfile" or "walk".
+	Op string
+	// Path is the path the operation failed on; it may be empty.
+	Path string
+	// Cause is the underlying error.
 	Cause error
 }
 
-// Error renders as "fs: <op> <path>: <cause>".
-//
-// The render format is part of the public API: callers can rely on
-// the "fs: " prefix and on the order of op / path / cause. Format
-// changes are reserved for major version bumps (v1 to v2). For
-// programmatic inspection use the Op / Path / Cause fields rather
-// than parsing the string.
+// Error renders as "fs: <op> <path>: <cause>", leaving out an empty op
+// or path. For programmatic inspection use the Op, Path and Cause
+// fields rather than parsing the string.
 func (e *PathError) Error() string {
 	if e == nil {
 		return "fs: path error"
@@ -57,9 +55,10 @@ func (e *PathError) Unwrap() error {
 	return e.Cause
 }
 
-// Is matches another *PathError by type and walks the cause chain so
-// callers can compare against either this package's sentinels or the
-// stdlib's [io/fs.ErrNotExist] / [io/fs.ErrPermission] / [io/fs.ErrExist].
+// Is reports true for any *PathError target, and otherwise matches
+// target against the cause chain, so callers can compare against
+// either this package's sentinels or the stdlib's
+// [io/fs.ErrNotExist] / [io/fs.ErrPermission] / [io/fs.ErrExist].
 func (e *PathError) Is(target error) bool {
 	if e == nil {
 		return target == nil
@@ -71,10 +70,10 @@ func (e *PathError) Is(target error) bool {
 }
 
 // MultiError aggregates per-entry errors from bulk operations
-// (CopyDir, RemoveAll under WithStrict, Walk error handler).
-// Implements the Go 1.20+ Unwrap() []error convention so [errors.Is]
-// and [errors.As] walk every branch.
+// ([CopyDir], [RemoveContents]). Its Unwrap() []error method lets
+// [errors.Is] and [errors.As] walk every branch.
 type MultiError struct {
+	// Errors holds the collected errors in the order they occurred.
 	Errors []error
 }
 
@@ -118,13 +117,12 @@ func (m *MultiError) Append(err error) {
 	m.Errors = append(m.Errors, err)
 }
 
-// Sentinel errors. The struct-pointer sentinels (those constructed as
-// &XError{}) match by type via the corresponding Is method; the
-// errors.New sentinels match by value identity.
+// Sentinel errors, matched with [errors.Is].
 //
-// Where applicable, sentinels wrap stdlib equivalents so
-// errors.Is(err, fs.ErrNotFound) matches both this package's
-// ErrNotFound AND the stdlib's [io/fs.ErrNotExist].
+// ErrNotFound, ErrAlreadyExists and ErrPermission wrap their [io/fs]
+// equivalents, and errors returned by this package carry both forms,
+// so errors.Is(err, fs.ErrNotFound) and
+// errors.Is(err, io/fs.ErrNotExist) both match.
 var (
 	// ErrNotFound matches stdlib [io/fs.ErrNotExist] via wrapping.
 	ErrNotFound = fmt.Errorf("fs: not found: %w", stdfs.ErrNotExist)
@@ -142,9 +140,9 @@ var (
 	// ErrIsDir is returned when a regular file was expected.
 	ErrIsDir = errors.New("fs: is a directory")
 
-	// ErrCrossDevice is returned when a Rename across filesystems
-	// fails (POSIX EXDEV / Windows ERROR_NOT_SAME_DEVICE). [Move]
-	// falls back to Copy + Remove on this; [Rename] surfaces it.
+	// ErrCrossDevice is returned when a rename or hard link crosses
+	// filesystems (EXDEV). [Move] falls back to copy and remove on
+	// it; [Rename] and [Hardlink] return it.
 	ErrCrossDevice = errors.New("fs: cross-device link")
 
 	// ErrFileTooLarge is returned when a bounded read exceeds the cap
@@ -155,10 +153,9 @@ var (
 	// empty.
 	ErrEmptyFile = errors.New("fs: empty file")
 
-	// ErrEscapesRoot is returned by [IsSubpath] / [MustBeChildOf] /
-	// [EvalSymlinksWithin] when a path tries to escape its
-	// constraint, and by archive extraction when an entry resolves
-	// outside the destination root.
+	// ErrEscapesRoot is returned by [MustBeChildOf] and
+	// [EvalSymlinksWithin] when a path escapes its constraint, and by
+	// [ExtractArchive] when an entry resolves outside the destination.
 	ErrEscapesRoot = errors.New("fs: path escapes constraint root")
 
 	// ErrSymlinkLoop is returned by [EvalSymlinks] after too many
@@ -166,15 +163,15 @@ var (
 	// symlink.
 	ErrSymlinkLoop = errors.New("fs: symlink loop detected")
 
-	// ErrInvalidPath is returned for malformed paths (NUL bytes,
-	// path-separator characters in app-name args, etc.).
+	// ErrInvalidPath is returned for malformed path-like inputs, such
+	// as a path containing a NUL byte or an invalid cache version.
 	ErrInvalidPath = errors.New("fs: invalid path")
 
 	// ErrHashMismatch is returned by [HashCompare] on mismatch.
 	ErrHashMismatch = errors.New("fs: hash mismatch")
 
-	// ErrNotEmpty is returned when a directory expected to be empty
-	// is not.
+	// ErrNotEmpty reports a directory that was expected to be empty
+	// but is not. No function in this package currently returns it.
 	ErrNotEmpty = errors.New("fs: directory not empty")
 
 	// ErrShortRead is returned by [ReadAt] when fewer bytes were
@@ -187,12 +184,12 @@ var (
 	// head`).
 	ErrBrokenPipe = errors.New("fs: broken pipe")
 
-	// ErrNotSupported is returned for queries that the platform
-	// doesn't expose (e.g., birth time on Linux without statx, owner
-	// on Windows).
+	// ErrNotSupported is returned for operations or queries the
+	// platform or input does not support (e.g., file owner on Windows,
+	// copying a device file).
 	ErrNotSupported = errors.New("fs: not supported on this platform")
 
-	// ErrInvalidByteSize is returned by [ParseBytes] / [ParseBytesStrict]
+	// ErrInvalidByteSize is returned by [ParseBytes] / [ParseBytesIEC]
 	// when the input is empty, has no numeric prefix, or has an
 	// unrecognized unit suffix.
 	ErrInvalidByteSize = errors.New("fs: invalid byte size")

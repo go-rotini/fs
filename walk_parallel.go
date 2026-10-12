@@ -14,36 +14,28 @@ const opWalkParallel = "walkparallel"
 
 // WalkParallelFunc is the per-entry callback for [WalkParallel].
 // Returning an error aborts the walk and surfaces that error from
-// the WalkParallel call. fn is invoked from one of N worker
-// goroutines and must be safe for concurrent use.
+// the WalkParallel call. fn is invoked from several worker goroutines
+// and must be safe for concurrent use.
 //
-// Unlike [WalkFunc], the parallel variant does not honor
-// [filepath.SkipDir]: directory traversal is interleaved with fn
-// calls, so a SkipDir return cannot prune work that's already been
-// dispatched.
+// Unlike [WalkFunc], [filepath.SkipDir] has no special meaning: it
+// aborts the walk like any other error.
 type WalkParallelFunc func(path string, e stdfs.DirEntry) error
 
-// WalkParallel walks root concurrently using workers goroutines.
-// Returns the first non-nil error returned by fn; other workers
-// observe the shutdown signal and exit promptly.
+// WalkParallel walks root, including root itself, calling fn from
+// workers goroutines. It returns the first error from fn or from
+// reading a directory (a directory that vanishes mid-walk is skipped);
+// other workers then stop promptly.
 //
-// workers <= 0 defaults to [runtime.NumCPU]. The walk is breadth-
-// first within each worker, but global ordering across workers is
-// unspecified; callers needing deterministic order should use [Walk].
+// workers <= 0 defaults to [runtime.NumCPU]. Entries are dispatched
+// roughly breadth-first from one shared queue, but the order of fn
+// calls is unspecified; use [Walk] for a deterministic order.
 //
-// Cancel ctx to stop the walk early; already-dispatched fn calls
-// complete, but new fn calls and new directory reads are skipped.
-// ctx must not be nil. Pass [context.Background] for an unbounded
-// walk. Following stdlib convention, a nil ctx panics.
+// Cancel ctx to stop the walk early; fn calls already running
+// complete, and WalkParallel returns nil rather than ctx.Err(). ctx
+// must not be nil.
 //
-// Symlinks are not followed. Callers needing symlink-follow,
-// max-depth, or gitignore filtering should compose [Walk] with their
-// own work-pool.
-//
-// Internally the queue is an unbounded slice guarded by a [sync.Cond];
-// workers pop the front, directory reads push the back. This avoids
-// the bounded-channel deadlock a fixed-size buffer suffers when any
-// directory has more children than the buffer can hold.
+// Symlinks are not followed. For symlink following, max depth or
+// gitignore filtering, use [Walk].
 func WalkParallel(ctx context.Context, root string, fn WalkParallelFunc, workers int) error {
 	if workers <= 0 {
 		workers = runtime.NumCPU()

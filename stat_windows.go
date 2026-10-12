@@ -17,10 +17,8 @@ func Atime(path string) (time.Time, error) {
 	return time.Unix(0, d.LastAccessTime.Nanoseconds()), nil
 }
 
-// Ctime returns path's creation time on Windows. Windows lacks the
-// POSIX status-change time concept; the closest analogue is the file
-// creation time, which is what stdlib also surfaces under "Ctime"
-// for cross-package consistency.
+// Ctime returns path's creation time on Windows, which has no POSIX
+// status-change time; it is the same value as [BTime].
 func Ctime(path string) (time.Time, error) {
 	d, err := winAttrs(path, opCtime)
 	if err != nil {
@@ -39,9 +37,7 @@ func BTime(path string) (time.Time, error) {
 }
 
 // Owner returns [ErrNotSupported] on Windows. The POSIX uid/gid
-// concept doesn't map cleanly; Windows ACLs require a separate call
-// chain (GetSecurityInfo + LookupAccountSid) that's deferred to a
-// future release.
+// concept does not map onto Windows ACLs.
 func Owner(path string) (uid, gid int, err error) {
 	return -1, -1, wrapPathError(opOwner, path, ErrNotSupported)
 }

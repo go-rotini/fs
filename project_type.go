@@ -13,9 +13,9 @@ import (
 // have several).
 type ProjectKind string
 
-// Canonical ProjectKind values. New kinds may be added in minor
-// releases; consumers should treat unknown values as opaque tags
-// rather than relying on enum exhaustiveness.
+// Built-in ProjectKind values. More may be added later, and
+// [RegisterProjectKind] can introduce others, so treat the set as
+// open.
 const (
 	ProjectKindGo     ProjectKind = "go"
 	ProjectKindNode   ProjectKind = "node"
@@ -85,16 +85,17 @@ func RegisterProjectKind(kind ProjectKind, markers ...string) {
 	}
 }
 
-// ProjectType inspects root and returns every recognized project
-// kind whose marker file exists in the directory. Returns an empty
-// slice when none match.
+// ProjectType inspects root (not its subdirectories) and returns every
+// project kind with a marker entry there, sorted alphabetically.
+// Returns an empty slice when none match.
 //
-// The returned slice is sorted alphabetically. Detection is
-// filename-only (no parsing of go.mod, package.json, etc.), so a
-// directory with a stray Gemfile is reported as Ruby even if it's
-// effectively a Go project.
-//
-// For .NET, the marker is any *.csproj, *.fsproj, or *.sln file.
+// The built-in markers, matched by exact name, are: go.mod and
+// go.work (go); package.json (node); Cargo.toml (rust);
+// pyproject.toml, setup.py and requirements.txt (python); Gemfile
+// (ruby); pom.xml, build.gradle and build.gradle.kts (java);
+// composer.json (php); Makefile and makefile (make); Dockerfile
+// (docker); and any *.csproj, *.fsproj or *.sln (dotnet). Detection
+// is name-only; file contents are not parsed.
 func ProjectType(root string) ([]ProjectKind, error) {
 	dirents, err := readDirSorted(root)
 	if err != nil {

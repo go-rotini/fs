@@ -37,8 +37,9 @@ var ErrRotatorClosed = errors.New("fs: rotator: closed")
 
 // Rotator is an [io.WriteCloser] that rotates its backing file when
 // a size or age threshold is exceeded. Rotation renames the current
-// file with a sortable timestamp suffix (optionally gzipping it) and
-// reopens the original path fresh.
+// file to "<path>.<UTC timestamp>" (layout 20060102-150405.000, plus
+// ".gz" with [WithRotateCompress]) and reopens path fresh. An empty
+// file is never rotated automatically.
 //
 // Rotator is safe for concurrent Write calls. Within a process,
 // writes are serialized via an internal mutex. Across processes, the
@@ -72,10 +73,9 @@ type rotatorConfig struct {
 // RotatorOption configures [NewRotator].
 type RotatorOption func(*rotatorConfig)
 
-// WithRotateMaxBytes rotates the file when its size would exceed n.
-// The check runs before each Write; an oversized Write is accepted
-// in full and triggers rotation immediately afterward. Zero disables
-// size-based rotation.
+// WithRotateMaxBytes rotates the file before a Write that would take
+// its size past n. A single Write larger than n still goes whole into
+// the fresh file. Zero disables size-based rotation.
 func WithRotateMaxBytes(n int64) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.maxBytes = n
@@ -92,17 +92,18 @@ func WithRotateMaxAge(d time.Duration) RotatorOption {
 
 // WithRotateKeep retains the n most recent rotated files; older ones
 // are removed after every rotation. Zero keeps every rotated file.
-// The live file is not counted.
+// The live file is not counted, but every other file in its directory
+// named "<base>.<suffix>" is, so keep unrelated files out of that
+// name space.
 func WithRotateKeep(n int) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.keep = n
 	}
 }
 
-// WithRotateCompress controls gzip compression of rotated files
-// after the move. Compression runs synchronously after the rename;
-// callers needing non-blocking compression should rotate in a
-// background goroutine.
+// WithRotateCompress gzips each rotated file after the rename. It runs
+// synchronously inside the Write or [Rotator.Rotate] that triggered
+// the rotation.
 func WithRotateCompress(b bool) RotatorOption {
 	return func(c *rotatorConfig) {
 		c.compress = b
@@ -117,9 +118,11 @@ func WithRotateClock(now func() time.Time) RotatorOption {
 	}
 }
 
-// NewRotator opens path (creating it if absent) and returns a
-// [*Rotator]. Subsequent [Rotator.Write] calls append to the file
-// and trigger rotation when size or age thresholds are crossed.
+// NewRotator opens path for appending, creating it (mode 0o644) and
+// any missing parent directories (mode 0o755) if absent. Subsequent
+// [Rotator.Write] calls append to the file and trigger rotation when
+// size or age thresholds are crossed. An empty path returns an error
+// wrapping [ErrInvalidPath].
 func NewRotator(path string, opts ...RotatorOption) (*Rotator, error) {
 	if path == "" {
 		return nil, wrapPathError(opRotateOpen, path, ErrInvalidPath)
@@ -153,7 +156,7 @@ func NewRotator(path string, opts ...RotatorOption) (*Rotator, error) {
 // Write appends p to the backing file. Before the append, the
 // current size and age are checked against the configured
 // thresholds; if either is exceeded the file is rotated and a fresh
-// one is opened. Returns len(p) on success.
+// one is opened first. Returns len(p) on success.
 func (r *Rotator) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

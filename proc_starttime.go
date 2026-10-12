@@ -1,15 +1,17 @@
 package fs
 
 // ProcessStartTime returns a stable, opaque string identifying the
-// start instant of the OS process with the given PID. Two processes
-// that reuse the same PID produce different start-time strings, so
-// comparing fingerprints against the same PID at two different
-// moments reliably distinguishes the original process from a
-// recycled one.
+// start instant of the OS process with the given PID. A process that
+// later reuses the same PID gets a different string, so comparing
+// the two distinguishes the original process from a recycled one
+// (on macOS and FreeBSD the resolution is one second).
 //
-// Intended as the canonical argument to [WithPIDLockFingerprint]:
+// It is the usual fingerprint for [WithPIDLockFingerprint]:
 //
-//	h, err := fs.PIDLock(path, fs.WithPIDLockFingerprint(fs.ProcessStartTime))
+//	h, err := fs.PIDLock(path, fs.WithPIDLockFingerprint(func(pid int) string {
+//	    s, _ := fs.ProcessStartTime(pid)
+//	    return s
+//	}))
 //
 // The returned string is opaque; callers should not parse it.
 //
@@ -22,10 +24,9 @@ package fs
 //     FILETIME (100-nanosecond ticks since 1601 UTC), rendered in
 //     decimal.
 //
-// Returns an empty string and a non-nil error if the OS-specific
-// probe fails. Callers using this with [WithPIDLockFingerprint] can
-// treat an error or empty result as "no fingerprint"; the bare
-// PID-alive probe still defends against the dead-PID case.
+// Returns an empty string and a non-nil error if pid <= 0 (wrapping
+// [ErrInvalidPath]) or the OS-specific probe fails, for example
+// because the process does not exist.
 func ProcessStartTime(pid int) (string, error) {
 	if pid <= 0 {
 		return "", wrapPathError(opProcStartTime, "", ErrInvalidPath)

@@ -7,15 +7,12 @@
 // fstest lives in a subpackage so that production code importing
 // [github.com/go-rotini/fs] does not pull the stdlib [testing]
 // package into its binary. The main fs package is testing-free; the
-// helpers here are for callers writing tests against filesystem-
-// aware code.
+// helpers here are for callers writing tests against
+// filesystem-aware code.
 //
 // # Use from caller tests
 //
-//	import (
-//	    "github.com/go-rotini/fs"
-//	    "github.com/go-rotini/fs/fstest"
-//	)
+//	import "github.com/go-rotini/fs/fstest"
 //
 //	func TestMyApp(t *testing.T) {
 //	    h := fstest.NewTestHarness(t)

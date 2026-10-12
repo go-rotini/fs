@@ -10,12 +10,9 @@ import (
 // `t.Cleanup` that restores it. Pair with `t.Setenv` for tests that
 // modify many env vars: `WithTempEnv(t)` first, then any number of
 // `t.Setenv` calls; every modification reverts when the test
-// returns, regardless of how the test exits.
-//
-// `t.Setenv` alone restores the specific variable it sets, but
-// tests that mutate env via direct `os.Setenv` (or that need to
-// guarantee no leakage from earlier test goroutines) benefit from
-// the bulk snapshot/restore.
+// returns, regardless of how the test exits. It also reverts changes
+// made with [os.Setenv] or [os.Unsetenv], which t.Setenv alone does
+// not track.
 func WithTempEnv(t *testing.T) {
 	t.Helper()
 	saved := append([]string(nil), os.Environ()...)

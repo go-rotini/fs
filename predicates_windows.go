@@ -33,9 +33,8 @@ func IsExecutable(path string) bool {
 	return false
 }
 
-// IsReadable reports whether the calling process can read path.
-// Windows files are readable unless ACLs forbid; we approximate by
-// attempting to open for reading.
+// IsReadable reports whether the calling process can read path, by
+// attempting to open it for reading.
 func IsReadable(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -45,9 +44,10 @@ func IsReadable(path string) bool {
 	return true
 }
 
-// IsWritable reports whether path is writable. Checks the file's
-// FILE_ATTRIBUTE_READONLY bit and (for directories) the parent's
-// modify ACL by attempting an open-with-write-flag probe.
+// IsWritable reports whether path is writable. A directory is always
+// reported writable (Windows ignores its read-only bit); a file is
+// writable when FILE_ATTRIBUTE_READONLY is clear and it opens for
+// writing.
 func IsWritable(path string) bool {
 	if !existsPredicate(path) {
 		return false

@@ -9,7 +9,7 @@ import (
 
 const opLongPath = "longpath"
 
-// MaxPath is Windows' default per-path limit (`MAX_PATH`); paths
+// maxPath is Windows' default per-path limit (`MAX_PATH`); paths
 // longer than this require the `\\?\` prefix on most Win32 APIs.
 const maxPath = 260
 

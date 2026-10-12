@@ -15,18 +15,18 @@ import (
 
 const opWatcher = "watcher"
 
-// Sentinel errors for the watcher surface. Wrapped via *PathError at
-// the cross-platform shell entry points.
+// Sentinel errors for the watcher. They are returned wrapped in a
+// [*PathError].
 var (
 	// ErrWatcherEmptyPath is returned by [NewWatcher] / [NewLazyWatcher]
 	// / [NewDirWatcher] when path is empty.
 	ErrWatcherEmptyPath = errors.New("fs: watcher: path must not be empty")
 
-	// ErrWatcherNilContext is returned by [(*Watcher).Subscribe] when
+	// ErrWatcherNilContext is returned by [Watcher.Subscribe] when
 	// ctx is nil.
 	ErrWatcherNilContext = errors.New("fs: watcher: nil context")
 
-	// ErrWatcherClosed is returned by [(*Watcher).Subscribe] when the
+	// ErrWatcherClosed is returned by [Watcher.Subscribe] when the
 	// watcher has already been closed.
 	ErrWatcherClosed = errors.New("fs: watcher: closed")
 )
@@ -36,18 +36,15 @@ var (
 // editor atomic-save patterns (write-temp + rename) are detected
 // correctly.
 //
-// In v0.1 every Watcher uses the polling backend regardless of
-// platform; `os.Lstat` in a loop at the configured interval
-// (default 1 second; override via [WithPolling]). The
-// platform-native backends (inotify on Linux, kqueue on macOS/BSD,
-// ReadDirectoryChangesW on Windows) are scheduled for a follow-up
-// release; the API will not change when they land.
+// Every Watcher polls: it calls [os.Lstat] on its watched paths at the
+// configured interval (default 1 second; see [WithPolling]). There is
+// no inotify, kqueue or ReadDirectoryChangesW backend.
 //
 // Construct via [NewWatcher] (existing path), [NewLazyWatcher]
 // (path may not exist yet), or [NewDirWatcher] (recursive directory
-// watching). Each [(*Watcher).Subscribe] call returns an
-// independent buffered channel; surplus events on a slow subscriber
-// are dropped.
+// watching). Each [Watcher.Subscribe] call returns an independent
+// buffered channel (see [WithBufferSize]); events a slow subscriber
+// has no room for are dropped.
 type Watcher struct {
 	target    string // absolute, cleaned
 	parentDir string // absolute, cleaned (filepath.Dir(target))
@@ -73,10 +70,9 @@ type watcherSub struct {
 	cancel context.CancelFunc
 }
 
-// NewWatcher constructs a [*Watcher] for an existing path. The path
-// is resolved to an absolute path; parent-directory watching plus
-// basename filtering means atomic-rename saves are observed
-// correctly on every backend.
+// NewWatcher constructs a [*Watcher] for an existing path, made
+// absolute. Watching the parent directory with basename filtering
+// means atomic-rename saves are observed.
 func NewWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -88,8 +84,8 @@ func NewWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 }
 
 // NewLazyWatcher constructs a [*Watcher] for a path that may not
-// exist yet. The watcher fires `WatchCreate` on the path when it
-// appears.
+// exist yet; its parent directory must exist. The watcher reports
+// [WatchCreate] when the path appears.
 func NewLazyWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -97,8 +93,13 @@ func NewLazyWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	return newWatcher(path, false, true, opts)
 }
 
-// NewDirWatcher watches an entire directory tree. Use
-// [WithRecursive(false)] to limit to a single directory level.
+// NewDirWatcher watches a directory and, by default, every
+// subdirectory that exists when it is called; pass
+// [WithRecursive](false) to watch only the top level. It reports
+// entries appearing ([WatchCreate]) and disappearing ([WatchRemove])
+// in watched directories, and changes to the directories themselves.
+// It does not report writes to files inside them, and subdirectories
+// created later are reported but not watched.
 func NewDirWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -248,9 +249,10 @@ func (w *Watcher) addSubdirectoriesUnder(root string) error {
 }
 
 // Subscribe returns a buffered channel that receives [WatchEvent]
-// values until ctx is canceled or [(*Watcher).Close] is called. Each
-// Subscribe creates an independent subscription; surplus events on
-// a slow subscriber are dropped rather than blocking the worker.
+// values until ctx is canceled or [Watcher.Close] is called, at which
+// point the channel is closed. Each Subscribe creates an independent
+// subscription; events a slow subscriber has no room for are dropped
+// rather than blocking the watcher.
 func (w *Watcher) Subscribe(ctx context.Context) (<-chan WatchEvent, error) {
 	if ctx == nil {
 		return nil, wrapPathError(opWatcher, w.target, ErrWatcherNilContext)
@@ -372,14 +374,8 @@ func (w *Watcher) fanOut(ev WatchEvent) {
 	}
 }
 
-// Close releases all resources. Idempotent; repeated calls are
-// no-ops.
-//
-// The error return is reserved for forward compatibility. v0.1
-// always returns nil; once native backends (inotify, kqueue,
-// ReadDirectoryChangesW) are wired up, a Close-time flush or
-// fd-release failure may surface here. Existing callers that
-// already check the return will not need to change.
+// Close stops the watcher and closes every subscription channel.
+// Idempotent. It currently always returns nil.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
 	if w.closed {

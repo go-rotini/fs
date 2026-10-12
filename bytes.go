@@ -54,16 +54,17 @@ func FormatBytes(n int64) string {
 //
 // Whitespace between the number and the unit is optional. A bare
 // number (no unit) is treated as bytes. Decimal mantissas are
-// supported ("1.5GB" to 1500000000).
+// supported ("1.5GB" is 1500000000); a fractional byte count is
+// truncated. A leading sign is accepted. Errors wrap
+// [ErrInvalidByteSize].
 func ParseBytes(s string) (int64, error) {
 	return parseBytes(s, false)
 }
 
 // ParseBytesIEC is [ParseBytes] but with the legacy "disk-vendor"
 // idiom where bare `KB` / `MB` / `GB` mean powers of 1024 (so
-// `1KB == 1024`). IEC-suffixed units (`KiB`, `MiB`, ...) still
-// mean their canonical 1024-based values; they're 1024-based
-// either way.
+// `1KB == 1024`). IEC-suffixed units (`KiB`, `MiB`, ...) are
+// unchanged.
 //
 // Use this when interoperating with tools that quote disk sizes in
 // the old `KB == 1024` convention. New code should prefer

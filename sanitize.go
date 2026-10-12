@@ -13,18 +13,13 @@ import (
 //   - Trailing dots and spaces (Windows trims them silently, leading
 //     to surprising path resolution)
 //
-// If the cleaned stem matches a Windows reserved device name (CON,
-// PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), regardless of case or
-// extension, an underscore is inserted IMMEDIATELY AFTER the stem
-// (before any extension): "CON" to "CON_", "CON.txt" to "CON_.txt".
-// This ensures the result no longer parses as a reserved device name
-// on Windows; Windows recognizes the device by stem, so suffixing
-// the whole filename ("CON.txt_") leaves the file still reserved.
+// If the cleaned name is a Windows reserved device name per
+// [IsReservedName], an underscore is inserted before the last
+// extension: "CON" becomes "CON_", "con.txt" becomes "con_.txt".
+// Windows recognizes the device by stem, so suffixing the whole
+// filename ("CON.txt_") would leave it reserved.
 //
-// An empty cleaned result falls back to `_`. SanitizeFilename does
-// NOT validate length; Windows MAX_PATH (260) and component-length
-// limits are filesystem-dependent; callers constrain those
-// separately if they matter.
+// An empty cleaned result falls back to `_`. Length is not checked.
 func SanitizeFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
@@ -54,16 +49,11 @@ func SanitizeFilename(name string) string {
 	return out + "_"
 }
 
-// IsReservedName reports whether name (or its base before the last
-// extension) matches a Windows reserved device name. Comparison is
-// case-insensitive. Reserved names: CON, PRN, AUX, NUL, COM1–COM9,
-// LPT1–LPT9.
-//
-// On any platform that lacks these reservations, the result is still
-// returned; the predicate is portability-safe rather than
-// platform-conditional, so callers writing files for cross-platform
-// consumption (archive extraction, scaffolding) catch reserved
-// names regardless of the host OS.
+// IsReservedName reports whether name, with its last extension removed,
+// is a Windows reserved device name: CON, PRN, AUX, NUL, COM1–COM9 or
+// LPT1–LPT9, compared case-insensitively. The answer is the same on
+// every platform, so files meant for Windows can be checked anywhere.
+// Only the last extension is removed, so "CON.tar.gz" is not reported.
 func IsReservedName(name string) bool {
 	base := name
 	if dot := strings.LastIndex(base, "."); dot >= 0 {

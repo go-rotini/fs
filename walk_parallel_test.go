@@ -92,10 +92,9 @@ func TestWalkParallel_DefaultWorkers(t *testing.T) {
 	}
 }
 
-// TestWalkParallel_SingleWorkerLargeFanOut verifies the post-P1 fix:
-// workers=1 with a directory wider than any old channel buffer must
-// not deadlock. With the slice-queue queue, the worker drains the
-// queue progressively as it processes each child.
+// TestWalkParallel_SingleWorkerLargeFanOut verifies that workers=1
+// with a very wide directory does not deadlock: the unbounded queue
+// lets the single worker push every child and then drain them.
 func TestWalkParallel_SingleWorkerLargeFanOut(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

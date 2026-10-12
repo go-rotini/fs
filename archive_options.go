@@ -24,19 +24,17 @@ func newArchiveExtractOptions(opts []ArchiveExtractOption) archiveExtractOptions
 	return cfg
 }
 
-// WithPreserveMode preserves entry permission bits from the archive.
-// Default false (modes are masked to 0o644 for files, 0o755 for
-// dirs). Enable with care; archives from untrusted sources can
-// contain setuid bits or other surprising mode flags.
+// WithPreserveMode keeps each entry's permission bits from the
+// archive (setuid, setgid and sticky bits are always dropped).
+// Default false: files get 0o644 and directories 0o755. Enable with
+// care; an untrusted archive can still carry modes such as
+// world-writable files.
 func WithPreserveMode(b bool) ArchiveExtractOption {
 	return func(o *archiveExtractOptions) { o.preserveMode = b }
 }
 
 // WithArchiveFilter installs a per-entry predicate. Entries for
 // which fn returns false are skipped (no filesystem write).
-//
-// Named WithArchiveFilter rather than WithFilter because
-// [WithFilter] is already a [CopyOption].
 func WithArchiveFilter(fn func(ArchiveHeader) bool) ArchiveExtractOption {
 	return func(o *archiveExtractOptions) { o.filter = fn }
 }
@@ -73,9 +71,10 @@ func WithArchiveFormat(f ArchiveFormat) ArchiveCreateOption {
 	return func(o *archiveCreateOptions) { o.format = f }
 }
 
-// WithArchiveCreateFilter installs a per-walk-entry predicate.
-// Entries (and subtrees, if directories) for which fn returns false
-// are skipped.
+// WithArchiveCreateFilter installs a per-entry predicate. fn receives
+// the walked path (root joined with the entry, not the relative entry
+// name) and its [os.FileInfo]. Entries for which fn returns false are
+// skipped; a rejected directory skips its whole subtree.
 func WithArchiveCreateFilter(fn func(path string, info os.FileInfo) bool) ArchiveCreateOption {
 	return func(o *archiveCreateOptions) { o.filter = fn }
 }

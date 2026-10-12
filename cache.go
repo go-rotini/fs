@@ -48,17 +48,18 @@ var ErrCacheClosed = errors.New("fs: cache: closed")
 // temp+rename; eviction sweeps may briefly over- or under-evict if
 // two processes evict simultaneously.
 //
-// Storage layout (relative to dir, with WithCacheVersion(v) applied):
+// Storage layout (the version segment is present only with
+// [WithCacheVersion]):
 //
-//	<dir>/<version-or-empty>/<hash[0:2]>/<hash[2:]>.bin
+//	<dir>/[<version>/]<hash[0:2]>/<hash[2:]>.bin
 //
 // where hash = sha256(key). Each entry file holds only the value
-// bytes; the file's modification time encodes the entry's creation
-// time and drives TTL accounting.
+// bytes; the file's modification time records when the entry was
+// last written and drives TTL and eviction. Reads do not refresh it.
 //
-// Eviction is mtime-based LRU when [WithCacheMaxBytes] is set: after
-// every Set whose cumulative size pushes total bytes above the cap,
-// the oldest entries are removed until total bytes is below the cap.
+// When [WithCacheMaxBytes] is set, every Set that leaves the total
+// above the cap removes the least recently written entries until the
+// total is at or below it.
 type Cache struct {
 	dir string
 	cfg cacheConfig
@@ -69,8 +70,10 @@ type Cache struct {
 
 // CacheStats is a point-in-time snapshot of the cache state.
 type CacheStats struct {
+	// Entries is the number of stored entries.
 	Entries int
-	Bytes   int64
+	// Bytes is the total size of the stored values.
+	Bytes int64
 }
 
 type cacheConfig struct {
@@ -92,8 +95,8 @@ func WithCacheTTL(d time.Duration) CacheOption {
 }
 
 // WithCacheMaxBytes sets a soft cap on total bytes across all entries.
-// After each Set, the cache evicts oldest-by-mtime entries until the
-// total is at or below n. Zero disables the cap.
+// After each Set, the cache evicts the least recently written entries
+// until the total is at or below n. Zero or negative disables the cap.
 func WithCacheMaxBytes(n int64) CacheOption {
 	return func(c *cacheConfig) {
 		c.maxBytes = n
@@ -102,11 +105,11 @@ func WithCacheMaxBytes(n int64) CacheOption {
 
 // WithCacheVersion namespaces all entries under a version segment in
 // the cache directory. Bumping the version is equivalent to a full
-// purge. On Cache open, sibling version directories under dir are
-// removed.
+// purge: [NewCache] removes every other subdirectory of dir, so dir
+// must be dedicated to this cache.
 //
-// Allowed characters: [A-Za-z0-9._-]. Other inputs are rejected by
-// [NewCache] with [ErrInvalidPath].
+// Allowed characters: [A-Za-z0-9._-] (not "." or ".."). [NewCache]
+// rejects anything else with an error wrapping [ErrInvalidPath].
 func WithCacheVersion(v string) CacheOption {
 	return func(c *cacheConfig) {
 		c.version = v
@@ -122,8 +125,9 @@ func WithCacheClock(now func() time.Time) CacheOption {
 }
 
 // NewCache opens (or creates) a [Cache] rooted at dir. The directory
-// is created with mode 0o755 if missing. Returns a non-nil error if
-// dir is empty, malformed, or cannot be created.
+// is created with mode 0o755 if missing. Returns an error if dir is
+// empty, the [WithCacheVersion] value is invalid, or the directory
+// cannot be created or swept.
 func NewCache(dir string, opts ...CacheOption) (*Cache, error) {
 	if dir == "" {
 		return nil, wrapPathError(opNewCache, dir, ErrInvalidPath)
@@ -175,10 +179,9 @@ func (c *Cache) Close() error {
 // Get returns the cached value for key. ok is true on a hit; false
 // when the entry is missing, expired, or unreadable.
 //
-// Get never returns an error; read failures are treated as misses
-// so callers can write the compute-on-miss form without error
-// plumbing. Expired entries are deleted from disk before the miss
-// is reported.
+// Read failures, and calls after [Cache.Close], are reported as
+// misses; use [Cache.GetWithError] to see them. Expired entries are
+// deleted from disk before the miss is reported.
 func (c *Cache) Get(key string) (value []byte, ok bool) {
 	value, ok, _ = c.getInternal(key) //nolint:errcheck // Get is the miss-as-bool variant; use GetWithError to see the error
 	return value, ok
@@ -186,7 +189,8 @@ func (c *Cache) Get(key string) (value []byte, ok bool) {
 
 // GetWithError is the error-surfacing variant of [Cache.Get]. ok is
 // true on a hit; ok is false either because the entry was missing
-// or expired (err nil) or because reading it failed (err non-nil).
+// or expired (err nil) or because reading it failed or the cache is
+// closed (err non-nil).
 func (c *Cache) GetWithError(key string) (value []byte, ok bool, err error) {
 	return c.getInternal(key)
 }
@@ -331,7 +335,8 @@ type CacheEntry struct {
 // Iteration walks the cache directory once up-front to build a
 // snapshot. Entries added after iteration begins are not visible;
 // entries deleted during iteration are still yielded with their
-// pre-deletion metadata. Returns nil after Close.
+// pre-deletion metadata. After [Cache.Close], or if the walk fails,
+// the iterator yields nothing.
 func (c *Cache) Entries() iter.Seq[CacheEntry] {
 	return func(yield func(CacheEntry) bool) {
 		c.mu.Lock()

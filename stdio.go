@@ -17,7 +17,8 @@ const (
 // [DefaultMaxReadSize]). Useful for `cat | mytool` patterns where
 // the input has no path.
 //
-// A stdin stream exceeding the cap returns [ErrFileTooLarge].
+// A stdin stream exceeding the cap returns an error wrapping
+// [ErrFileTooLarge].
 func ReadStdin(opts ...ReadOption) ([]byte, error) {
 	cfg := newReadOptions(opts)
 
@@ -35,13 +36,12 @@ func ReadStdin(opts ...ReadOption) ([]byte, error) {
 	return data, nil
 }
 
-// OpenStdinLines returns an iterator over [os.Stdin] lines.
-// Trailing line endings (LF / CRLF / CR) are stripped per line, per
-// [bufio.Scanner.Text]. The iterator continues until EOF.
+// OpenStdinLines returns an iterator over [os.Stdin] lines, with each
+// line's trailing LF or CRLF stripped. The iterator runs until EOF; a
+// read error or a line longer than 64 KiB ends it silently.
 //
-// Stdin can't be reopened, so the returned iterator can only be
-// consumed once per process. There is no cleanup function; the
-// caller's lifecycle owns os.Stdin.
+// Stdin cannot be reopened, so the lines can be consumed only once.
+// There is no cleanup function; the caller owns os.Stdin.
 func OpenStdinLines() iter.Seq[string] {
 	scanner := bufio.NewScanner(os.Stdin)
 	return func(yield func(string) bool) {
@@ -56,8 +56,13 @@ func OpenStdinLines() iter.Seq[string] {
 // WriteStdout writes data to [os.Stdout]. A write that fails because
 // the consumer closed the pipe early (EPIPE on POSIX, ERROR_NO_DATA
 // or ERROR_BROKEN_PIPE on Windows; typical when piping to `head`) is
-// reported as [ErrBrokenPipe], which callers conventionally translate
-// to a silent process exit (matching `head`-friendly Unix idiom).
+// reported as [ErrBrokenPipe], which callers conventionally treat as
+// a quiet exit.
+//
+// On POSIX the Go runtime kills the process with SIGPIPE on such a
+// write to stdout or stderr unless the program handles SIGPIPE (for
+// example with [os/signal.Ignore]); only then does the error reach
+// the caller.
 func WriteStdout(data []byte) error {
 	return writeFD(opWriteStdout, "stdout", os.Stdout, data)
 }
@@ -79,11 +84,7 @@ func writeFD(op, name string, w io.Writer, data []byte) error {
 
 // IsTerminal reports whether f is connected to a terminal. Useful
 // for callers deciding between human-readable and machine-readable
-// output. The fs package exposes only this primitive; pager
-// invocation, color decisions, and width queries belong in the
-// future rotini/cli framework.
-//
-// Returns false for nil f.
+// output. Returns false for nil f.
 func IsTerminal(f *os.File) bool {
 	if f == nil {
 		return false

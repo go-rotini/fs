@@ -16,10 +16,9 @@ const (
 // [os.CreateTemp]). dir defaults to [os.TempDir] when empty. Returns
 // the open file, a cleanup function, and any error.
 //
-// The cleanup closes the file (best-effort; may already be closed by
-// the caller) and removes it. Cleanup is idempotent; repeated calls
-// run the work exactly once and return the same error from the first
-// invocation; subsequent calls return nil.
+// The cleanup closes the file (ignoring an error if the caller already
+// closed it) and removes it. It runs once; later calls return the
+// first call's result.
 func TempFile(dir, pattern string) (*os.File, func() error, error) {
 	if dir == "" {
 		dir = os.TempDir()
@@ -50,8 +49,8 @@ func TempFile(dir, pattern string) (*os.File, func() error, error) {
 // [os.MkdirTemp]). dir defaults to [os.TempDir] when empty. Returns
 // the directory path, a cleanup function, and any error.
 //
-// The cleanup is [os.RemoveAll]. Idempotent; repeated calls run the
-// work exactly once.
+// The cleanup removes the directory with [os.RemoveAll]. It runs once;
+// later calls return the first call's result.
 func TempDir(dir, pattern string) (string, func() error, error) {
 	if dir == "" {
 		dir = os.TempDir()

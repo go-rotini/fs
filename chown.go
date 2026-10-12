@@ -16,7 +16,8 @@ const opChown = "chown"
 // cleanly onto NTFS ACLs.
 //
 // Symlinks are not followed; the link itself has its ownership
-// changed via [os.Lchown] so cross-mount targets are not affected.
+// changed via [os.Lchown], so link targets are not affected. The
+// walk stops at the first error.
 func ChownRecursive(root string, uid, gid int) error {
 	if runtime.GOOS == goosWindows {
 		return wrapPathError(opChown, root, ErrNotSupported)

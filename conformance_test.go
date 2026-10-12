@@ -146,8 +146,8 @@ func TestConformancePosixCaseSensitive(t *testing.T) {
 
 // TestConformanceZipSlipDefense verifies the archive surface
 // refuses extracting an entry whose resolved path escapes dst.
-// (Coverage duplicate of Phase 23 Zip-slip test, listed here as a
-// conformance check so it surfaces in conformance-only runs.)
+// (It overlaps TestExtractArchive_TarSlipRefused in archive_test.go;
+// it lives here so it also runs under `make test-conformance`.)
 func TestConformanceZipSlipDefense(t *testing.T) {
 	t.Parallel()
 	dst := t.TempDir()

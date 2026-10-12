@@ -9,18 +9,16 @@ import (
 
 const opRemoveAllNoFollow = "removeallnofollow"
 
-// RemoveAllNoFollow recursively removes path, refusing to traverse
-// symlinks. Unlike [os.RemoveAll], which follows symlinks during
-// descent, this variant uses [os.Lstat] at every step so a
-// symlinked directory under path is unlinked (the link itself) but
-// its target subtree is left untouched.
+// RemoveAllNoFollow recursively removes path, checking every entry
+// with [os.Lstat] so that a symlink, including path itself, is
+// removed as a link and its target is never descended into.
 //
-// Use this for security-sensitive cleanup where an attacker may
-// have planted a symlink under the target expecting RemoveAll to
-// wipe out a victim directory elsewhere on the filesystem.
+// The check and the removal are separate steps, so it does not
+// protect against an entry being swapped for a symlink while it
+// runs. [os.RemoveAll] also never follows symlinks.
 //
 // Missing paths are not errors (idempotent removal). Permission
-// errors and other syscall failures abort with the first error.
+// errors and other failures abort with the first error.
 func RemoveAllNoFollow(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {

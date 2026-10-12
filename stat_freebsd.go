@@ -26,9 +26,9 @@ func Ctime(path string) (time.Time, error) {
 	return time.Unix(st.Ctimespec.Unix()), nil
 }
 
-// BTime returns path's birth time on the BSDs that expose it.
-// FreeBSD UFS2 and OpenBSD recent versions track it; otherwise
-// Birthtimespec may be zero.
+// BTime returns path's birth time on the BSDs that record it (such
+// as FreeBSD UFS2). Where the filesystem does not record it, the
+// result is a placeholder such as the Unix epoch.
 func BTime(path string) (time.Time, error) {
 	st, err := rawStat(path, opBtime)
 	if err != nil {

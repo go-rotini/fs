@@ -28,8 +28,8 @@ const (
 	// the finalized flag. Rewritten after every successful op.
 	journalProgressFilename = "progress.json"
 
-	// journalLegacyFilename is the pre-split combined file. Apply
-	// rejects journals containing it as already-claimed.
+	// journalLegacyFilename is the single-file journal format. Apply
+	// treats a directory containing it as an existing journal.
 	journalLegacyFilename = "journal.json"
 
 	// journalSchemaVersion guards against resuming journals written
@@ -44,19 +44,20 @@ const (
 type PlanAction int
 
 const (
-	// PlanActionCreate writes a new file. Errors if the path already
-	// exists at apply time.
+	// PlanActionCreate writes a new file. It fails with an error
+	// wrapping [ErrAlreadyExists] if the path exists at apply time.
 	PlanActionCreate PlanAction = iota + 1
 
-	// PlanActionUpdate overwrites an existing file's contents. The
-	// prior contents are backed up so the op is reversible.
+	// PlanActionUpdate writes a file, creating it if missing. Existing
+	// contents are backed up so the op is reversible.
 	PlanActionUpdate
 
-	// PlanActionDelete removes a file. The file is backed up before
-	// removal so Rollback can restore it.
+	// PlanActionDelete removes a file; a missing file is not an error.
+	// The file is backed up before removal so Rollback can restore it.
 	PlanActionDelete
 
-	// PlanActionRename moves Source to Path. Reversible.
+	// PlanActionRename moves Source to Path, backing up and replacing
+	// any existing file at Path. Reversible.
 	PlanActionRename
 )
 
@@ -85,18 +86,27 @@ func (a PlanAction) String() string {
 
 // PlanOp is a single operation inside a [Plan].
 type PlanOp struct {
-	Action PlanAction  `json:"action"`
-	Path   string      `json:"path"`
-	Source string      `json:"source,omitempty"` // PlanActionRename only
-	Data   []byte      `json:"data,omitempty"`   // PlanActionCreate / PlanActionUpdate
-	Perm   os.FileMode `json:"perm,omitempty"`   // PlanActionCreate / PlanActionUpdate
+	// Action is the operation kind.
+	Action PlanAction `json:"action"`
+	// Path is the file the op writes or deletes, or the rename
+	// destination.
+	Path string `json:"path"`
+	// Source is the rename source ([PlanActionRename] only).
+	Source string `json:"source,omitempty"`
+	// Data is the file content ([PlanActionCreate] and
+	// [PlanActionUpdate]).
+	Data []byte `json:"data,omitempty"`
+	// Perm is the file mode ([PlanActionCreate] and
+	// [PlanActionUpdate]).
+	Perm os.FileMode `json:"perm,omitempty"`
 }
 
 // Plan is a sequence of [PlanOp] executed in order by [Apply]. Build
-// it with the fluent helpers ([*Plan.Create], [*Plan.Update],
-// [*Plan.Delete], [*Plan.Rename]) or by appending to Ops directly.
+// it with the fluent helpers ([Plan.Create], [Plan.Update],
+// [Plan.Delete], [Plan.Rename]) or by appending to Ops directly.
 // Plans are JSON-serializable.
 type Plan struct {
+	// Ops are the operations, in execution order.
 	Ops []PlanOp `json:"ops"`
 }
 
@@ -105,7 +115,8 @@ func NewPlan() *Plan {
 	return &Plan{}
 }
 
-// Create appends a [PlanActionCreate] op. Returns p for chaining.
+// Create appends a [PlanActionCreate] op; a zero perm means 0o644.
+// Returns p for chaining.
 func (p *Plan) Create(path string, data []byte, perm os.FileMode) *Plan {
 	if perm == 0 {
 		perm = 0o644
@@ -114,7 +125,8 @@ func (p *Plan) Create(path string, data []byte, perm os.FileMode) *Plan {
 	return p
 }
 
-// Update appends a [PlanActionUpdate] op. Returns p for chaining.
+// Update appends a [PlanActionUpdate] op; a zero perm means 0o644.
+// Returns p for chaining.
 func (p *Plan) Update(path string, data []byte, perm os.FileMode) *Plan {
 	if perm == 0 {
 		perm = 0o644
@@ -160,16 +172,18 @@ func (p *Plan) Diff() string {
 	return b.String()
 }
 
-// ApplyOption configures [Apply], [Resume], and [Rollback].
+// ApplyOption configures [Apply], [Resume] and [ApplyTransient].
+// [Rollback] accepts but ignores them.
 type ApplyOption func(*applyConfig)
 
 type applyConfig struct {
 	mkdirParents bool
 }
 
-// WithApplyNoMkdir disables automatic creation of missing parent
-// directories for both the journal and target paths. Default behavior
-// creates them with mode 0o755.
+// WithApplyNoMkdir disables automatic creation of missing directories:
+// the journal directory must then exist, and so must the parent of
+// every created, updated or renamed-to path. By default they are
+// created with mode 0o755.
 func WithApplyNoMkdir() ApplyOption {
 	return func(c *applyConfig) {
 		c.mkdirParents = false
@@ -200,9 +214,9 @@ type planFile struct {
 var errSchemaMismatch = errors.New("fs: plan: journal schema mismatch")
 
 // Apply runs the plan, writing a journal under journalDir so an
-// interrupted apply can be resumed. journalDir must be an empty or
-// nonexistent directory; Apply refuses to overwrite an existing
-// journal.
+// interrupted apply can be resumed. If journalDir already holds a
+// journal, Apply fails with an error wrapping [ErrAlreadyExists]. A
+// nil p returns an error wrapping [ErrInvalidPath].
 //
 // On any per-op failure, Apply returns the error without rolling
 // back. The journal records progress so the caller can decide
@@ -328,17 +342,13 @@ func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 	return saveProgress(journalDir, j)
 }
 
-// ApplyTransient runs the plan in-memory, with no on-disk journal,
-// no backup snapshots, and no resume/rollback support. The first
-// op's failure surfaces as the return; subsequent ops are skipped.
+// ApplyTransient runs the plan with no journal, no backups and no
+// resume or rollback support. It stops at the first failing op and
+// returns its error. Use [Apply] when the run must be resumable or
+// reversible.
 //
-// Use this when sequenced execution is wanted without the journal
-// overhead. For executions that must be resumable or reversible, use
-// [Apply] against a journal directory.
-//
-// ApplyTransient has no internal locking. Concurrent calls touching
-// the same on-disk files race exactly as the underlying [WriteFile]
-// / [os.Remove] / [os.Rename] would.
+// ApplyTransient takes no lock; concurrent runs touching the same
+// files race.
 func ApplyTransient(p *Plan, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, "", ErrInvalidPath)

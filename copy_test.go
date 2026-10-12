@@ -511,9 +511,8 @@ func TestMove_MissingSrc(t *testing.T) {
 
 // TestMove_CrossDevice exercises the EXDEV to CopyFile + Remove fallback.
 // It synthesizes the cross-device condition by feeding the fallback an
-// error that wraps syscall.EXDEV (the real cross-mount setup is
-// environment-specific and skipped here; see the requirements doc for
-// the multi-mount integration test).
+// error that wraps syscall.EXDEV (a real cross-mount setup is
+// environment-specific, so it is not exercised here).
 func TestMove_CrossDeviceFallback(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

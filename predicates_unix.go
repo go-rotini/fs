@@ -4,9 +4,10 @@ package fs
 
 import "syscall"
 
-// IsExecutable reports whether path exists and is executable for the
-// calling process. Uses access(2) with X_OK so the answer reflects
-// effective uid/gid and ACLs, not just the mode bits.
+// IsExecutable reports whether path is a regular file the calling
+// process can execute. On POSIX it uses access(2) with X_OK, so the
+// answer reflects the process's uid/gid and ACLs, not just the mode
+// bits. On Windows it checks the file extension against PATHEXT.
 func IsExecutable(path string) bool {
 	if !existsPredicate(path) {
 		return false
@@ -20,7 +21,8 @@ func IsExecutable(path string) bool {
 	return syscall.Access(path, xOK) == nil
 }
 
-// IsReadable reports whether the calling process can read path.
+// IsReadable reports whether the calling process can read path
+// (access(2) with R_OK on POSIX; an open-for-read probe on Windows).
 func IsReadable(path string) bool {
 	if !existsPredicate(path) {
 		return false
@@ -29,7 +31,9 @@ func IsReadable(path string) bool {
 }
 
 // IsWritable reports whether the calling process can write path. For
-// directories this means new entries can be created inside.
+// a directory on POSIX this means new entries can be created inside;
+// on Windows a directory is always reported writable, and a file is
+// writable when it is not read-only and opens for writing.
 func IsWritable(path string) bool {
 	if !existsPredicate(path) {
 		return false

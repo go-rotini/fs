@@ -418,4 +418,8 @@ func TestPathError_MessageNamesPathOnce(t *testing.T) {
 	if msg := other.Error(); !strings.Contains(msg, "open /b") {
 		t.Errorf("%q drops the other path the OS error names", msg)
 	}
+	noPath := &PathError{Cause: &stdfs.PathError{Op: "open", Path: "", Err: syscall.ENOENT}}
+	if msg := noPath.Error(); !strings.Contains(msg, "open : ") {
+		t.Errorf("%q drops the OS error's op", msg)
+	}
 }

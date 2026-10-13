@@ -244,7 +244,11 @@ func (r *Rotator) Rotate() error {
 	if r.closed {
 		return wrapPathError(opRotate, r.path, ErrRotatorClosed)
 	}
-	return r.rotateLocked()
+	if err := r.rotateLocked(); err != nil {
+		return err
+	}
+	r.retryAt = time.Time{}
+	return nil
 }
 
 // followPathLocked makes sure the held file is still the one at path.

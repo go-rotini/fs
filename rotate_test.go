@@ -589,3 +589,36 @@ func TestFault_Rotator_FailedRotationBacksOff(t *testing.T) {
 		t.Errorf("live file = %q, want every line", got)
 	}
 }
+
+// A successful Rotate ends the back-off from a failed threshold rotation, so the next write
+// over the limit rotates again.
+func TestFault_Rotator_RotateEndsBackOff(t *testing.T) {
+	_ = newFaultyHooks(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "app.log")
+	r, err := NewRotator(path, WithRotateMaxBytes(4), WithRotateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := r.Write([]byte("one\n")); err != nil {
+		t.Fatal(err)
+	}
+	failing := errors.New("rename refused")
+	osRename = func(string, string) error { return failing }
+	if _, err := r.Write([]byte("two\n")); !errors.Is(err, failing) {
+		t.Fatalf("Write: got %v, want the rename error", err)
+	}
+	osRename = os.Rename
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	for _, line := range []string{"three\n", "four\n"} {
+		if _, err := r.Write([]byte(line)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if got, _ := os.ReadFile(path); string(got) != "four\n" {
+		t.Errorf("live file = %q, want only the line after the last rotation", got)
+	}
+}

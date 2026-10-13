@@ -226,8 +226,8 @@ func (e *classifiedError) Error() string   { return e.class.Error() + ": " + e.c
 func (e *classifiedError) Unwrap() []error { return []error{e.class, e.cause} }
 
 // causeText renders cause for a [PathError] on path. A sentinel joined to an OS error is left
-// out, since the OS error says the same, and an OS error that names path itself is reduced to
-// its error text, so the message names the path once.
+// out, since the OS error says the same, and an OS error that names path itself, when path isn't
+// empty, is reduced to its error text, so the message names the path once.
 func causeText(path string, cause error) string {
 	if cause == nil {
 		return "<nil>"
@@ -235,7 +235,7 @@ func causeText(path string, cause error) string {
 	if c, ok := cause.(*classifiedError); ok { //nolint:errorlint // only the cause itself, not deeper wraps
 		cause = c.cause
 	}
-	if pe, ok := cause.(*stdfs.PathError); ok && pe.Path == path && pe.Err != nil { //nolint:errorlint // only the cause itself
+	if pe, ok := cause.(*stdfs.PathError); ok && path != "" && pe.Path == path && pe.Err != nil { //nolint:errorlint // only the cause itself
 		return pe.Err.Error()
 	}
 	return cause.Error()

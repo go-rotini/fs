@@ -413,34 +413,19 @@ func MustBeChildOf(parent, child string) error {
 // absolute result, or an error wrapping [ErrEscapesRoot] when the
 // resolved path is outside parent. path must exist.
 //
-// Both parent and path are themselves passed through
-// [filepath.EvalSymlinks] before the containment check, so symlinked
-// roots (e.g., macOS's /var to /private/var) compare correctly. On
-// Windows, directory junctions are followed too, and a path through any
-// other reparse point that redirects a lookup fails with
-// [ErrEscapesRoot].
+// Both parent and path are resolved before the containment check, so
+// symlinked roots (e.g., macOS's /var to /private/var) compare
+// correctly. On Windows, directory junctions are followed too,
+// anywhere in either path, and a path through any other reparse point
+// that redirects a lookup fails with [ErrEscapesRoot].
 func EvalSymlinksWithin(parent, path string) (string, error) {
-	resolvedPath, err := filepath.EvalSymlinks(path)
+	resolvedAbs, err := resolveLinks(path)
 	if err != nil {
-		return "", &PathError{Op: opEvalSymlinks, Path: path, Cause: err}
+		return "", err
 	}
-	resolvedParent, err := filepath.EvalSymlinks(parent)
+	parentAbs, err := resolveLinks(parent)
 	if err != nil {
-		return "", &PathError{Op: opEvalSymlinks, Path: parent, Cause: err}
-	}
-	parentAbs, err := filepath.Abs(resolvedParent)
-	if err != nil {
-		return "", &PathError{Op: opAbs, Path: parent, Cause: err}
-	}
-	if parentAbs, err = resolveJunctions(parentAbs); err != nil {
-		return "", wrapPathError(opEvalSymlinks, parent, err)
-	}
-	resolvedAbs, err := filepath.Abs(resolvedPath)
-	if err != nil {
-		return "", &PathError{Op: opAbs, Path: resolvedPath, Cause: err}
-	}
-	if resolvedAbs, err = resolveJunctions(resolvedAbs); err != nil {
-		return "", wrapPathError(opEvalSymlinks, path, err)
+		return "", err
 	}
 	ok, err := IsSubpath(parentAbs, resolvedAbs)
 	if err != nil {

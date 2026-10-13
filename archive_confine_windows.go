@@ -74,17 +74,26 @@ func reparseTag(path string) (uint32, error) {
 	return ti.ReparseTag, nil
 }
 
-// resolveJunctions follows the directory junctions left in the absolute path p, which
-// [filepath.EvalSymlinks] does not resolve, and normalizes the result the way
-// [filepath.EvalSymlinks] does (long names, actual case) so it compares with paths it
-// returned. Another reparse point that redirects a lookup fails with [ErrEscapesRoot].
-func resolveJunctions(p string) (string, error) {
-	r, err := realPath(p, 0)
-	if err != nil || r == p {
-		return r, err
+// resolveLinks returns p with every symlink and directory junction resolved, as an
+// absolute path. p must exist. Links are followed by [realPath], since
+// [filepath.EvalSymlinks] fails on a path that passes through a junction; the result, which
+// holds no links, is then passed through [filepath.EvalSymlinks] only to normalize it (long
+// names, actual case), so paths resolved here compare with each other. Another reparse
+// point that redirects a lookup fails with [ErrEscapesRoot].
+func resolveLinks(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", &PathError{Op: opAbs, Path: p, Cause: err}
 	}
-	if norm, nerr := filepath.EvalSymlinks(r); nerr == nil {
+	resolved, err := realPath(abs, 0)
+	if err != nil {
+		return "", wrapPathError(opEvalSymlinks, p, err)
+	}
+	if norm, err := filepath.EvalSymlinks(resolved); err == nil {
 		return norm, nil
 	}
-	return r, nil
+	if _, err := osStat(resolved); err != nil {
+		return "", &PathError{Op: opEvalSymlinks, Path: p, Cause: err}
+	}
+	return resolved, nil
 }

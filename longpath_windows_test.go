@@ -45,6 +45,20 @@ func TestLongPath_UNC(t *testing.T) {
 	}
 }
 
+// A path of MAX_PATH or more characters whose absolute form is shorter comes back in that
+// absolute, cleaned form.
+func TestLongPath_LongButCleansShort(t *testing.T) {
+	t.Parallel()
+	in := `C:\x` + strings.Repeat(`\a\..`, 60) + `\y`
+	got, err := LongPath(in)
+	if err != nil {
+		t.Fatalf("LongPath: %v", err)
+	}
+	if got != `C:\x\y` {
+		t.Errorf("LongPath(%q) = %q, want %q", in, got, `C:\x\y`)
+	}
+}
+
 // Locks and no-follow opens work on paths past MAX_PATH, as os.OpenFile does.
 func TestLock_LongPath(t *testing.T) {
 	t.Parallel()

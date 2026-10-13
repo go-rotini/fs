@@ -16,8 +16,10 @@ const maxPath = 260
 // LongPath returns path as an absolute path prefixed with `\\?\` (or
 // `\\?\UNC\` for UNC paths) when its absolute form, which for a
 // relative path includes the working directory, is MAX_PATH or more
-// characters long. Paths that already have the prefix or whose
-// absolute form fits within MAX_PATH are returned unchanged.
+// characters long. Paths that already have the prefix, and paths
+// shorter than MAX_PATH whose absolute form fits too, are returned
+// unchanged; a longer path whose absolute form fits is returned in that
+// absolute form.
 func LongPath(path string) (string, error) {
 	if strings.HasPrefix(path, `\\?\`) {
 		return path, nil
@@ -30,6 +32,9 @@ func LongPath(path string) (string, error) {
 		return "", wrapPathError(opLongPath, path, err)
 	}
 	if len(abs) < maxPath {
+		if len(path) >= maxPath {
+			return abs, nil
+		}
 		return path, nil
 	}
 	if strings.HasPrefix(abs, `\\?\`) {

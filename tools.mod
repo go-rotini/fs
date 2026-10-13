@@ -2,6 +2,8 @@ module github.com/go-rotini/fs
 
 go 1.26.0
 
+toolchain go1.26.9
+
 tool (
 	github.com/go-gremlins/gremlins/cmd/gremlins
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint

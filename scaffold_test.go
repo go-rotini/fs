@@ -5,6 +5,7 @@ import (
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 )
@@ -541,5 +542,78 @@ func TestScaffold_ExistingSymlinkEscapes(t *testing.T) {
 	}
 	if names, _ := os.ReadDir(outside); len(names) != 0 {
 		t.Errorf("wrote %v outside the destination", names)
+	}
+}
+
+func TestScaffoldApply_VerbatimFiles(t *testing.T) {
+	t.Parallel()
+	workflow := "on: push\njobs:\n  x:\n    if: ${{ github.ref == 'refs/heads/main' }}\n"
+	src := fstest.MapFS{
+		".github/workflows/ci.yml": {Data: []byte(workflow)},
+		"{{.Name}}/README.md":      {Data: []byte("# {{.Name}}\n")},
+	}
+	dst := t.TempDir()
+	vars := map[string]string{"Name": "app"}
+	if err := ScaffoldApply(src, dst, vars); err == nil {
+		t.Fatal("a workflow file rendered as a template should fail without WithScaffoldVerbatim")
+	}
+	dst = t.TempDir()
+	if err := ScaffoldApply(src, dst, vars, WithScaffoldVerbatim(".github/workflows/*")); err != nil {
+		t.Fatalf("ScaffoldApply: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, ".github", "workflows", "ci.yml")); string(got) != workflow {
+		t.Errorf("workflow = %q; want it copied verbatim", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "app", "README.md")); string(got) != "# app\n" {
+		t.Errorf("README = %q; want it rendered", got)
+	}
+}
+
+func TestScaffold_KeepsExecuteBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	t.Parallel()
+	src := fstest.MapFS{
+		"run.sh":   {Data: []byte("#!/bin/sh\n"), Mode: 0o755},
+		"data.txt": {Data: []byte("x"), Mode: 0o444}, // like embed.FS
+	}
+	check := func(dst string) {
+		t.Helper()
+		for name, want := range map[string]os.FileMode{"run.sh": 0o755, "data.txt": 0o644} {
+			info, err := os.Stat(filepath.Join(dst, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != want {
+				t.Errorf("%s mode = %v; want %v", name, got, want)
+			}
+		}
+	}
+	dst := t.TempDir()
+	if err := ScaffoldExtract(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	check(dst)
+	dst = t.TempDir()
+	if err := ScaffoldApply(src, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(dst)
+}
+
+func TestScaffoldExtract_MarkerMustBeAFileName(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dst := filepath.Join(root, "dst")
+	src := fstest.MapFS{"a": {Data: []byte("x")}}
+	for _, marker := range []string{"../outside-marker", "sub/marker", "..", "."} {
+		err := ScaffoldExtract(src, dst, WithScaffoldVersionMarker(marker))
+		if !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("marker %q: err = %v; want ErrInvalidPath", marker, err)
+		}
+	}
+	if Exists(filepath.Join(root, "outside-marker")) {
+		t.Error("the marker was written outside dst")
 	}
 }

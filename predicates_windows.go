@@ -103,3 +103,8 @@ func isNotEmptyErrno(err error) bool {
 func isCrossDeviceErrno(err error) bool {
 	return errors.Is(err, errNotSameDevice) || errors.Is(err, syscall.EXDEV)
 }
+
+// isLoopErrno reports whether err is ELOOP, too many symlinks.
+func isLoopErrno(err error) bool {
+	return errors.Is(err, syscall.ELOOP)
+}

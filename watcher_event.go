@@ -36,6 +36,11 @@ const (
 	WatchRename
 	// WatchChmod fires when a path's permission bits change.
 	WatchChmod
+	// WatchOverflow reports that events were dropped because a buffer
+	// was full, most often a subscriber's (see [WithBufferSize]). It is
+	// sent alone, with Path set to the watched path, once there is
+	// room; the subscriber should rescan what it watches.
+	WatchOverflow
 )
 
 // String renders the set bits in canonical order, joined by '+'.
@@ -59,6 +64,9 @@ func (o WatchOp) String() string {
 	}
 	if o&WatchChmod != 0 {
 		parts = append(parts, "chmod")
+	}
+	if o&WatchOverflow != 0 {
+		parts = append(parts, "overflow")
 	}
 	return strings.Join(parts, "+")
 }

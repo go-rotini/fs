@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,8 +71,9 @@ func WithVersionsMaxAge(d time.Duration) VersionedOption {
 }
 
 // WithVersionsPerm sets the mode of the new file written at path
-// (default 0o644; use 0o600 for secret files). Backups keep the mode
-// of the file they were renamed from.
+// (use 0o600 for secret files). Without it, the new file keeps the
+// mode of the file it replaces, or 0o644 when there was none. Backups
+// keep the mode of the file they were made from.
 func WithVersionsPerm(perm os.FileMode) VersionedOption {
 	return func(c *versionedConfig) {
 		c.perm = perm
@@ -96,18 +98,20 @@ func WithVersionsMaxBytes(n int64) VersionedOption {
 }
 
 // WriteFileVersioned writes data to path atomically. If path already
-// exists, it is first renamed to "<path>.bak.<UTC timestamp>"
-// (layout 20060102-150405.000, with a "_N" suffix if that name is
-// taken) so the prior version is preserved. Missing parent
-// directories are created. Returns the backup path (empty if there
-// was no prior file) alongside any write error.
+// exists, the prior version is first preserved as
+// "<path>.bak.<UTC timestamp>" (layout 20060102-150405.000, with a
+// "_N" suffix if that name is taken): a hard link to the old file, or
+// a copy where hard links aren't supported, so path never goes
+// missing. Missing parent directories are created. Returns the backup
+// path (empty if there was no prior file) alongside any write error.
 //
 // After the write, pruning runs per [WithVersionsKeep] and
 // [WithVersionsMaxAge]. Pruning errors are returned but do not
 // invalidate the just-completed write.
 //
-// Between the backup rename and the new write, path does not exist,
-// so a concurrent reader may briefly find it missing.
+// Like [WriteFile], the write keeps the old file's mode unless
+// [WithVersionsPerm] is given, and replaces a symlink at path rather
+// than writing through it.
 func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (backup string, err error) {
 	if path == "" {
 		return "", wrapPathError(opWriteVersioned, path, ErrInvalidPath)
@@ -124,12 +128,16 @@ func WriteFileVersioned(path string, data []byte, opts ...VersionedOption) (back
 		if err != nil {
 			return "", wrapPathError(opWriteVersioned, path, err)
 		}
-		if rerr := os.Rename(path, backup); rerr != nil {
-			return "", wrapPathError(opWriteVersioned, path, rerr)
+		if berr := backupExisting(path, backup); berr != nil {
+			return "", wrapPathError(opWriteVersioned, path, berr)
 		}
 	}
 
-	if werr := WriteFile(path, data, WithPerm(cfg.perm)); werr != nil {
+	var wopts []WriteOption
+	if cfg.perm != 0 {
+		wopts = append(wopts, WithPerm(cfg.perm))
+	}
+	if werr := WriteFile(path, data, wopts...); werr != nil {
 		return backup, werr
 	}
 
@@ -156,6 +164,7 @@ func ListVersions(path string) ([]VersionInfo, error) {
 	}
 
 	var versions []VersionInfo
+	seq := map[string]int{} // collision suffix per version path
 	for _, e := range dirents {
 		if e.IsDir() {
 			continue
@@ -165,9 +174,11 @@ func ListVersions(path string) ([]VersionInfo, error) {
 			continue
 		}
 		stamp := strings.TrimPrefix(name, prefix)
-		// Strip the collision-suffix added by uniqueVersionedName,
-		// keeping just the timestamp.
+		// Split off the collision suffix added by uniqueVersionedName;
+		// it orders versions made in the same millisecond.
+		n := 0
 		if idx := strings.Index(stamp, "_"); idx > 0 {
+			n, _ = strconv.Atoi(stamp[idx+1:]) //nolint:errcheck // a suffix that isn't a number sorts first
 			stamp = stamp[:idx]
 		}
 		created, perr := time.Parse(versionedTimestampLayout, stamp)
@@ -181,15 +192,20 @@ func ListVersions(path string) ([]VersionInfo, error) {
 			}
 			return nil, wrapPathError(opListVersions, name, ierr)
 		}
+		p := filepath.Join(dir, name)
+		seq[p] = n
 		versions = append(versions, VersionInfo{
-			Path:    filepath.Join(dir, name),
+			Path:    p,
 			Created: created,
 			Size:    info.Size(),
 		})
 	}
 
 	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].Created.After(versions[j].Created)
+		if !versions[i].Created.Equal(versions[j].Created) {
+			return versions[i].Created.After(versions[j].Created)
+		}
+		return seq[versions[i].Path] > seq[versions[j].Path]
 	})
 	return versions, nil
 }
@@ -216,7 +232,6 @@ func RestoreVersion(path, versionPath string, opts ...VersionedOption) error {
 func newVersionedConfig(opts []VersionedOption) versionedConfig {
 	const defaultMaxBytes = 100 * 1024 * 1024
 	cfg := versionedConfig{
-		perm:     0o644,
 		maxBytes: defaultMaxBytes,
 		nowFn:    time.Now,
 	}
@@ -226,9 +241,7 @@ func newVersionedConfig(opts []VersionedOption) versionedConfig {
 	if cfg.nowFn == nil {
 		cfg.nowFn = time.Now
 	}
-	if cfg.perm == 0 {
-		cfg.perm = 0o644
-	}
+	cfg.perm = cfg.perm.Perm()
 	if cfg.maxBytes <= 0 {
 		cfg.maxBytes = defaultMaxBytes
 	}
@@ -240,24 +253,33 @@ func versionedName(path string, cfg versionedConfig) string {
 	return fmt.Sprintf("%s%s%s", path, versionedInfix, stamp)
 }
 
-// errVersionedCollisionExhausted signals that uniqueVersionedName
-// couldn't find an unused suffix in 1000 attempts.
-var errVersionedCollisionExhausted = errors.New("fs: versioned: collision-suffix budget exhausted")
-
-// uniqueVersionedName returns a versionedName whose target path is
-// not currently in use. Sub-millisecond writes can produce the same
-// timestamp; the function appends _1, _2, ... until it finds an
-// unused suffix or exhausts the 1000-attempt budget.
+// uniqueVersionedName returns a versionedName not currently in use.
+// Writes in the same millisecond share a timestamp; each later one
+// gets a "_N" suffix one above the highest already present, so the
+// suffix keeps recording the order even after pruning removed some.
 func uniqueVersionedName(path string, cfg versionedConfig) (string, error) {
 	base := versionedName(path, cfg)
-	candidate := base
-	for i := 1; i < 1000; i++ {
-		if _, err := os.Stat(candidate); errors.Is(err, stdfs.ErrNotExist) {
-			return candidate, nil
-		}
-		candidate = fmt.Sprintf("%s_%d", base, i)
+	baseName := filepath.Base(base)
+	ents, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return "", err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
-	return "", errVersionedCollisionExhausted
+	next := 0
+	for _, e := range ents {
+		name := e.Name()
+		switch {
+		case name == baseName:
+			next = max(next, 1)
+		case strings.HasPrefix(name, baseName+"_"):
+			if n, aerr := strconv.Atoi(name[len(baseName)+1:]); aerr == nil && n >= next {
+				next = n + 1
+			}
+		}
+	}
+	if next == 0 {
+		return base, nil
+	}
+	return fmt.Sprintf("%s_%d", base, next), nil
 }
 
 // pruneVersions removes versioned backups of path that violate the

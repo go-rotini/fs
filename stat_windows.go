@@ -74,7 +74,7 @@ func winAttrs(path, op string) (*syscall.Win32FileAttributeData, error) {
 func winVolumeSerial(path string) (uint32, error) {
 	pathPtr, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
-		return 0, err
+		return 0, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
 	h, err := syscall.CreateFile(
 		pathPtr,
@@ -86,13 +86,13 @@ func winVolumeSerial(path string) (uint32, error) {
 		0,
 	)
 	if err != nil {
-		return 0, err
+		return 0, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
-	defer syscall.CloseHandle(h)
+	defer func() { _ = syscall.CloseHandle(h) }() //nolint:errcheck // a failed close only leaks the handle
 
 	var info syscall.ByHandleFileInformation
 	if err := syscall.GetFileInformationByHandle(h, &info); err != nil {
-		return 0, err
+		return 0, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
 	return info.VolumeSerialNumber, nil
 }

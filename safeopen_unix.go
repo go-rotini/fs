@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package fs
 
@@ -6,13 +6,19 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
+// openNoFollow opens path with O_NOFOLLOW. Like [os.OpenFile] it sets
+// O_CLOEXEC, so the descriptor isn't inherited by child processes, and
+// retries on EINTR.
 func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	fd, err := syscall.Open(path, flag|syscall.O_NOFOLLOW, uint32(perm.Perm()))
+	fd, err := retryEINTR(func() (int, error) {
+		return unix.Open(path, flag|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm.Perm()))
+	})
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if isNoFollowErrno(err) {
 			return nil, wrapPathError(opOpenNoFollow, path, ErrSymlinkLoop)
 		}
 		return nil, wrapPathError(opOpenNoFollow, path, err)
@@ -20,19 +26,26 @@ func openNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 	return os.NewFile(uintptr(fd), filepath.Base(path)), nil
 }
 
-// openAt resolves name through dir's underlying file descriptor via
-// the platform's openat(2) syscall. Per-platform `openAtSyscall`
-// shims handle the divergence: linux exposes [syscall.Openat]
-// directly; darwin, freebsd and netbsd use [syscall.Syscall6] with
-// the syscall number; openbsd, which allows system calls only
-// through libc, uses golang.org/x/sys/unix.
+// openAt resolves name through dir's file descriptor with openat(2),
+// adding O_CLOEXEC and retrying on EINTR.
 func openAt(dir *os.File, name string, flag int, perm os.FileMode) (*os.File, error) {
 	if dir == nil {
 		return nil, wrapPathError(opOpenAt, name, ErrInvalidPath)
 	}
-	fd, err := openAtSyscall(int(dir.Fd()), name, flag, uint32(perm.Perm()))
+	fd, err := retryEINTR(func() (int, error) {
+		return unix.Openat(int(dir.Fd()), name, flag|unix.O_CLOEXEC, uint32(perm.Perm()))
+	})
 	if err != nil {
 		return nil, wrapPathError(opOpenAt, name, err)
 	}
 	return os.NewFile(uintptr(fd), name), nil
+}
+
+func retryEINTR(open func() (int, error)) (int, error) {
+	for {
+		fd, err := open()
+		if !errors.Is(err, unix.EINTR) {
+			return fd, err
+		}
+	}
 }

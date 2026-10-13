@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -101,9 +102,11 @@ func WithTempPattern(pattern string) WriteOption {
 	return func(o *writeOptions) { o.tempPattern = pattern }
 }
 
-// WithBackup makes an atomic write first rename the existing file at
-// the destination to `<dest><suffix>`, replacing any earlier backup.
-// An empty suffix means ".bak". Nothing is backed up when the
+// WithBackup makes an atomic write keep the existing file at the
+// destination as `<dest><suffix>`, replacing any earlier backup. An
+// empty suffix means ".bak". The backup is a hard link to the old
+// file, or a copy where hard links aren't supported, so the
+// destination never goes missing. Nothing is backed up when the
 // destination does not exist.
 func WithBackup(suffix string) WriteOption {
 	return func(o *writeOptions) {
@@ -136,6 +139,14 @@ func resolveWritePath(path string, _ writeOptions) string { return path }
 //
 // For files containing secrets (tokens, keys), pass
 // `WithPerm(fs.Mode0600)` so the result is owner-only.
+//
+// An atomic write replaces the directory entry, not the file: if path
+// is a symlink, the link is replaced by a regular file and its target
+// is left unchanged (resolve it with [EvalSymlinks] first, or pass
+// WithAtomic(false), to write through the link). The new file also
+// gets the writing process's owner and group, loses the old file's
+// extended attributes and ACLs, and no longer shares data with other
+// hard links to the old file.
 func WriteFile(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
 	return doWriteFile(path, data, cfg)
@@ -166,8 +177,8 @@ func WriteIfChanged(path string, data []byte, opts ...WriteOption) (bool, error)
 // [ErrAlreadyExists]. Useful for "create only if not present" setups.
 //
 // The file is written in place, not via temp+rename, so concurrent
-// readers can see partial content; if the write fails the file is
-// removed.
+// readers can see partial content; if the write, sync or close fails
+// the file is removed.
 func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 	cfg := newWriteOptions(opts)
 	p := resolveWritePath(path, cfg)
@@ -192,10 +203,12 @@ func WriteFileExclusive(path string, data []byte, opts ...WriteOption) error {
 	if cfg.hasSync && cfg.sync {
 		if serr := fileSync(f); serr != nil {
 			closeQuietly(f)
+			_ = os.Remove(p)
 			return wrapPathError(opWrite, p, serr)
 		}
 	}
 	if cerr := fileClose(f); cerr != nil {
+		_ = os.Remove(p)
 		return wrapPathError(opWrite, p, cerr)
 	}
 	return nil
@@ -279,10 +292,8 @@ func writeAtomic(path string, data []byte, cfg writeOptions) error {
 	}
 
 	if cfg.hasBackup && existed {
-		backup := path + cfg.backup
-		_ = os.Remove(backup)
-		if rerr := osRename(path, backup); rerr != nil {
-			return wrapPathError(opRename, path, rerr)
+		if berr := backupExisting(path, path+cfg.backup); berr != nil {
+			return berr
 		}
 	}
 
@@ -297,6 +308,17 @@ func writeAtomic(path string, data []byte, cfg writeOptions) error {
 		}
 	}
 	return nil
+}
+
+// backupExisting makes backup hold the current file at path while
+// leaving path in place, so a following rename over path is the only
+// visible change. It hard-links when it can and copies otherwise.
+func backupExisting(path, backup string) error {
+	_ = osRemove(backup) //nolint:errcheck // a leftover backup that can't be removed makes the link fail, and the copy replaces it
+	if err := osLink(path, backup); err == nil {
+		return nil
+	}
+	return copyFileInternal(path, backup, copyOptions{overwrite: true, preserveMtime: true, sync: true})
 }
 
 // resolveMode picks the file mode for the write: explicit WithPerm
@@ -324,7 +346,7 @@ func resolveMode(path string, cfg writeOptions) (os.FileMode, bool) {
 func openTempForWrite(dest string, mode os.FileMode, pattern string) (*os.File, error) {
 	dir := filepath.Dir(dest)
 	if pattern == "" {
-		pattern = filepath.Base(dest) + ".tmp.*"
+		pattern = tempPatternFor(dest)
 	}
 	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
@@ -336,6 +358,21 @@ func openTempForWrite(dest string, mode os.FileMode, pattern string) (*os.File, 
 		return nil, err
 	}
 	return tmp, nil
+}
+
+// tempNameMaxBase caps the part of a temp name taken from the
+// destination, leaving room for the ".tmp.<random>" suffix within the
+// usual 255-byte file name limit.
+const tempNameMaxBase = 200
+
+// tempPatternFor returns the [os.CreateTemp] pattern for a temp file
+// beside dest: `<basename>.tmp.*`, with a long basename shortened.
+func tempPatternFor(dest string) string {
+	base := filepath.Base(dest)
+	if len(base) > tempNameMaxBase {
+		base = strings.ToValidUTF8(base[:tempNameMaxBase], "")
+	}
+	return base + ".tmp.*"
 }
 
 // Append appends data to path. It is not atomic with respect to other
@@ -458,10 +495,8 @@ func OpenWrite(path string, opts ...WriteOption) (*os.File, func() error, error)
 				return
 			}
 			if cfg.hasBackup && existed {
-				backup := p + cfg.backup
-				_ = os.Remove(backup)
-				if rerr := osRename(p, backup); rerr != nil {
-					result = wrapPathError(opRename, p, rerr)
+				if berr := backupExisting(p, p+cfg.backup); berr != nil {
+					result = berr
 					return
 				}
 			}

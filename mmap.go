@@ -30,6 +30,13 @@ type Mapping struct {
 // (mmap(2) on POSIX, MapViewOfFile on Windows). A directory returns an
 // error wrapping [ErrIsDir]; an empty file cannot be mapped and also
 // returns an error.
+//
+// Map only files nothing else will shrink while they are mapped. If
+// another process truncates the file, reading the part of the mapping
+// past the new end raises SIGBUS, which crashes the program and cannot
+// be recovered from unless the reading goroutine has called
+// [runtime/debug.SetPanicOnFault](true); then it is a panic that
+// recover can catch. (Windows refuses to truncate a mapped file.)
 func Mmap(path string) (*Mapping, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -58,7 +65,8 @@ func Mmap(path string) (*Mapping, error) {
 }
 
 // Data returns the mapped byte slice. The memory is read-only: writing
-// to the slice crashes the program.
+// to the slice crashes the program, and so does reading it after the
+// file was truncated (see [Mmap]).
 func (m *Mapping) Data() []byte {
 	if m == nil {
 		return nil

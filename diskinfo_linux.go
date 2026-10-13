@@ -4,6 +4,7 @@ package fs
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,16 +48,22 @@ func readMountInfo() ([]mountInfoEntry, error) {
 		return nil, err //nolint:wrapcheck // outer caller wraps
 	}
 	defer f.Close()
+	return parseMountInfo(f)
+}
 
+// parseMountInfo parses mountinfo lines from r. The kernel escapes
+// space, tab, newline and backslash in the mount point as \040, \011,
+// \012 and \134; they are unescaped.
+func parseMountInfo(r io.Reader) ([]mountInfoEntry, error) {
 	var out []mountInfoEntry
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 7 {
 			continue
 		}
-		mp := fields[4]
+		mp := unescapeMountField(fields[4])
 		sepIdx := -1
 		for i, fld := range fields {
 			if fld == "-" {
@@ -72,8 +79,30 @@ func readMountInfo() ([]mountInfoEntry, error) {
 			fsType:     fields[sepIdx+1],
 		})
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err //nolint:wrapcheck // outer caller wraps
+	}
 	return out, nil
 }
+
+// unescapeMountField decodes the kernel's \NNN octal escapes.
+func unescapeMountField(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) && isOctal(s[i+1]) && isOctal(s[i+2]) && isOctal(s[i+3]) {
+			b.WriteByte((s[i+1]-'0')<<6 | (s[i+2]-'0')<<3 | (s[i+3] - '0'))
+			i += 3
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isOctal(c byte) bool { return c >= '0' && c <= '7' }
 
 // resolveMountInfo finds the longest-prefix mountInfoEntry covering
 // path. Path is canonicalized via Abs+EvalSymlinks so the comparison

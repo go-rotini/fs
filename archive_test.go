@@ -5,12 +5,14 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -705,9 +707,9 @@ func TestFault_CreateArchive_Tar_ReadError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	orig := fileRead
-	t.Cleanup(func() { fileRead = orig })
-	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	orig := fileReader
+	t.Cleanup(func() { fileReader = orig })
+	fileReader = func(*os.File) io.Reader { return iotest.ErrReader(errInjected) }
 	_ = h
 
 	out := filepath.Join(dir, "out.tar")
@@ -727,9 +729,9 @@ func TestFault_CreateArchive_Zip_ReadError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "f"), []byte("xy"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	orig := fileRead
-	t.Cleanup(func() { fileRead = orig })
-	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	orig := fileReader
+	t.Cleanup(func() { fileReader = orig })
+	fileReader = func(*os.File) io.Reader { return iotest.ErrReader(errInjected) }
 	_ = h
 
 	out := filepath.Join(dir, "out.zip")
@@ -1240,5 +1242,61 @@ func TestCreateArchive_TarGz_FilterFile(t *testing.T) {
 		}))
 	if err != nil {
 		t.Fatalf("CreateArchiveFile: %v", err)
+	}
+}
+
+func TestCreateArchiveFile_OutputInsideRoot(t *testing.T) {
+	t.Parallel()
+	for _, format := range []ArchiveFormat{ArchiveFormatTar, ArchiveFormatTarGz, ArchiveFormatZip} {
+		dir := t.TempDir()
+		for i := 0; i < 3; i++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d", i)), bytes.Repeat([]byte("x"), 100000), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out := filepath.Join(dir, "zz-backup.archive")
+		if err := CreateArchiveFile(out, dir, WithArchiveFormat(format)); err != nil {
+			t.Fatalf("%v: %v", format, err)
+		}
+		dst := t.TempDir()
+		if err := ExtractArchiveFile(out, dst); err != nil {
+			t.Fatalf("%v: extract: %v", format, err)
+		}
+		if Exists(filepath.Join(dst, "zz-backup.archive")) {
+			t.Errorf("%v: the archive contains itself", format)
+		}
+		if !Exists(filepath.Join(dst, "f2")) {
+			t.Errorf("%v: f2 missing", format)
+		}
+	}
+}
+
+func TestCreateArchive_TarFileGrowingDuringWalk(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "app.log")
+	if err := os.WriteFile(log, []byte("line1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The filter runs after the entry's size is taken; growing the file
+	// there is a file being appended to while it is archived.
+	grow := func(path string, _ os.FileInfo) bool {
+		if path == log {
+			_ = AppendString(log, "line2\n")
+		}
+		return true
+	}
+	var buf bytes.Buffer
+	if err := CreateArchive(&buf, dir, WithArchiveCreateFilter(grow)); err != nil {
+		t.Fatalf("CreateArchive: %v", err)
+	}
+	tr := tar.NewReader(&buf)
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(tr)
+	if hdr.Name != "app.log" || string(body) != "line1\n" {
+		t.Errorf("entry %q = %q; want app.log = line1", hdr.Name, body)
 	}
 }

@@ -563,3 +563,30 @@ func TestSameFile_MissingB(t *testing.T) {
 		t.Fatal("expected error from SameFile on missing b")
 	}
 }
+
+func TestSetMtimeAtime_LeaveTheOtherTime(t *testing.T) {
+	t.Parallel()
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	m := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
+	if err := SetTimes(file, a, m); err != nil {
+		t.Fatal(err)
+	}
+	m2 := m.Add(time.Hour)
+	if err := SetMtime(file, m2); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Atime(file); !got.Equal(a) {
+		t.Errorf("SetMtime changed atime to %v; want %v", got, a)
+	}
+	a2 := a.Add(time.Hour)
+	if err := SetAtime(file, a2); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Mtime(file); !got.Equal(m2) {
+		t.Errorf("SetAtime changed mtime to %v; want %v", got, m2)
+	}
+}

@@ -54,10 +54,12 @@ func (e *PathError) Unwrap() error {
 	return e.Cause
 }
 
-// Is reports true for any *PathError target, and otherwise matches
-// target against the cause chain, so callers can compare against
-// either this package's sentinels or the stdlib's
+// Is reports true for any *PathError target, whatever its fields, and
+// otherwise matches target against the cause chain, so callers can
+// compare against either this package's sentinels or the stdlib's
 // [io/fs.ErrNotExist] / [io/fs.ErrPermission] / [io/fs.ErrExist].
+// errors.Is(err, &PathError{...}) therefore only tests the type; use
+// [errors.As] to inspect Op, Path or Cause.
 func (e *PathError) Is(target error) bool {
 	if e == nil {
 		return target == nil
@@ -124,13 +126,13 @@ func (m *MultiError) Append(err error) {
 // errors.Is(err, io/fs.ErrNotExist) both match.
 var (
 	// ErrNotFound matches stdlib [io/fs.ErrNotExist] via wrapping.
-	ErrNotFound = fmt.Errorf("fs: not found: %w", stdfs.ErrNotExist)
+	ErrNotFound error = &stdSentinelError{msg: "fs: not found", std: stdfs.ErrNotExist}
 
 	// ErrAlreadyExists matches stdlib [io/fs.ErrExist] via wrapping.
-	ErrAlreadyExists = fmt.Errorf("fs: already exists: %w", stdfs.ErrExist)
+	ErrAlreadyExists error = &stdSentinelError{msg: "fs: already exists", std: stdfs.ErrExist}
 
 	// ErrPermission matches stdlib [io/fs.ErrPermission] via wrapping.
-	ErrPermission = fmt.Errorf("fs: permission denied: %w", stdfs.ErrPermission)
+	ErrPermission error = &stdSentinelError{msg: "fs: permission denied", std: stdfs.ErrPermission}
 
 	// ErrNotDir is returned when a directory was expected but the
 	// path is something else.
@@ -197,6 +199,17 @@ var (
 	ErrInvalidByteSize = errors.New("fs: invalid byte size")
 )
 
+// stdSentinelError is a sentinel that wraps its [io/fs] equivalent
+// without repeating that error's text, which the OS error it is
+// joined with already says.
+type stdSentinelError struct {
+	msg string
+	std error
+}
+
+func (e *stdSentinelError) Error() string { return e.msg }
+func (e *stdSentinelError) Unwrap() error { return e.std }
+
 // FormatError renders err into a human-readable string. *MultiError
 // renders each branch on its own line; *PathError renders as
 // "fs: <op> <path>: <cause>". Pass color=true to wrap each message in
@@ -245,11 +258,24 @@ func wrapPathError(op, path string, cause error) error {
 	return &PathError{Op: op, Path: path, Cause: normalizeCause(cause)}
 }
 
+// withOp reports err, a [*PathError] from a helper, under op.
+func withOp(op string, err error) error {
+	if pe, ok := errors.AsType[*PathError](err); ok {
+		pe.Op = op
+	}
+	return err
+}
+
 // normalizeCause replaces a recognized stdlib sentinel in cause's
 // chain with the package's wrapping form, so a single errors.Is call
-// matches both. Returns cause unchanged for unrecognized errors.
+// matches both. Returns cause unchanged for unrecognized errors and
+// for causes that already carry one of the package's sentinels.
 func normalizeCause(cause error) error {
 	switch {
+	case errors.Is(cause, ErrNotFound), errors.Is(cause, ErrNotEmpty),
+		errors.Is(cause, ErrAlreadyExists), errors.Is(cause, ErrPermission),
+		errors.Is(cause, ErrCrossDevice):
+		return cause
 	case errors.Is(cause, stdfs.ErrNotExist):
 		return fmt.Errorf("%w: %w", ErrNotFound, cause)
 	case isNotEmptyErrno(cause):

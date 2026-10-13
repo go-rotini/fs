@@ -1276,3 +1276,92 @@ func TestWriteIfChanged(t *testing.T) {
 		t.Fatalf("content = %q, want v2", got)
 	}
 }
+
+func TestWriteFile_BackupKeepsDestinationInPlace(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(path, []byte("v0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Check, at the moment the new file is renamed in, that the path
+	// still holds the old file.
+	var during []byte
+	osRename = func(from, to string) error {
+		if to == path {
+			during, _ = os.ReadFile(path)
+		}
+		return h.origRename(from, to)
+	}
+	if err := WriteFile(path, []byte("v1"), WithBackup("")); err != nil {
+		t.Fatal(err)
+	}
+	h.restore()
+	if string(during) != "v0" {
+		t.Errorf("path held %q just before the rename; want v0 (it must never go missing)", during)
+	}
+	got, _ := os.ReadFile(path)
+	bak, _ := os.ReadFile(path + ".bak")
+	if string(got) != "v1" || string(bak) != "v0" {
+		t.Errorf("path=%q backup=%q; want v1 and v0", got, bak)
+	}
+
+	// Without hard links the backup is a copy.
+	osLink = func(string, string) error { return errInjected }
+	f, finalize, err := OpenWrite(path, WithBackup(".old"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("v2")
+	if err := finalize(); err != nil {
+		t.Fatal(err)
+	}
+	h.restore()
+	got, _ = os.ReadFile(path)
+	bak, _ = os.ReadFile(path + ".old")
+	if string(got) != "v2" || string(bak) != "v1" {
+		t.Errorf("copy fallback: path=%q backup=%q; want v2 and v1", got, bak)
+	}
+}
+
+func TestWriteFile_LongName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, strings.Repeat("a", 250))
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Skipf("file system can't hold the name: %v", err)
+	}
+	if err := WriteFile(path, []byte("y")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := CopyFile(path, filepath.Join(dir, strings.Repeat("b", 250))); err != nil {
+		t.Fatalf("CopyFile: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "y" {
+		t.Errorf("content = %q; want y", got)
+	}
+}
+
+func TestWriteFileExclusive_RemovesFileOnSyncOrCloseFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(h *faultyHooks)
+	}{
+		{"sync", func(h *faultyHooks) { h.failSyncAlways() }},
+		{"close", func(h *faultyHooks) { h.failCloseAlways() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFaultyHooks(t)
+			path := filepath.Join(t.TempDir(), "f")
+			tc.inject(h)
+			err := WriteFileExclusive(path, []byte("x"), WithSync(true))
+			h.restore()
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("err = %v; want the injected failure", err)
+			}
+			if Exists(path) {
+				t.Error("partial file left behind")
+			}
+		})
+	}
+}

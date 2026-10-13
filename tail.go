@@ -182,6 +182,18 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 			return
 		}
 		if rotated {
+			// The old descriptor still reads the rotated-away file:
+			// finish the lines written to it since the last poll.
+			stop, derr := drainLines(reader, &partial, yield)
+			if stop {
+				_ = newF.Close()
+				return
+			}
+			if derr != nil {
+				_ = newF.Close()
+				yield("", wrapPathError(opTail, path, derr))
+				return
+			}
 			_ = f.Close()
 			f = newF
 			info = newInfo

@@ -23,9 +23,9 @@ func diskUsageOf(path string) (DiskUsage, error) {
 	if err != nil {
 		return DiskUsage{}, err
 	}
-	bsize := st.Frsize
+	bsize := uint64(st.Frsize) //nolint:unconvert // uint32 on 32-bit NetBSD
 	if bsize == 0 {
-		bsize = st.Bsize
+		bsize = uint64(st.Bsize) //nolint:unconvert // uint32 on 32-bit NetBSD
 	}
 	return DiskUsage{
 		TotalBytes:     bsize * st.Blocks,

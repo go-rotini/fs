@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -162,6 +163,87 @@ func TestExtractArchive_HardlinkThroughSymlinkRefused(t *testing.T) {
 	assertAbsent(t, filepath.Join(dst, "h"))
 }
 
+// A hard link to a symlink the archive made copies the link, and the copy is checked from its
+// own directory: a/l -> .. is inside (dst), but the same text at h leads to dst's parent.
+func TestExtractArchive_HardlinkToSymlinkChecked(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	_, dst := sandbox(t)
+	err := ExtractArchive(tarOf(t,
+		tarEntry{name: "a/l", link: "..", typ: tar.TypeSymlink},
+		tarEntry{name: "h", link: "a/l", typ: tar.TypeLink},
+	), dst)
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("got %v, want ErrEscapesRoot", err)
+	}
+	assertNoEscapingLinks(t, dst)
+}
+
+// A hard link to a symlink that stays inside is extracted as a symlink with the same text.
+func TestExtractArchive_HardlinkToInsideSymlink(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	_, dst := sandbox(t)
+	err := ExtractArchive(tarOf(t,
+		tarEntry{name: "f", body: "data"},
+		tarEntry{name: "l", link: "f", typ: tar.TypeSymlink},
+		tarEntry{name: "h", link: "l", typ: tar.TypeLink},
+	), dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(filepath.Join(dst, "h")); err != nil || target != "f" {
+		t.Errorf("h -> %q, %v; want a symlink to f", target, err)
+	}
+}
+
+// A link made to lead outside by a later entry is removed even when a still later entry fails
+// the extraction.
+func TestExtractArchive_FailedExtractChecksLinks(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	_, dst := sandbox(t)
+	err := ExtractArchive(tarOf(t,
+		tarEntry{name: "l", link: "s/..", typ: tar.TypeSymlink}, // s missing: leads to dst
+		tarEntry{name: "s", link: ".", typ: tar.TypeSymlink},    // now l leads to dst's parent
+		tarEntry{name: "../evil", body: "x"},                    // fails the extraction
+	), dst)
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("got %v, want ErrEscapesRoot", err)
+	}
+	assertNoEscapingLinks(t, dst)
+}
+
+// assertNoEscapingLinks fails the test for every symlink in dst that resolves outside it.
+func assertNoEscapingLinks(t *testing.T, dst string) {
+	t.Helper()
+	if err := escapingLink(dst); err != nil {
+		t.Error(err)
+	}
+}
+
+// escapingLink returns an error naming the first symlink under dst that resolves outside dst.
+func escapingLink(dst string) error {
+	root, err := realPath(dst, 0)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(dst, func(p string, d os.DirEntry, werr error) error {
+		if werr != nil || d.Type()&os.ModeSymlink == 0 {
+			return nil //nolint:nilerr // only links matter here
+		}
+		resolved, rerr := realPath(p, 0)
+		if rerr != nil {
+			return nil //nolint:nilerr // a loop leads nowhere
+		}
+		if ok, _ := IsSubpath(root, resolved); !ok {
+			target, _ := os.Readlink(p)
+			return fmt.Errorf("%s -> %s resolves outside the destination, to %s", p, target, resolved)
+		}
+		return nil
+	})
+}
+
 // Links that stay inside still extract, whatever order the archive lists them in.
 func TestExtractArchive_InsideSymlinksExtract(t *testing.T) {
 	skipWithoutSymlinks(t)
@@ -216,5 +298,77 @@ func TestExtractArchive_SymlinkLoop(t *testing.T) {
 	err := ExtractArchive(tarOf(t, tarEntry{name: "a/f", body: "x"}), dst)
 	if !errors.Is(err, ErrSymlinkLoop) {
 		t.Errorf("got %v, want ErrSymlinkLoop", err)
+	}
+}
+
+func TestLinkDestination(t *testing.T) {
+	t.Parallel()
+	type tc struct {
+		dir, target, want string
+		escapes           bool
+	}
+	cases := []tc{
+		{dir: "/a/b", target: "c", want: "/a/b/c"},
+		{dir: "/a/b", target: "../c", want: "/a/b/../c"},
+		{dir: "/a/b", target: "/etc/passwd", want: "/etc/passwd"},
+	}
+	if runtime.GOOS == "windows" {
+		cases = []tc{
+			{dir: `C:\a\b`, target: `c`, want: `C:\a\b\c`},
+			{dir: `C:\a\b`, target: `D:\x`, want: `D:\x`},
+			{dir: `C:\a\b`, target: `\Users\victim`, want: `C:\Users\victim`},
+			{dir: `C:\a\b`, target: `/Users/victim`, want: `C:/Users/victim`},
+			{dir: `\\srv\share\a`, target: `\x`, want: `\\srv\share\x`},
+			{dir: `C:\a\b`, target: `C:x`, escapes: true},
+			{dir: `C:\a\b`, target: `D:x`, escapes: true},
+		}
+	}
+	for _, c := range cases {
+		got, err := linkDestination(c.dir, c.target)
+		if c.escapes {
+			if !errors.Is(err, ErrEscapesRoot) {
+				t.Errorf("linkDestination(%q, %q) = %q, %v; want ErrEscapesRoot", c.dir, c.target, got, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("linkDestination(%q, %q) = %q, %v; want %q", c.dir, c.target, got, err, c.want)
+		}
+	}
+}
+
+// A rooted (`\x`, `/x`) or drive-relative (`C:x`) symlink target is not relative to the
+// link's directory on Windows; neither may lead an entry outside the destination.
+func TestExtractArchive_RootedSymlinkTargets(t *testing.T) {
+	t.Parallel()
+	parent, dst := sandbox(t)
+	probe := filepath.Join(parent, "probe")
+	if err := os.Symlink(dst, probe); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	_ = os.Remove(probe)
+
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rooted := filepath.ToSlash(outside[len(filepath.VolumeName(outside)):]) // "/…/outside", no volume
+	targets := []string{rooted}
+	if runtime.GOOS == "windows" {
+		targets = append(targets, `\`+outside[len(filepath.VolumeName(outside))+1:], filepath.VolumeName(outside)+"x")
+	}
+	for i, target := range targets {
+		d := filepath.Join(dst, string(rune('a'+i)))
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := ExtractArchive(tarOf(t,
+			tarEntry{name: "link", link: target, typ: tar.TypeSymlink},
+			tarEntry{name: "link/payload", body: "escaped"},
+		), d)
+		if !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("target %q: got %v, want ErrEscapesRoot", target, err)
+		}
+		assertAbsent(t, filepath.Join(outside, "payload"))
 	}
 }

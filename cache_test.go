@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	stdfs "io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -597,5 +599,103 @@ func TestIsValidVersion(t *testing.T) {
 		if isValidVersion(v) {
 			t.Errorf("isValidVersion(%q) = true; want false", v)
 		}
+	}
+}
+
+func TestCache_SetUnderCapDoesNotRescan(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX directory permissions enforced")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := NewCache(dir, WithCacheMaxBytes(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set("k", []byte("seed")); err != nil {
+		t.Fatal(err)
+	}
+	// With the directory unlistable, a walk would fail; a Set under the
+	// cap must not need one.
+	if err := os.Chmod(dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	for i := range 20 {
+		if err := c.Set("k", []byte(fmt.Sprintf("value %d", i))); err != nil {
+			t.Fatalf("Set %d: %v", i, err)
+		}
+	}
+}
+
+func TestCache_RunningTotalEnforcesCap(t *testing.T) {
+	t.Parallel()
+	c, err := NewCache(t.TempDir(), WithCacheMaxBytes(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	val := bytes.Repeat([]byte("x"), 30)
+	for i := range 10 {
+		if err := c.Set(fmt.Sprint(i), val); err != nil {
+			t.Fatal(err)
+		}
+		st, err := c.Stats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Bytes > 100 {
+			t.Fatalf("after Set %d: %d bytes stored; cap is 100", i, st.Bytes)
+		}
+	}
+	// Overwrites and deletes keep the total right: three 30-byte
+	// entries fit, a fourth doesn't.
+	if err := c.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"a", "b", "c", "a", "b"} {
+		if err := c.Set(k, val); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Delete("c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set("d", val); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := c.Stats(); st.Entries != 3 {
+		t.Errorf("entries = %d; want 3 (a, b, d fit under the cap)", st.Entries)
+	}
+}
+
+func TestCache_Perm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "c")
+	c, err := NewCache(dir, WithCachePerm(0o600))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set("k", []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	err = filepath.WalkDir(dir, func(p string, d stdfs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, _ := d.Info()
+		want := os.FileMode(0o600)
+		if d.IsDir() {
+			want = 0o700
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode = %v; want %v", p, info.Mode().Perm(), want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

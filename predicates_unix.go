@@ -1,9 +1,8 @@
-//go:build !windows
+//go:build unix
 
 package fs
 
 import (
-	"errors"
 	"syscall"
 )
 
@@ -52,13 +51,3 @@ const (
 	wOK = 0x2 // writable
 	rOK = 0x4 // readable
 )
-
-// isNotEmptyErrno reports whether err is the OS's directory-not-empty error.
-func isNotEmptyErrno(err error) bool {
-	return errors.Is(err, syscall.ENOTEMPTY)
-}
-
-// isCrossDeviceErrno reports whether err is the OS's cross-filesystem rename or link error.
-func isCrossDeviceErrno(err error) bool {
-	return errors.Is(err, syscall.EXDEV)
-}

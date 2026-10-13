@@ -19,10 +19,11 @@ package fs
 //
 //   - Linux: parses `starttime` (field 22) from /proc/<pid>/stat.
 //     The value is jiffies-since-boot.
-//   - Darwin and the BSDs: shells out to `ps -o lstart=`.
+//   - Darwin and the BSDs: runs `/bin/ps -o lstart=`.
 //   - Windows: GetProcessTimes via kernel32.dll for the creation
 //     FILETIME (100-nanosecond ticks since 1601 UTC), rendered in
 //     decimal.
+//   - Elsewhere: returns an error wrapping [ErrNotSupported].
 //
 // Returns an empty string and a non-nil error if pid <= 0 (wrapping
 // [ErrInvalidPath]) or the OS-specific probe fails, for example

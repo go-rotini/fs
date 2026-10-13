@@ -17,14 +17,30 @@
 //
 // # Dependencies
 //
-// All production code lives in this one package. It imports only the
-// standard library, except that mmap_windows.go imports
-// [golang.org/x/sys/windows] for the CreateFileMapping, MapViewOfFile
-// and UnmapViewOfFile wrappers used by [Mmap], and the NetBSD and
-// OpenBSD files import golang.org/x/sys/unix for statvfs(2) and the
-// libc openat(2) wrapper. No x/sys types appear in the public API. Other
-// platform-specific calls (flock and LockFileEx for locks, mmap on
-// POSIX) go through stdlib's [syscall] package.
+// All production code lives in this one package. It imports the
+// standard library and golang.org/x/sys: [golang.org/x/sys/windows]
+// for the mapping calls behind [Mmap] on Windows, and
+// golang.org/x/sys/unix on POSIX systems for open(2)/openat(2) with
+// O_NOFOLLOW and O_CLOEXEC, flock(2), fchownat(2), termios queries
+// and the statfs family. No x/sys types appear in the public API.
+//
+// # Platforms
+//
+// Linux, macOS, Windows, FreeBSD, NetBSD, OpenBSD, DragonFly BSD,
+// Solaris and illumos, and AIX are supported. On Solaris, illumos and
+// AIX, [ProcessStartTime] returns [ErrNotSupported]; on AIX, [MountPoint] and
+// [FilesystemType] return [ErrNotSupported], and locks use fcntl(2)
+// record locks, which belong to the process rather than the open
+// file: two locks on one path from the same process (two goroutines,
+// or two [Apply] or [Resume] calls on one journal) both succeed
+// instead of waiting, and closing any descriptor of the locked file,
+// even one a read of it opened, releases the lock. The package also
+// builds for js/wasm, wasip1 and Plan 9, where locking, memory
+// mapping, [OpenNoFollow], [OpenAt], disk queries and
+// [ProcessStartTime] return [ErrNotSupported] and the access
+// predicates judge from permission bits. What takes a lock fails the
+// same way there: [Apply], [Resume], [Rollback], [PIDLock] and
+// writes with [WithLocked].
 //
 // The package does not import [testing]. The test helpers (TestHarness,
 // MockFS, WithTempEnv, TempFileT, TempDirT) live in the sub-package
@@ -93,9 +109,16 @@
 //     default ([WithDebounce]). Tests that need immediate event
 //     visibility should pass WithDebounce(0).
 //   - The watcher compares file size and modification time from
-//     [os.Lstat]. On filesystems that round mtime to whole seconds
-//     (FAT, network-attached SMB), two writes within one second that
-//     leave the size unchanged can be missed.
+//     [os.Lstat], and, except on Windows, the file's device and inode,
+//     so a file replaced by another with the same size and mtime is
+//     still reported. On filesystems that round mtime to whole seconds
+//     (FAT, network-attached SMB), two in-place writes within one
+//     second that leave the size unchanged can be missed, as can such
+//     a replacement on Windows.
+//   - A subscription's buffer holds one event by default; events that
+//     don't fit are dropped and the subscriber is sent
+//     [WatchOverflow]. Directory watches usually want a larger
+//     [WithBufferSize].
 //   - [Hash], [HashCompare], and [HashWriter] expose MD5 and SHA-1
 //     for non-security uses (legacy compat, content-addressed
 //     caches); they are not secure for integrity defense against

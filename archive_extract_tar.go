@@ -10,26 +10,33 @@ import (
 
 // extractTar reads a tar stream from r and writes entries under root. Every entry's name and
 // link target must stay inside root: by name, and as the path resolves on disk through the
-// symlinks there at that moment, the archive's own included. Once every entry is written, each
-// symlink the archive made is checked again, since a later entry can change where it leads.
+// symlinks there at that moment, the archive's own included. When the extraction ends, whether
+// it finished or failed, each symlink the archive made is checked again, since a later entry can
+// change where it leads.
 func extractTar(r io.Reader, root extractRoot, cfg archiveExtractOptions) error {
-	dst := root.dir
+	var links madeLinks
+	err := extractTarEntries(r, root, &links, cfg)
+	if cerr := links.check(root); cerr != nil {
+		return errors.Join(err, cerr)
+	}
+	return err
+}
+
+func extractTarEntries(r io.Reader, root extractRoot, links *madeLinks, cfg archiveExtractOptions) error {
 	tr := tar.NewReader(r)
 	var used int64
-	var links madeLinks
-
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return links.check(root)
+			return nil
 		}
 		if err != nil {
-			return wrapPathError(opExtractArchive, dst, err)
+			return wrapPathError(opExtractArchive, root.dir, err)
 		}
 		if cfg.filter != nil && !cfg.filter(tarHeaderToArchiveHeader(hdr)) {
 			continue
 		}
-		if err := extractTarEntry(hdr, tr, root, &links, cfg, &used); err != nil {
+		if err := extractTarEntry(hdr, tr, root, links, cfg, &used); err != nil {
 			return err
 		}
 	}
@@ -59,7 +66,7 @@ func extractTarEntry(hdr *tar.Header, tr *tar.Reader, root extractRoot, links *m
 		}
 		return links.make(root, target, hdr.Linkname)
 	case tar.TypeLink:
-		return extractTarHardlink(hdr, root, target)
+		return extractTarHardlink(hdr, root, links, target)
 	default:
 		// Skip device nodes, FIFOs, etc.; not safe to recreate
 		// from untrusted archives.
@@ -91,13 +98,26 @@ func extractTarRegular(hdr *tar.Header, tr *tar.Reader, root extractRoot, target
 
 // extractTarHardlink links target to an entry already extracted. Both paths must resolve
 // inside root, so a link can't reach a file outside it through a symlink already in the tree.
-func extractTarHardlink(hdr *tar.Header, root extractRoot, target string) error {
+// A hard link to a symlink is made as a new symlink with the same text, checked from its own
+// directory like any symlink entry: link(2) does not follow a symlink on every platform, and a
+// copy of a relative link read from another directory can lead somewhere else.
+func extractTarHardlink(hdr *tar.Header, root extractRoot, links *madeLinks, target string) error {
 	linkTarget, lerr := resolveEntryPath(root.dir, hdr.Linkname)
 	if lerr != nil {
 		return wrapPathError(opExtractArchive, hdr.Linkname, lerr)
 	}
 	if err := root.confine(linkTarget); err != nil {
 		return err
+	}
+	if info, err := osLstat(linkTarget); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		text, rerr := osReadlink(linkTarget)
+		if rerr != nil {
+			return wrapPathError(opExtractArchive, linkTarget, rerr)
+		}
+		if err := validateTarSymlinkTarget(root.dir, target, text); err != nil {
+			return wrapPathError(opExtractArchive, target, err)
+		}
+		return links.make(root, target, text)
 	}
 	if err := prepareFile(root, target); err != nil {
 		return err
@@ -114,18 +134,14 @@ func extractTarHardlink(hdr *tar.Header, root extractRoot, target string) error 
 // would not point outside dst once resolved relative to its own
 // directory.
 func validateTarSymlinkTarget(dst, linkPath, linkname string) error {
-	// linkname may be relative or absolute. Resolve it against
-	// linkPath's directory and ensure the resulting path is still
-	// under dst.
-	var resolved string
-	if filepath.IsAbs(linkname) {
-		// Absolute symlink targets are typically dangerous; require
-		// them to fall inside dst.
-		resolved = filepath.Clean(linkname)
-	} else {
-		resolved = filepath.Clean(filepath.Join(filepath.Dir(linkPath), linkname))
+	// linkname may be relative or absolute (on Windows also rooted,
+	// `\x`, which is absolute on the link's volume). Resolve it the
+	// way the OS will and ensure the result is still under dst.
+	resolved, err := linkDestination(filepath.Dir(linkPath), linkname)
+	if err != nil {
+		return err
 	}
-	if err := MustBeChildOf(dst, resolved); err != nil {
+	if err := MustBeChildOf(dst, filepath.Clean(resolved)); err != nil {
 		return ErrEscapesRoot
 	}
 	return nil

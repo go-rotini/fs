@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 const (
@@ -95,7 +94,7 @@ func isSymlinkLoop(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, syscall.ELOOP) {
+	if isLoopErrno(err) {
 		return true
 	}
 	// filepath's internal sentinel is unexported; match by message.
@@ -106,7 +105,7 @@ func isSymlinkLoop(err error) bool {
 	// errors.Is matching directly. Walk the chain.
 	var pe *stdfs.PathError
 	if errors.As(err, &pe) && pe.Err != nil {
-		if errors.Is(pe.Err, syscall.ELOOP) {
+		if isLoopErrno(pe.Err) {
 			return true
 		}
 	}

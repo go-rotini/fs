@@ -3,6 +3,8 @@ package fs
 import (
 	"errors"
 	stdfs "io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -274,12 +276,12 @@ func TestNormalizeCause_Permission(t *testing.T) {
 
 func TestNormalizeCause_EXDEV(t *testing.T) {
 	t.Parallel()
-	got := normalizeCause(syscall.EXDEV)
+	got := normalizeCause(errTestEXDEV)
 	if !errors.Is(got, ErrCrossDevice) {
 		t.Error("normalizeCause(EXDEV) should match ErrCrossDevice")
 	}
-	if !errors.Is(got, syscall.EXDEV) {
-		t.Error("normalizeCause(EXDEV) should still match syscall.EXDEV")
+	if !errors.Is(got, errTestEXDEV) {
+		t.Error("normalizeCause(EXDEV) should still match errTestEXDEV")
 	}
 }
 
@@ -347,5 +349,45 @@ func TestWrapPathError_NonNil(t *testing.T) {
 	}
 	if pe.Op != "op" || pe.Path != "/p" || pe.Cause != cause {
 		t.Errorf("got %+v, want Op=op Path=/p Cause=inner", pe)
+	}
+}
+
+func TestWrapPathError_DoesNotRepeatSentinel(t *testing.T) {
+	t.Parallel()
+	inner := wrapPathError("inner", "/p", stdfs.ErrExist)
+	outer := wrapPathError("outer", "/p", inner)
+	if n := strings.Count(outer.Error(), "fs: already exists"); n != 1 {
+		t.Errorf("%q mentions the sentinel %d times; want 1", outer, n)
+	}
+	if !errors.Is(outer, ErrAlreadyExists) || !errors.Is(outer, stdfs.ErrExist) {
+		t.Errorf("%v lost its sentinels", outer)
+	}
+	if n := strings.Count(wrapPathError("op", "/p", ErrNotFound).Error(), "fs: not found"); n != 1 {
+		t.Errorf("wrapping ErrNotFound repeats it %d times", n)
+	}
+}
+
+// A sentinel's text doesn't repeat its io/fs equivalent's, which the OS error it wraps already
+// says in its own words.
+func TestSentinels_TextOmitsStdlibPhrase(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		sentinel, std error
+		want          string
+	}{
+		{ErrNotFound, stdfs.ErrNotExist, "fs: not found"},
+		{ErrAlreadyExists, stdfs.ErrExist, "fs: already exists"},
+		{ErrPermission, stdfs.ErrPermission, "fs: permission denied"},
+	} {
+		if c.sentinel.Error() != c.want {
+			t.Errorf("%q, want %q", c.sentinel, c.want)
+		}
+		if !errors.Is(c.sentinel, c.std) {
+			t.Errorf("%q no longer matches %v", c.sentinel, c.std)
+		}
+	}
+	_, err := os.Open(filepath.Join(t.TempDir(), "missing"))
+	if msg := wrapPathError("read", "/p", err).Error(); strings.Contains(msg, stdfs.ErrNotExist.Error()) {
+		t.Errorf("%q repeats %q", msg, stdfs.ErrNotExist)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // ScaffoldExtract copies src into dst verbatim, without templating.
@@ -30,12 +31,17 @@ import (
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
 
+	marker := cfg.versionMarker
+	if marker == "." || marker == ".." || strings.ContainsAny(marker, `/\`) || filepath.Base(marker) != marker {
+		return wrapPathError(opScaffoldExtract, marker, ErrInvalidPath)
+	}
+
 	hash, err := scaffoldHashFS(src)
 	if err != nil {
 		return wrapPathError(opScaffoldExtract, dst, err)
 	}
 
-	markerPath := filepath.Join(dst, cfg.versionMarker)
+	markerPath := filepath.Join(dst, marker)
 	if existing, rerr := os.ReadFile(markerPath); rerr == nil && string(existing) == hash {
 		return nil // version unchanged
 	}
@@ -45,7 +51,8 @@ func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	}
 
 	// Write the marker. Use 0o644 + atomic write so an interrupted
-	// extract doesn't leave a half-written marker.
+	// extract doesn't leave a half-written marker; the rename also
+	// replaces a symlink at the marker path rather than following it.
 	if err := WriteFile(markerPath, []byte(hash)); err != nil {
 		return wrapPathError(opScaffoldExtract, markerPath, err)
 	}
@@ -147,7 +154,7 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 		if err != nil {
 			return wrapPathError(opScaffoldExtract, path, err)
 		}
-		if err := WriteFile(dstPath, data); err != nil {
+		if err := WriteFile(dstPath, data, scaffoldFileMode(src, path)...); err != nil {
 			return err
 		}
 		return nil

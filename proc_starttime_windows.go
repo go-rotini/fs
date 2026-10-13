@@ -4,7 +4,6 @@ package fs
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"syscall"
 	"unsafe"
@@ -27,7 +26,7 @@ func platformProcessStartTime(pid int) (string, error) {
 	if h == 0 {
 		return "", wrapPathError(opProcStartTime, strconv.Itoa(pid), callErr)
 	}
-	defer func() { _, _, _ = procCloseHandle.Call(h) }()
+	defer func() { _, _, _ = procCloseHandle.Call(h) }() //nolint:errcheck // a failed close only leaks the handle
 
 	var (
 		creation, exit, kernel, user syscall.Filetime
@@ -46,7 +45,9 @@ func platformProcessStartTime(pid int) (string, error) {
 	// Combine the two 32-bit halves into a single 64-bit tick count.
 	ticks := (uint64(creation.HighDateTime) << 32) | uint64(creation.LowDateTime)
 	if ticks == 0 {
-		return "", wrapPathError(opProcStartTime, strconv.Itoa(pid), errors.New("GetProcessTimes returned zero creation time"))
+		return "", wrapPathError(opProcStartTime, strconv.Itoa(pid), errZeroCreationTime)
 	}
-	return fmt.Sprintf("%d", ticks), nil
+	return strconv.FormatUint(ticks, 10), nil
 }
+
+var errZeroCreationTime = errors.New("fs: GetProcessTimes returned zero creation time")

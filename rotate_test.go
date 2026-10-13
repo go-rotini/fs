@@ -1,12 +1,14 @@
 package fs
 
 import (
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -355,4 +357,197 @@ func listRotated(t *testing.T, dir, basename string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func rotateDirBytes(t *testing.T, dir string) (total int64, all string) {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += int64(len(data))
+		all += string(data)
+	}
+	return total, all
+}
+
+func TestRotator_SameMillisecondKeepsEveryFile(t *testing.T) {
+	t.Parallel()
+	for _, compress := range []bool{false, true} {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "app.log")
+		fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		r, err := NewRotator(p, WithRotateClock(func() time.Time { return fixed }), WithRotateCompress(compress), WithRotateKeep(2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range []string{"first\n", "second\n", "third\n", "fourth\n", "fifth\n"} {
+			if _, err := r.Write([]byte(line)); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Rotate(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = r.Close()
+		ents, _ := os.ReadDir(dir)
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		// keep=2 must keep the two newest rotations.
+		if len(names) != 3 {
+			t.Fatalf("compress=%v: files = %v; want the live file and two rotated files", compress, names)
+		}
+		var rotated string
+		for _, n := range names {
+			if n == "app.log" {
+				continue
+			}
+			data, _ := os.ReadFile(filepath.Join(dir, n))
+			if compress {
+				zr, err := gzip.NewReader(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, _ = io.ReadAll(zr)
+			}
+			rotated += string(data)
+		}
+		if rotated != "fourth\nfifth\n" {
+			t.Errorf("compress=%v: rotated files hold %q; want the two newest (%v)", compress, rotated, names)
+		}
+	}
+}
+
+func TestRotator_RealClockBurstLosesNothing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	r, err := NewRotator(filepath.Join(dir, "app.log"), WithRotateMaxBytes(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 200
+	for i := 0; i < n; i++ {
+		if _, err := r.Write([]byte("0123456789")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = r.Close()
+	if total, _ := rotateDirBytes(t, dir); total != n*10 {
+		t.Errorf("%d of %d bytes remain", total, n*10)
+	}
+}
+
+func TestRotator_FollowsAnotherWritersRotation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "app.log")
+	a, err := NewRotator(p, WithRotateMaxBytes(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewRotator(p, WithRotateMaxBytes(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		_, _ = a.Write([]byte("aaaaaaaaa\n"))
+	}
+	_, _ = a.Write([]byte("A-after\n")) // rotates
+	_, _ = b.Write([]byte("B-after\n"))
+	_ = a.Close()
+	_ = b.Close()
+	live, _ := os.ReadFile(p)
+	if string(live) != "A-after\nB-after\n" {
+		t.Errorf("live file = %q; want both writers' lines after the rotation", live)
+	}
+	if total, _ := rotateDirBytes(t, dir); total != 100+8+8 {
+		t.Errorf("total bytes = %d; want 116", total)
+	}
+}
+
+func TestRotator_Perm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "app.log")
+	r, err := NewRotator(p, WithRotatePerm(0o600), WithRotateCompress(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = r.Write([]byte("x"))
+	if err := r.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		info, _ := e.Info()
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v; want 0600", e.Name(), info.Mode().Perm())
+		}
+	}
+}
+
+// A rotation whose rename fails leaves the Rotator writing to the file at path: the failing
+// Rotate returns the error, and later writes append to the same file.
+func TestFault_Rotator_FailedRotateKeepsWriting(t *testing.T) {
+	_ = newFaultyHooks(t)
+	path := filepath.Join(t.TempDir(), "app.log")
+	r, err := NewRotator(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := r.Write([]byte("one\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	failing := errors.New("rename refused")
+	orig := osRename
+	osRename = func(string, string) error { return failing }
+	if err := r.Rotate(); !errors.Is(err, failing) {
+		t.Fatalf("Rotate: got %v, want the rename error", err)
+	}
+	osRename = orig
+
+	if _, err := r.Write([]byte("two\n")); err != nil {
+		t.Fatalf("Write after a failed rotation: %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "one\ntwo\n" {
+		t.Errorf("live file = %q, want both lines", got)
+	}
+}
+
+// When a size-triggered rotation fails, the write still lands in the current file and the
+// rotation error is returned with it.
+func TestFault_Rotator_FailedSizeRotationKeepsLine(t *testing.T) {
+	_ = newFaultyHooks(t)
+	path := filepath.Join(t.TempDir(), "app.log")
+	r, err := NewRotator(path, WithRotateMaxBytes(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := r.Write([]byte("one\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	failing := errors.New("rename refused")
+	osRename = func(string, string) error { return failing }
+	n, err := r.Write([]byte("two\n"))
+	if n != 4 || !errors.Is(err, failing) {
+		t.Fatalf("Write = %d, %v; want 4 and the rename error", n, err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "one\ntwo\n" {
+		t.Errorf("live file = %q, want both lines", got)
+	}
 }

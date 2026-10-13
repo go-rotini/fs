@@ -6,21 +6,21 @@ This package is used as the default filesystem package for [rotini](https://gith
 
 ## Features
 
-- Atomic writes (temp file + `fsync` + rename + parent-dir `fsync`) via `WriteFile`, `WriteFileSecret`, `WriteFileExclusive`, `WriteString`, `Append`, with options `WithPerm`, `WithSync`, `WithBackup`, `WithMkdirAll`
+- Atomic writes (temp file + rename; `fsync` of the file and its directory when overwriting, or always with `WithSync(true)`) via `WriteFile`, `WriteIfChanged`, `WriteString`, `OpenWrite`, plus `WriteFileExclusive` and `Append`, with options `WithPerm`, `WithSync`, `WithBackup`, `WithMkdirAll`
 - Bounded reads (default 100 MiB, overridable with `WithMaxSize`) via `ReadFile`, `ReadLines`, `ReadFirstLine`, `OpenLines`, `OpenChunked`, `ReadAt`
 - Idempotent removal: `Remove`, `RemoveAll`, `RemoveContents`, plus symlink-safe `RemoveAllNoFollow`
 - Path safety primitives: `IsSubpath`, `MustBeChildOf`, `EvalSymlinksWithin`, `SanitizeFilename`, `IsReservedName`, `LongPath`
 - TOCTOU-safe open: `OpenNoFollow` (refuses final-component symlinks) and `OpenAt` (resolves through a held directory FD on POSIX)
 - Cross-platform user and system directories (XDG on Linux and the BSDs, Apple guidelines on macOS, `%APPDATA%` / `%LOCALAPPDATA%` / `%PROGRAMDATA%` on Windows): `Home`, `ConfigDir`, `CacheDir`, `DataDir`, `StateDir`, `RuntimeDir`, `ExecutableDir`, `BinaryPath`, plus `App*Dir(appName)` and `System*Dir(appName)` variants
-- Path expansion: `Expand` handles `~`, `~user`, `$VAR`, `${VAR}` with opt-in strict mode
+- Path expansion: `Expand` handles `~`, `~user`, `$VAR`, `${VAR}` and the shell operators `${VAR:-x}`, `${VAR-x}`, `${VAR:+x}`, `${VAR+x}`, `${VAR:?msg}`, `${VAR?msg}`, with opt-in strict mode
 - Find-up project discovery: `FindUp`, `FindUpAll`, `ProjectRoot`, `FirstExisting`
 - Directory walking: `Walk` with `WalkSkipHidden`, `WalkSkipNames`, `WalkSkipPatterns`, `WalkMaxDepth`, `WalkFollowSymlinks`, `WalkErrorHandler`, `WithWalkGitignore`; concurrent variant `WalkParallel(ctx, ...)`
 - Glob: `Match`, `Glob`, `GlobAny` with path expansion before matching
-- Atomic-rename-aware file watching: multi-subscriber broadcast, 75 ms trailing-edge debouncing, per-instance pluggable `slog.Logger`. v0.1 ships the polling backend; native inotify / kqueue / `ReadDirectoryChangesW` scheduled as a follow-up release
+- Atomic-rename-aware file watching by polling (`WithPolling`, 1 s default): multi-subscriber broadcast, 75 ms trailing-edge debouncing, a `WatchOverflow` event when a slow subscriber missed events, per-instance pluggable `slog.Logger`
 - Archive extraction and creation: tar / tar.gz / zip with path-confinement via `MustBeChildOf` (zip-slip / tar-slip defense), bounded via `WithArchiveMaxBytes` (default 10 GiB), entry-level filters
 - Scaffolding from `io/fs.FS` (typically `embed.FS`): `ScaffoldApply` with `text/template`-rendered paths and contents, conflict policies, and a `ScaffoldExtract` first-run resource-extraction variant
 - Advisory file locking: `Lock`, `LockShared`, `TryLock`, `LockTimeout`, `WithLock`, `IsLocked`, `PIDLock` with stale-lock reclamation and opt-in `WithPIDLockFingerprint` for recycled-PID defense; `syscall.Flock` on POSIX, `LockFileEx` on Windows
-- Directory-backed cache: `*Cache` with TTL, mtime-based eviction, size-bounded LRU, content-versioned namespaces, `Get` / `GetWithError` / `Set` / `Delete` / `Purge` / `Stats` / `Entries`
+- Directory-backed cache: `*Cache` with TTL, a size cap that evicts the least recently written entries, content-versioned namespaces, `Get` / `GetWithError` / `Set` / `Delete` / `Purge` / `Stats` / `Entries`
 - Tail-follow with rotation handling: `Tail(ctx, path) iter.Seq2[string, error]` detects rename-style rotation and in-place truncation via `os.SameFile`, reopens transparently (or opts into `ErrTailRotated` notifications)
 - Log rotation: `*Rotator` (`io.WriteCloser`) with size and age triggers, retention count, optional gzip compression of rotated files
 - Versioned backups: `WriteFileVersioned` / `ListVersions` / `RestoreVersion` with `WithVersionsKeep`, `WithVersionsMaxAge`, `WithVersionsPerm`, `WithVersionsMaxBytes`
@@ -38,7 +38,7 @@ This package is used as the default filesystem package for [rotini](https://gith
 - Bi-directional sentinel matching: `errors.Is(err, fs.ErrNotFound)` matches both the package sentinel AND stdlib's `io/fs.ErrNotExist`; `*MultiError` with Go 1.20 `Unwrap() []error`
 - Pluggable `slog.Logger` for `Apply` / `Cache` / `Rotator` debug output via package-level `SetLogger`
 - DoS protection: bounded reads by default, archive extraction size cap, plan/apply journal size split, content-search size cap, gitignore + workspace parser size limits
-- No runtime dependencies beyond the standard library and `golang.org/x/sys`; cross-platform on Linux, macOS, Windows, FreeBSD, NetBSD, OpenBSD
+- No runtime dependencies beyond the standard library and `golang.org/x/sys`; cross-platform on Linux, macOS, Windows, FreeBSD, NetBSD, OpenBSD, DragonFly BSD, Solaris/illumos and AIX, and builds for js/wasm, wasip1 and Plan 9 (where locking, mmap and disk queries return `ErrNotSupported`; see the package docs)
 
 ## Installation
 
@@ -69,7 +69,7 @@ func main() {
 
 	cfg := dir + "/config.toml"
 
-	// Atomic write: temp + fsync + rename + parent-dir fsync.
+	// Atomic write: temp file + rename.
 	if err := fs.WriteFile(cfg, []byte("[server]\nport = 8080\n")); err != nil {
 		log.Fatal(err)
 	}

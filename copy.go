@@ -7,6 +7,7 @@ import (
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -18,7 +19,20 @@ type copyOptions struct {
 	overwrite      bool
 	followSymlinks bool
 	preserveMtime  bool
+	sync           bool
 	filter         func(path string, e stdfs.DirEntry) bool
+
+	// deferDirSync leaves the destination directory's sync to the
+	// caller ([CopyDir] syncs each directory once).
+	deferDirSync bool
+}
+
+// WithCopySync controls whether [CopyFile], [CopyDir] and the copy
+// fallback of [Move] fsync each copied file and its directory before
+// returning. Default true. Turning it off makes large tree copies much
+// faster, but after a power loss copied files may be empty or missing.
+func WithCopySync(b bool) CopyOption {
+	return func(o *copyOptions) { o.sync = b }
 }
 
 // WithOverwrite controls whether an existing destination is replaced.
@@ -53,6 +67,7 @@ func newCopyOptions(opts []CopyOption) copyOptions {
 	cfg := copyOptions{
 		overwrite:     true,
 		preserveMtime: true,
+		sync:          true,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -77,7 +92,9 @@ const (
 // Non-regular, non-symlink sources (directories, devices, FIFOs,
 // sockets) error with [ErrNotSupported]. With [WithOverwrite](false)
 // an existing dst returns [ErrAlreadyExists]. dst's parent must
-// exist.
+// exist. The copy and its directory are fsynced unless
+// [WithCopySync](false). Like [WriteFile], replacing dst replaces a
+// symlink at dst rather than writing through it.
 func CopyFile(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 	return copyFileInternal(src, dst, cfg)
@@ -116,23 +133,25 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	defer sf.Close()
 
 	dstDir := filepath.Dir(dst)
-	tmp, err := osCreateTemp(dstDir, filepath.Base(dst)+".tmp.*")
+	tmp, err := osCreateTemp(dstDir, tempPatternFor(dst))
 	if err != nil {
 		return wrapPathError(opCopyFile, dst, err)
 	}
 	tmpPath := tmp.Name()
 	cleanupTmp := func() { _ = osRemove(tmpPath) } //nolint:errcheck // best-effort cleanup of an already-failed write
 
-	if _, cerr := io.Copy(tmp, hookedReader{sf}); cerr != nil {
+	if _, cerr := io.Copy(tmp, fileReader(sf)); cerr != nil {
 		closeQuietly(tmp)
 		cleanupTmp()
 		return wrapPathError(opCopyFile, src, cerr)
 	}
 
-	if cerr := fileSync(tmp); cerr != nil {
-		closeQuietly(tmp)
-		cleanupTmp()
-		return wrapPathError(opCopyFile, dst, cerr)
+	if cfg.sync {
+		if cerr := fileSync(tmp); cerr != nil {
+			closeQuietly(tmp)
+			cleanupTmp()
+			return wrapPathError(opCopyFile, dst, cerr)
+		}
 	}
 
 	if cerr := fileClose(tmp); cerr != nil {
@@ -157,8 +176,10 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
 
-	if serr := syncDir(dstDir); serr != nil {
-		return wrapPathError(opCopyFile, dst, serr)
+	if cfg.sync && !cfg.deferDirSync {
+		if serr := syncDir(dstDir); serr != nil {
+			return wrapPathError(opCopyFile, dst, serr)
+		}
 	}
 	return nil
 }
@@ -184,13 +205,18 @@ func copySymlink(src, dst string, cfg copyOptions) error {
 	return nil
 }
 
-// CopyDir recursively copies src to dst. dst is created if missing
-// (mode mirrors src). Symlinks are recreated as symlinks unless
-// [WithFollowSymlinks]; when following, a symlink to a directory is
-// reported as [ErrNotSupported] rather than copied. src must be a
-// directory ([ErrNotDir] otherwise). Per-entry errors aggregate into a
-// [*MultiError]; the walk continues so a partial copy surfaces every
-// problem entry.
+// CopyDir recursively copies src to dst. dst is created if missing.
+// Directories get their source's permission bits; a read-only source
+// directory is filled first and made read-only afterwards. Symlinks
+// are recreated as symlinks unless [WithFollowSymlinks]; when
+// following, a symlink to a directory is reported as
+// [ErrNotSupported] rather than copied. src must be a directory
+// ([ErrNotDir] otherwise). When dst lies inside src, it is left out
+// of the copy. Per-entry errors aggregate into a [*MultiError]; the
+// walk continues so a partial copy surfaces every problem entry.
+//
+// Every copied file is fsynced, and each destination directory once
+// after its entries are written, unless [WithCopySync](false).
 //
 // [WithFilter] skips entries (and their subtrees, for directories)
 // when the predicate returns false.
@@ -205,10 +231,19 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 		return wrapPathError(opCopyDir, src, ErrNotDir)
 	}
 
-	if merr := osMkdirAll(dst, srcInfo.Mode().Perm()); merr != nil {
+	dirs := &copyDirState{}
+	if merr := dirs.mkdir(dst, srcInfo.Mode().Perm()); merr != nil {
 		return wrapPathError(opCopyDir, dst, merr)
 	}
+	dstInfo, err := osStat(dst)
+	if err != nil {
+		return wrapPathError(opCopyDir, dst, err)
+	}
 
+	// Each file's directory is synced once below instead of after
+	// every file.
+	fileCfg := cfg
+	fileCfg.deferDirSync = true
 	multi := &MultiError{}
 	walkErr := filepath.WalkDir(src, func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
@@ -238,7 +273,10 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 				multi.Append(wrapPathError(opCopyDir, path, ierr))
 				return nil
 			}
-			if merr := osMkdirAll(target, info.Mode().Perm()); merr != nil {
+			if os.SameFile(info, dstInfo) {
+				return filepath.SkipDir
+			}
+			if merr := dirs.mkdir(target, info.Mode().Perm()); merr != nil {
 				multi.Append(wrapPathError(opCopyDir, target, merr))
 			}
 		case d.Type()&os.ModeSymlink != 0 && !cfg.followSymlinks:
@@ -246,7 +284,7 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 				multi.Append(cerr)
 			}
 		default:
-			if cerr := copyFileInternal(path, target, cfg); cerr != nil {
+			if cerr := copyFileInternal(path, target, fileCfg); cerr != nil {
 				multi.Append(cerr)
 			}
 		}
@@ -256,11 +294,65 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 	if walkErr != nil {
 		multi.Append(wrapPathError(opCopyDir, src, walkErr))
 	}
+	for _, e := range dirs.finish(cfg.sync, filepath.Dir(filepath.Clean(dst))) {
+		multi.Append(wrapPathError(opCopyDir, dst, e))
+	}
 
 	if len(multi.Errors) > 0 {
 		return multi
 	}
 	return nil
+}
+
+// copyDirState tracks the directories [CopyDir] creates, so it can
+// apply their final modes and sync them after their entries exist.
+type copyDirState struct {
+	created []createdDir
+}
+
+type createdDir struct {
+	path string
+	perm os.FileMode
+}
+
+// mkdir creates path owner-writable, so entries can be copied into it
+// even when its source is read-only. Directories that already exist
+// are left as they are.
+func (s *copyDirState) mkdir(path string, perm os.FileMode) error {
+	if _, err := osLstat(path); err == nil {
+		s.created = append(s.created, createdDir{path: path})
+		return osMkdirAll(path, perm)
+	}
+	if err := osMkdirAll(path, perm|0o700); err != nil {
+		return err
+	}
+	s.created = append(s.created, createdDir{path: path, perm: perm})
+	return nil
+}
+
+// finish restores the source modes of directories that had to be
+// created owner-writable, deepest first, and syncs every directory
+// written to (and parent, which holds dst) when sync is set.
+func (s *copyDirState) finish(sync bool, parent string) []error {
+	var errs []error
+	if sync {
+		if err := syncDir(parent); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, d := range slices.Backward(s.created) {
+		if sync {
+			if err := syncDir(d.path); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if d.perm != 0 && d.perm&0o700 != 0o700 {
+			if err := osChmod(d.path, d.perm); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
 }
 
 // Rename renames src to dst via [os.Rename]. Strict: a cross-device

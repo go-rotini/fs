@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package fs
 
@@ -6,7 +6,8 @@ import (
 	"errors"
 	"os"
 	"syscall"
-	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // isBrokenPipeErr reports whether err is the POSIX EPIPE returned
@@ -15,20 +16,10 @@ func isBrokenPipeErr(err error) bool {
 	return errors.Is(err, syscall.EPIPE)
 }
 
-// isTerminal queries termios via TIOCGETA/TCGETS. A successful
-// query indicates a TTY; ENOTTY (or any other error) indicates
-// non-terminal. The exact ioctl number differs between Linux and
-// the BSDs; the syscall package's TIOCGETA / TCGETS constants
-// provide the right value per platform via build-tagged shims. The
-// three-argument [syscall.Syscall] is used because OpenBSD routes
-// only that form of SYS_IOCTL through libc.
+// isTerminal queries termios (TIOCGETA on darwin and the BSDs, TCGETS
+// elsewhere). A successful query indicates a TTY; ENOTTY (or any other
+// error) indicates non-terminal.
 func isTerminal(f *os.File) bool {
-	var t syscall.Termios
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		f.Fd(),
-		uintptr(ioctlGetTermios),
-		uintptr(unsafe.Pointer(&t)),
-	)
-	return errno == 0
+	_, err := unix.IoctlGetTermios(int(f.Fd()), ioctlGetTermios)
+	return err == nil
 }

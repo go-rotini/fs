@@ -2,11 +2,11 @@ package fs
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	stdfs "io/fs"
 	"os"
 	"regexp"
-	"strings"
 )
 
 const opFindByContent = "findbycontent"
@@ -57,8 +57,9 @@ func FindByContent(root, substr string, opts ...WalkOption) ([]ContentMatch, err
 	if substr == "" {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	return findByContentImpl(root, opts, func(line string) bool {
-		return strings.Contains(line, substr)
+	needle := []byte(substr)
+	return findByContentImpl(root, opts, func(line []byte) bool {
+		return bytes.Contains(line, needle)
 	})
 }
 
@@ -68,10 +69,10 @@ func FindByContentRegex(root string, re *regexp.Regexp, opts ...WalkOption) ([]C
 	if re == nil {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	return findByContentImpl(root, opts, re.MatchString)
+	return findByContentImpl(root, opts, re.Match)
 }
 
-func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) ([]ContentMatch, error) {
+func findByContentImpl(root string, opts []WalkOption, pred func([]byte) bool) ([]ContentMatch, error) {
 	cfg := newWalkOptions(opts)
 	maxFileSize := cfg.findContentMaxSize
 	if maxFileSize <= 0 {
@@ -79,6 +80,9 @@ func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) (
 	}
 
 	var matches []ContentMatch
+	// One scan buffer serves every file; a line becomes a string only
+	// when it matches.
+	buf := make([]byte, 0, 64*1024)
 	err := Walk(root, func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -104,19 +108,19 @@ func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) (
 		defer func() { _ = f.Close() }()
 
 		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		sc.Buffer(buf, 1024*1024)
 		lineNo := 0
 		for sc.Scan() {
 			lineNo++
-			line := sc.Text()
-			if strings.IndexByte(line, 0) >= 0 {
+			line := sc.Bytes()
+			if bytes.IndexByte(line, 0) >= 0 {
 				return nil // binary file
 			}
 			if pred(line) {
 				matches = append(matches, ContentMatch{
 					Path: path,
 					Line: lineNo,
-					Text: strings.TrimRight(line, "\r"),
+					Text: string(bytes.TrimRight(line, "\r")),
 				})
 			}
 		}

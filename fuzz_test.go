@@ -1,10 +1,15 @@
 package fs
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // Fuzz targets. CI runs `go test -fuzz=Fuzz<Name> -fuzztime=60s` per
@@ -207,16 +212,68 @@ func FuzzGitignore(f *testing.F) {
 	for _, s := range seeds {
 		f.Add(s)
 	}
-	probes := []string{"", "/", ".", "foo", "foo/bar", "a/b/c", "node_modules/x"}
+	probes := []string{"", "/", ".", "foo", "foo/bar", "a/b/c", "node_modules/x", "x/x/x/x"}
 	f.Fuzz(func(t *testing.T, input string) {
 		p, ok := parseGitignoreLine(input)
 		if !ok {
 			return
 		}
+		var m segMatcher
 		for _, probe := range probes {
-			_ = p.matches(probe)
+			segs := strings.Split(probe, "/")
+			for _, isDir := range []bool{false, true} {
+				got := p.matches(&m, segs, isDir)
+				if want := refGitignoreMatch(p, segs, isDir); got != want {
+					t.Fatalf("pattern %q, path %q, isDir %v: matches = %v; reference says %v", input, probe, isDir, got, want)
+				}
+			}
 		}
 	})
+}
+
+// refGitignoreMatch is the specification [gitignorePattern.matches]
+// implements, written as a direct (exponential) search: some run of
+// segments, starting at 0 or (unanchored) anywhere, is matched by the
+// whole pattern, and a run reaching the last segment needs isDir for
+// a dir-only pattern.
+func refGitignoreMatch(p gitignorePattern, segs []string, isDir bool) bool {
+	starts := len(segs)
+	if p.anchored {
+		starts = 0
+	}
+	for s := 0; s <= starts; s++ {
+		for e := s; e <= len(segs); e++ {
+			if refFullMatch(p.segments, segs[s:e]) && (e < len(segs) || !p.dirOnly || isDir) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func refFullMatch(pat, segs []string) bool {
+	if len(pat) == 0 {
+		return len(segs) == 0
+	}
+	if pat[0] == "**" {
+		least := 0
+		if len(pat) == 1 {
+			least = 1
+		}
+		for i := least; i <= len(segs); i++ {
+			if refFullMatch(pat[1:], segs[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(segs) == 0 {
+		return false
+	}
+	if ok, err := path.Match(pat[0], segs[0]); err != nil || !ok {
+		return false
+	}
+	return refFullMatch(pat[1:], segs[1:])
 }
 
 // FuzzGoWork drives [parseGoWork] with arbitrary file contents.
@@ -271,5 +328,114 @@ func FuzzPnpmWorkspaces(f *testing.F) {
 			t.Fatalf("WriteFile: %v", err)
 		}
 		_, _ = parsePnpmWorkspaces(path, dir)
+	})
+}
+
+// fuzzArchiveSandbox extracts data into a fresh dst inside an outer
+// directory and fails if anything appears in the outer directory
+// besides dst, or if a symlink left in dst leads outside it.
+func fuzzArchiveSandbox(t *testing.T, data []byte) {
+	t.Helper()
+	outer := t.TempDir()
+	dst := filepath.Join(outer, "dst")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = ExtractArchive(bytes.NewReader(data), dst, WithArchiveMaxBytes(1<<20))
+	ents, err := os.ReadDir(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if e.Name() != "dst" {
+			t.Fatalf("extraction wrote %q outside the destination", e.Name())
+		}
+	}
+	if err := escapingLink(dst); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// FuzzExtractTar drives [ExtractArchive] with tar archives built from
+// fuzzed entry names, link targets and types. Invariant: nothing is
+// written outside the destination, and no symlink left in it leads
+// outside, whether the extraction succeeds or fails.
+func FuzzExtractTar(f *testing.F) {
+	reg, sym, hard := byte(tar.TypeReg), byte(tar.TypeSymlink), byte(tar.TypeLink)
+	f.Add("a/b.txt", "", reg, "x/y", "z", reg, "c", "", reg)
+	f.Add("link", "..", sym, "link/evil", "", reg, "c", "", reg)
+	f.Add("d", ".", sym, "a", "d/d/..", sym, "c", "", reg)
+	f.Add("../evil", "", reg, "/abs", "", reg, "c", "", reg)
+	f.Add("h", "../x", hard, "s", "/etc", sym, "c", "", reg)
+	f.Add("a/l", "..", sym, "h", "a/l", hard, "c", "", reg)
+	f.Add("l", "s/..", sym, "s", ".", sym, "../evil", "", reg)
+	f.Fuzz(func(t *testing.T, name1, link1 string, typ1 byte, name2, link2 string, typ2 byte, name3, link3 string, typ3 byte) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for _, e := range []struct {
+			name, link string
+			typ        byte
+		}{{name1, link1, typ1}, {name2, link2, typ2}, {name3, link3, typ3}} {
+			hdr := &tar.Header{Name: e.name, Linkname: e.link, Typeflag: e.typ, Mode: 0o644}
+			if e.typ == tar.TypeReg {
+				hdr.Size = 1
+			}
+			if tw.WriteHeader(hdr) != nil {
+				return
+			}
+			if e.typ == tar.TypeReg {
+				_, _ = tw.Write([]byte("x"))
+			}
+		}
+		if tw.Close() != nil {
+			return
+		}
+		fuzzArchiveSandbox(t, buf.Bytes())
+	})
+}
+
+// FuzzExtractZip drives [ExtractArchive] with zip archives built from
+// fuzzed entry names. Invariant: nothing is written outside the
+// destination.
+func FuzzExtractZip(f *testing.F) {
+	f.Add("a/b.txt", "c")
+	f.Add("../evil", "/abs")
+	f.Add(`..\evil`, "a/../../b")
+	f.Fuzz(func(t *testing.T, name1, name2 string) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for _, name := range []string{name1, name2} {
+			w, err := zw.Create(name)
+			if err != nil {
+				return
+			}
+			_, _ = w.Write([]byte("x"))
+		}
+		if zw.Close() != nil {
+			return
+		}
+		fuzzArchiveSandbox(t, buf.Bytes())
+	})
+}
+
+// FuzzScaffoldPlan renders a templated source path with a fuzzed
+// variable. Invariant: every planned destination stays inside dst, or
+// the plan fails.
+func FuzzScaffoldPlan(f *testing.F) {
+	for _, s := range []string{"app", "../escape", "/abs", "a/../../b", `..\x`, "", "."} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, name string) {
+		src := fstest.MapFS{"{{.Name}}/file.txt": {Data: []byte("x")}}
+		dst := t.TempDir()
+		plan, err := ScaffoldPlan(src, dst, map[string]string{"Name": name})
+		if err != nil {
+			return
+		}
+		for _, a := range plan {
+			if ok, _ := IsSubpath(dst, a.DstPath); !ok && filepath.Clean(a.DstPath) != filepath.Clean(dst) {
+				t.Fatalf("name %q planned %q outside %q", name, a.DstPath, dst)
+			}
+		}
 	})
 }

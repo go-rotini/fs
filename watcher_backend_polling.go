@@ -23,10 +23,13 @@ type pollingBackend struct {
 	// files inside them are reported. Without it children are only listed, which reports
 	// them appearing and disappearing.
 	statChildren bool
-	out          chan rawWatchEvent
-	stop         chan struct{}
-	done         chan struct{}
-	closed       bool
+	// onDrop, when set, is called for every event dropped because out
+	// is full.
+	onDrop func()
+	out    chan rawWatchEvent
+	stop   chan struct{}
+	done   chan struct{}
+	closed bool
 }
 
 type pollSnapshot struct {
@@ -35,6 +38,21 @@ type pollSnapshot struct {
 	size    int64
 	modTime time.Time
 	mode    os.FileMode
+	id      fileID
+	hasID   bool
+}
+
+func newPollSnapshot(info os.FileInfo) *pollSnapshot {
+	id, hasID := fileIdentity(info)
+	return &pollSnapshot{
+		exists:  true,
+		isDir:   info.IsDir(),
+		size:    info.Size(),
+		modTime: info.ModTime(),
+		mode:    info.Mode(),
+		id:      id,
+		hasID:   hasID,
+	}
 }
 
 func newPollingBackend(interval time.Duration) *pollingBackend {
@@ -212,7 +230,7 @@ func (b *pollingBackend) diffChildren(dir string, prev, curr, registered map[str
 
 func (b *pollingBackend) emit(ev rawWatchEvent) {
 	b.mu.Lock()
-	closed := b.closed
+	closed, onDrop := b.closed, b.onDrop
 	b.mu.Unlock()
 	if closed {
 		return
@@ -221,6 +239,9 @@ func (b *pollingBackend) emit(ev rawWatchEvent) {
 	case b.out <- ev:
 	default:
 		// Drop on overflow; consumer is too slow.
+		if onDrop != nil {
+			onDrop()
+		}
 	}
 }
 
@@ -231,13 +252,7 @@ func snapshotPath(path string) *pollSnapshot {
 	if err != nil {
 		return &pollSnapshot{exists: false}
 	}
-	return &pollSnapshot{
-		exists:  true,
-		isDir:   info.IsDir(),
-		size:    info.Size(),
-		modTime: info.ModTime(),
-		mode:    info.Mode(),
-	}
+	return newPollSnapshot(info)
 }
 
 // diffSnapshots returns a WatchOp bitmask describing how curr differs
@@ -253,6 +268,11 @@ func diffSnapshots(prev, curr *pollSnapshot) WatchOp {
 	}
 	var op WatchOp
 	if prev.modTime != curr.modTime || prev.size != curr.size {
+		op |= WatchWrite
+	}
+	// A different file renamed over the path with the same size and
+	// modification time (cp -p, rsync -t, tar x) is still a write.
+	if prev.hasID && curr.hasID && prev.id != curr.id {
 		op |= WatchWrite
 	}
 	if prev.mode.Perm() != curr.mode.Perm() {
@@ -279,13 +299,7 @@ func listDirChildren(dir string, stat bool) map[string]*pollSnapshot {
 		if err != nil {
 			continue // removed since the listing; the next tick reports it
 		}
-		out[e.Name()] = &pollSnapshot{
-			exists:  true,
-			isDir:   info.IsDir(),
-			size:    info.Size(),
-			modTime: info.ModTime(),
-			mode:    info.Mode(),
-		}
+		out[e.Name()] = newPollSnapshot(info)
 	}
 	return out
 }

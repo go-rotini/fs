@@ -52,6 +52,10 @@ type ArchiveCreateOption func(*archiveCreateOptions)
 type archiveCreateOptions struct {
 	format ArchiveFormat
 	filter func(path string, info os.FileInfo) bool
+
+	// exclude is a file left out of the archive: the output file
+	// when [CreateArchiveFile] writes inside root.
+	exclude os.FileInfo
 }
 
 func newArchiveCreateOptions(opts []ArchiveCreateOption) archiveCreateOptions {

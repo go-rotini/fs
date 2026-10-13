@@ -79,14 +79,35 @@ func realPath(p string, hops int) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !filepath.IsAbs(target) {
-			target = cur + string(filepath.Separator) + target
+		if target, err = linkDestination(cur, target); err != nil {
+			return "", err
 		}
 		if cur, err = realPath(target, hops+1); err != nil {
 			return "", err
 		}
 	}
 	return cur, nil
+}
+
+// linkDestination returns the path a symlink in dir whose target is
+// target leads to, before any further links are followed, resolving
+// target the way the OS does. On Windows a target with a leading
+// separator (`\x` or `/x`) is absolute on dir's volume; a
+// drive-relative target (`C:x`) depends on that drive's current
+// directory, so it is refused with [ErrEscapesRoot]. A relative
+// target is appended to dir uncleaned, so ".." applies after any
+// link in dir is followed.
+func linkDestination(dir, target string) (string, error) {
+	switch {
+	case filepath.IsAbs(target):
+		return target, nil
+	case filepath.VolumeName(target) != "":
+		return "", ErrEscapesRoot
+	case target != "" && os.IsPathSeparator(target[0]):
+		return filepath.VolumeName(dir) + target, nil
+	default:
+		return dir + string(filepath.Separator) + target, nil
+	}
 }
 
 // madeLinks records the symlinks an extraction creates, to check again once every entry is
@@ -110,19 +131,22 @@ func (m *madeLinks) make(root extractRoot, target, linkname string) error {
 	return nil
 }
 
-// check confirms every link still there leads inside root in the finished tree. A link that
-// leads outside is removed, and the error wraps [ErrEscapesRoot].
+// check confirms every link still there leads inside root in the tree as it stands. Every link
+// that leads outside is removed, and the error, wrapping [ErrEscapesRoot], names the first.
 func (m madeLinks) check(root extractRoot) error {
+	var first error
 	for _, target := range m {
 		if info, err := osLstat(target); err != nil || info.Mode()&os.ModeSymlink == 0 {
 			continue // a later entry replaced it
 		}
 		if err := root.confine(target); err != nil {
 			_ = osRemove(target) //nolint:errcheck // best-effort: the error below is what matters
-			return err
+			if first == nil {
+				first = err
+			}
 		}
 	}
-	return nil
+	return first
 }
 
 // replaceLink removes a symlink at target, so an entry written there replaces the link instead

@@ -89,10 +89,11 @@ const (
 // crafted entry such as `../../etc/passwd`, or one that reaches out
 // through a chain of links, fails with [ErrEscapesRoot] instead of
 // escaping dst (zip-slip / tar-slip). An entry at a path that holds
-// a symlink replaces the link rather than writing through it. Once
-// every entry is written, each symlink the archive made is checked
-// again; one that a later entry made lead outside is removed and the
-// call fails. A leading slash on an entry name is dropped, so
+// a symlink replaces the link rather than writing through it. A hard
+// link to a symlink is made as a copy of that symlink. When the
+// extraction ends, finished or failed, each symlink the archive made
+// is checked again; every one that a later entry made lead outside
+// is removed and the call fails. A leading slash on an entry name is dropped, so
 // absolute entries land under dst. Device nodes, FIFOs and other
 // special entries are skipped. Another process changing dst during
 // the extraction can still race these checks.
@@ -130,7 +131,10 @@ func ExtractArchiveFile(path, dst string, opts ...ArchiveExtractOption) error {
 // [WithArchiveCreateFilter] skips entries when its predicate returns
 // false.
 func CreateArchive(w io.Writer, root string, opts ...ArchiveCreateOption) error {
-	cfg := newArchiveCreateOptions(opts)
+	return createArchive(w, root, newArchiveCreateOptions(opts))
+}
+
+func createArchive(w io.Writer, root string, cfg archiveCreateOptions) error {
 	switch cfg.format {
 	case ArchiveFormatTar:
 		return createTar(w, root, cfg, false)
@@ -145,14 +149,19 @@ func CreateArchive(w io.Writer, root string, opts ...ArchiveCreateOption) error 
 
 // CreateArchiveFile creates (or truncates) the file at path and
 // writes the archive into it with [CreateArchive], syncing it before
-// it is closed. The file is not removed on failure.
+// it is closed. When path lies inside root, the archive leaves itself
+// out. The file is not removed on failure.
 func CreateArchiveFile(path, root string, opts ...ArchiveCreateOption) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return wrapPathError(opCreateArchive, path, err)
 	}
 	defer f.Close()
-	if err := CreateArchive(f, root, opts...); err != nil {
+	cfg := newArchiveCreateOptions(opts)
+	if info, serr := f.Stat(); serr == nil {
+		cfg.exclude = info
+	}
+	if err := createArchive(f, root, cfg); err != nil {
 		return err
 	}
 	return f.Sync() //nolint:wrapcheck // surfacing the sync error directly

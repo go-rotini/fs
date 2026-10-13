@@ -122,9 +122,11 @@ func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([
 //
 // Paths are confined to dst as in [ScaffoldPlan]; an escaping path
 // fails before anything is written. Every source file's contents are
-// rendered as a template with vars and written atomically
-// (directories 0o755). A content template
-// error stops the apply, leaving files already written in place.
+// rendered as a template with vars, except files matching
+// [WithScaffoldVerbatim], and written atomically: mode 0o644, plus the
+// source's execute bits (so scripts stay executable); directories
+// 0o755. A content template error stops the apply, leaving files
+// already written in place.
 func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) error {
 	plan, err := ScaffoldPlan(src, dst, vars, opts...)
 	if err != nil {
@@ -229,7 +231,7 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 				}
 				continue
 			}
-			if err := scaffoldWriteFile(src, action, vars); err != nil {
+			if err := scaffoldWriteFile(src, action, vars, cfg); err != nil {
 				return err
 			}
 		}
@@ -238,9 +240,10 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 }
 
 // scaffoldWriteFile reads src/srcPath, renders its contents through
-// text/template with vars, and writes to dstPath atomically. Parent
-// directories are created with mode 0o755.
-func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any) error {
+// text/template with vars unless it is verbatim, and writes to dstPath
+// atomically with the source's execute bits. Parent directories are
+// created with mode 0o755.
+func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any, cfg scaffoldOptions) error {
 	if err := osMkdirAll(filepath.Dir(action.DstPath), Mode0755); err != nil {
 		return wrapPathError(opScaffoldApply, action.DstPath, err)
 	}
@@ -248,12 +251,25 @@ func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any) error {
 	if err != nil {
 		return wrapPathError(opScaffoldApply, action.SrcPath, err)
 	}
-	rendered, terr := renderTemplate(string(data), vars)
-	if terr != nil {
-		return wrapPathError(opScaffoldApply, action.SrcPath, terr)
+	if !cfg.isVerbatim(action.SrcPath) {
+		rendered, terr := renderTemplate(string(data), vars)
+		if terr != nil {
+			return wrapPathError(opScaffoldApply, action.SrcPath, terr)
+		}
+		data = []byte(rendered)
 	}
-	if err := WriteFile(action.DstPath, []byte(rendered)); err != nil {
-		return err
+	return WriteFile(action.DstPath, data, scaffoldFileMode(src, action.SrcPath)...)
+}
+
+// scaffoldFileMode returns the write options that give a scaffolded
+// file its source's execute bits: mode 0o644 plus those bits. Without
+// execute bits it returns none, so new files get 0o644 and replaced
+// files keep their mode. Other source bits are ignored: an
+// [embed.FS] reports every file read-only.
+func scaffoldFileMode(src stdfs.FS, name string) []WriteOption {
+	info, err := stdfs.Stat(src, name)
+	if err != nil || info.Mode().Perm()&0o111 == 0 {
+		return nil
 	}
-	return nil
+	return []WriteOption{WithPerm(Mode0644 | info.Mode().Perm()&0o111)}
 }

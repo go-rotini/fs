@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -44,7 +45,7 @@ var (
 // (path may not exist yet), or [NewDirWatcher] (recursive directory
 // watching). Each [Watcher.Subscribe] call returns an independent
 // buffered channel (see [WithBufferSize]); events a slow subscriber
-// has no room for are dropped.
+// has no room for are dropped, and it is then sent [WatchOverflow].
 type Watcher struct {
 	target    string // absolute, cleaned
 	parentDir string // absolute, cleaned (filepath.Dir(target))
@@ -57,6 +58,10 @@ type Watcher struct {
 	backend   watcherBackend
 	debouncer *debouncer
 
+	// lost is set when the backend or debouncer dropped an event, which
+	// every subscriber must hear about.
+	lost atomic.Bool
+
 	mu         sync.Mutex
 	closed     bool
 	subs       []*watcherSub
@@ -68,7 +73,12 @@ type watcherSub struct {
 	ch     chan WatchEvent
 	ctx    context.Context
 	cancel context.CancelFunc
+	lost   bool // events were dropped; WatchOverflow is owed (guarded by Watcher.mu)
 }
+
+// overflowRetry is how often a [WatchOverflow] that found no room is
+// offered again.
+const overflowRetry = 50 * time.Millisecond
 
 // NewWatcher constructs a [*Watcher] for an existing path, made
 // absolute. Watching the parent directory with basename filtering
@@ -146,11 +156,8 @@ func newWatcher(path string, isDir, lazy bool, opts []WatcherOption) (*Watcher, 
 		w.basename = "" // directory watch matches everything beneath target
 	}
 
-	backend, err := w.selectBackend()
-	if err != nil {
-		w.debouncer.Close()
-		return nil, wrapPathError(opWatcher, path, err)
-	}
+	w.debouncer.onDrop = w.markLost
+	backend := w.newPolling()
 	w.backend = backend
 
 	if err := w.registerInitial(lazy); err != nil {
@@ -163,36 +170,23 @@ func newWatcher(path string, isDir, lazy bool, opts []WatcherOption) (*Watcher, 
 	return w, nil
 }
 
-// selectBackend returns the native backend if available, or falls
-// back to polling. WithPolling forces polling regardless of
-// availability.
-func (w *Watcher) selectBackend() (watcherBackend, error) {
-	if w.cfg.forcePolling {
-		return w.newPolling(w.cfg.pollingInterval), nil
-	}
-	native, err := newNativeWatcherBackend(w.cfg)
-	if err == nil {
-		return native, nil
-	}
-	if !errors.Is(err, errWatcherUnsupportedBackend) {
-		return nil, err
-	}
-	w.logger.Debug("watcher: native backend unavailable, falling back to polling", "err", err)
-	interval := w.cfg.pollingInterval
-	if interval <= 0 {
-		interval = defaultWatcherPollingInterval
-	}
-	return w.newPolling(interval), nil
-}
-
-// newPolling returns a polling backend; a directory watcher's also
+// newPolling returns the polling backend; a directory watcher's also
 // reports writes to the files in watched directories.
-func (w *Watcher) newPolling(interval time.Duration) *pollingBackend {
-	b := newPollingBackend(interval)
+func (w *Watcher) newPolling() *pollingBackend {
+	b := newPollingBackend(w.cfg.pollingInterval)
+	b.mu.Lock()
+	b.onDrop = w.markLost
+	b.mu.Unlock()
 	if w.isDir {
 		b.reportChildWrites()
 	}
 	return b
+}
+
+// markLost records that an event was dropped before fan-out, so every
+// subscriber is sent [WatchOverflow].
+func (w *Watcher) markLost() {
+	w.lost.Store(true)
 }
 
 // registerInitial adds the appropriate paths to the backend.
@@ -264,7 +258,8 @@ func (w *Watcher) addSubdirectoriesUnder(root string) error {
 // values until ctx is canceled or [Watcher.Close] is called, at which
 // point the channel is closed. Each Subscribe creates an independent
 // subscription; events a slow subscriber has no room for are dropped
-// rather than blocking the watcher.
+// rather than blocking the watcher, and the subscriber is then sent
+// [WatchOverflow].
 func (w *Watcher) Subscribe(ctx context.Context) (<-chan WatchEvent, error) {
 	if ctx == nil {
 		return nil, wrapPathError(opWatcher, w.target, ErrWatcherNilContext)
@@ -329,6 +324,10 @@ func (w *Watcher) worker() {
 	defer func() { <-pumpDone }()
 
 	for {
+		var retry <-chan time.Time
+		if w.overflowOwed() {
+			retry = time.After(overflowRetry)
+		}
 		select {
 		case <-w.workerStop:
 			return
@@ -336,9 +335,27 @@ func (w *Watcher) worker() {
 			if !ok {
 				return
 			}
-			w.fanOut(WatchEvent{Path: ev.path, Op: ev.op, Time: time.Now()})
+			w.fanOut(&WatchEvent{Path: ev.path, Op: ev.op, Time: time.Now()})
+		case <-retry:
+			w.fanOut(nil)
 		}
 	}
+}
+
+// overflowOwed reports whether some subscriber is still owed a
+// [WatchOverflow].
+func (w *Watcher) overflowOwed() bool {
+	if w.lost.Load() {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, s := range w.subs {
+		if s.lost {
+			return true
+		}
+	}
+	return false
 }
 
 // followSubdirectory keeps a recursive directory watch in step with
@@ -410,16 +427,39 @@ func hasParentDir(child, parent string) bool {
 	return true
 }
 
-func (w *Watcher) fanOut(ev WatchEvent) {
+// fanOut sends ev (nil to only settle owed overflows) to every
+// subscriber. A subscriber that missed events first gets a
+// [WatchOverflow]; until that is delivered, its later events are
+// dropped too, since it must rescan anyway.
+func (w *Watcher) fanOut(ev *WatchEvent) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.lost.Swap(false) {
+		for _, s := range w.subs {
+			s.lost = true
+		}
+	}
 	for _, s := range w.subs {
+		if s.lost {
+			select {
+			case s.ch <- WatchEvent{Path: w.target, Op: WatchOverflow, Time: time.Now()}:
+				s.lost = false
+			default:
+			}
+			if s.lost {
+				continue
+			}
+		}
+		if ev == nil {
+			continue
+		}
 		select {
-		case s.ch <- ev:
+		case s.ch <- *ev:
 		case <-s.ctx.Done():
 			// Subscription canceled mid-fanout; skip.
 		default:
-			// Slow subscriber; drop.
+			// Slow subscriber; drop and owe it an overflow.
+			s.lost = true
 			w.logger.Debug("watcher: dropping event for slow subscriber", "path", ev.Path)
 		}
 	}

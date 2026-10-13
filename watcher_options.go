@@ -14,7 +14,6 @@ type watcherOptions struct {
 	recursive       bool
 	bufferSize      int
 	pollingInterval time.Duration // 0 = default interval
-	forcePolling    bool          // set by WithPolling
 }
 
 const (
@@ -58,7 +57,9 @@ func WithRecursive(b bool) WatcherOption {
 
 // WithBufferSize sizes each subscription's buffered channel. Default 1;
 // values n <= 0 are ignored. A larger buffer means fewer events are
-// dropped for a slow subscriber.
+// dropped for a slow subscriber; a directory watch, where one poll can
+// report many entries, usually needs one. A subscriber that missed
+// events is sent [WatchOverflow].
 func WithBufferSize(n int) WatcherOption {
 	return func(o *watcherOptions) {
 		if n > 0 {
@@ -72,7 +73,6 @@ func WithBufferSize(n int) WatcherOption {
 // interval <= 0 selects the default, 1 second.
 func WithPolling(interval time.Duration) WatcherOption {
 	return func(o *watcherOptions) {
-		o.forcePolling = true
 		if interval > 0 {
 			o.pollingInterval = interval
 		} else {

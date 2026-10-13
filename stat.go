@@ -46,25 +46,19 @@ func Mtime(path string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
-// SetMtime sets path's modification time. Atime is preserved.
+// SetMtime sets path's modification time. Atime is left unchanged, in
+// the same system call, so a concurrent access isn't overwritten.
 func SetMtime(path string, t time.Time) error {
-	atime, err := Atime(path)
-	if err != nil {
-		return err
-	}
-	if err := osChtimes(path, atime, t); err != nil {
+	if err := osChtimes(path, time.Time{}, t); err != nil {
 		return wrapPathError(opSetTimes, path, err)
 	}
 	return nil
 }
 
-// SetAtime sets path's access time. Mtime is preserved.
+// SetAtime sets path's access time. Mtime is left unchanged, in the
+// same system call, so a concurrent write isn't overwritten.
 func SetAtime(path string, t time.Time) error {
-	mtime, err := Mtime(path)
-	if err != nil {
-		return err
-	}
-	if err := osChtimes(path, t, mtime); err != nil {
+	if err := osChtimes(path, t, time.Time{}); err != nil {
 		return wrapPathError(opSetTimes, path, err)
 	}
 	return nil

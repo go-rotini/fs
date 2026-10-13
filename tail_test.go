@@ -464,3 +464,50 @@ func equalStringSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestTail_ReadsOldFileToEndOnRotation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "log")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lines := make(chan string, 10)
+	go func() {
+		defer close(lines)
+		for l, err := range Tail(ctx, p, WithTailPollInterval(200*time.Millisecond)) {
+			if err != nil {
+				return
+			}
+			lines <- l
+		}
+	}()
+	// Let Tail open the file and reach its first poll wait.
+	time.Sleep(300 * time.Millisecond)
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("last line of old file\n")
+	_ = f.Close()
+	if err := os.Rename(p, p+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("first line of new file\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for l := range lines {
+		got = append(got, l)
+		if len(got) == 2 {
+			break
+		}
+	}
+	cancel()
+	want := []string{"last line of old file", "first line of new file"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Tail yielded %q; want %q", got, want)
+	}
+}

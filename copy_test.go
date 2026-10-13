@@ -3,12 +3,14 @@ package fs
 import (
 	"errors"
 	"fmt"
+	"io"
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -663,9 +665,9 @@ func TestFault_CopyFile_ReadError(t *testing.T) {
 	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	orig := fileRead
-	t.Cleanup(func() { fileRead = orig })
-	fileRead = func(*os.File, []byte) (int, error) { return 0, errInjected }
+	orig := fileReader
+	t.Cleanup(func() { fileReader = orig })
+	fileReader = func(*os.File) io.Reader { return iotest.ErrReader(errInjected) }
 	_ = h
 
 	err := CopyFile(src, filepath.Join(dir, "dst"))
@@ -1057,5 +1059,112 @@ func TestCopyFile_NoWriteToReadonlyDir(t *testing.T) {
 
 	if err := CopyFile(src, filepath.Join(dst, "f")); err == nil {
 		t.Error("expected error copying into read-only dir")
+	}
+}
+
+func TestCopyDir_IntoItsOwnSubtree(t *testing.T) {
+	t.Parallel()
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(src, "copy")
+	if err := CopyDir(src, dst); err != nil {
+		t.Fatalf("CopyDir: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "f")); string(got) != "x" {
+		t.Errorf("copy/f = %q; want x", got)
+	}
+	if Exists(filepath.Join(dst, "copy")) {
+		t.Error("CopyDir copied the destination into itself")
+	}
+}
+
+func TestCopyDir_ReadOnlySource(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX modes enforced")
+	}
+	t.Parallel()
+	src := filepath.Join(t.TempDir(), "src")
+	sub := filepath.Join(src, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f"), []byte("x"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{sub, src} {
+		if err := os.Chmod(d, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst := filepath.Join(t.TempDir(), "dst")
+	t.Cleanup(func() {
+		for _, d := range []string{src, sub, dst, filepath.Join(dst, "sub")} {
+			_ = os.Chmod(d, 0o755)
+		}
+	})
+	if err := CopyDir(src, dst); err != nil {
+		t.Fatalf("CopyDir: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "sub", "f")); string(got) != "x" {
+		t.Errorf("sub/f = %q; want x", got)
+	}
+	for _, d := range []string{dst, filepath.Join(dst, "sub")} {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o555 {
+			t.Errorf("%s mode = %v; want 0555", d, perm)
+		}
+	}
+}
+
+func TestCopy_SyncOption(t *testing.T) {
+	h := newFaultyHooks(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"x", "y", filepath.Join("a", "z")} {
+		if err := os.WriteFile(filepath.Join(src, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	syncs := 0
+	fileSync = func(f *os.File) error {
+		syncs++
+		return h.origFileSync(f)
+	}
+
+	if err := CopyDir(src, filepath.Join(dir, "off"), WithCopySync(false)); err != nil {
+		t.Fatal(err)
+	}
+	if syncs != 0 {
+		t.Errorf("WithCopySync(false): %d syncs; want 0", syncs)
+	}
+
+	syncs = 0
+	if err := CopyDir(src, filepath.Join(dir, "on")); err != nil {
+		t.Fatal(err)
+	}
+	// Three files, plus the two destination directories and the
+	// directory holding dst, on systems that sync directories.
+	want := 3
+	if runtime.GOOS != "windows" {
+		want += 3
+	}
+	if syncs != want {
+		t.Errorf("default: %d syncs; want %d", syncs, want)
+	}
+
+	syncs = 0
+	if err := CopyFile(filepath.Join(src, "x"), filepath.Join(dir, "x2"), WithCopySync(false)); err != nil {
+		t.Fatal(err)
+	}
+	if syncs != 0 {
+		t.Errorf("CopyFile WithCopySync(false): %d syncs; want 0", syncs)
 	}
 }

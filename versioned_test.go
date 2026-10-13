@@ -308,9 +308,10 @@ func TestVersionedConfigDefaults(t *testing.T) {
 			c.nowFn = nil
 		},
 	})
-	if cfg.perm != 0o644 {
-		t.Errorf("perm = %v; want 0o644 (default)", cfg.perm)
+	if cfg.perm != 0 {
+		t.Errorf("perm = %v; want 0 (keep the existing mode)", cfg.perm)
 	}
+
 	if cfg.maxBytes != 100*1024*1024 {
 		t.Errorf("maxBytes = %d; want default 100MiB", cfg.maxBytes)
 	}
@@ -373,5 +374,70 @@ func TestWriteFileVersioned_ConcurrentWrites(t *testing.T) {
 	}
 	if len(content) == 0 {
 		t.Errorf("live file empty after concurrent writes")
+	}
+}
+
+func TestWriteFileVersioned_KeepsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(p, []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := WriteFileVersioned(p, []byte("b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreVersion(p, backup); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(p)
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode = %v; want 0600 kept", perm)
+	}
+	if _, err := WriteFileVersioned(p, []byte("c"), WithVersionsPerm(0o640)); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = os.Stat(p)
+	if perm := info.Mode().Perm(); perm != 0o640 {
+		t.Errorf("mode with WithVersionsPerm = %v; want 0640", perm)
+	}
+	fresh := filepath.Join(filepath.Dir(p), "fresh")
+	if _, err := WriteFileVersioned(fresh, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = os.Stat(fresh)
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("new file mode = %v; want 0644", perm)
+	}
+}
+
+func TestWriteFileVersioned_SameMillisecondOrder(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "f")
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := WithVersionsClock(func() time.Time { return fixed })
+	for i := 0; i < 12; i++ {
+		if _, err := WriteFileVersioned(p, []byte{byte('a' + i)}, clk, WithVersionsKeep(2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vs, err := ListVersions(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, v := range vs {
+		b, _ := os.ReadFile(v.Path)
+		got += string(b)
+	}
+	// The live file holds "l"; the two newest backups hold "k" then "j".
+	if got != "kj" {
+		t.Errorf("kept versions hold %q, newest first; want \"kj\"", got)
 	}
 }

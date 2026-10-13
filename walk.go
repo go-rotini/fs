@@ -76,7 +76,8 @@ func WalkMaxDepth(n int) WalkOption {
 // WalkFollowSymlinks dereferences symlinks during the walk, so the
 // [WalkFunc] sees each link's target. Symlink loops are detected by
 // tracking resolved real paths; an already-visited target is
-// silently skipped.
+// silently skipped. A dangling symlink is reported as the link
+// itself.
 func WalkFollowSymlinks(b bool) WalkOption {
 	return func(o *walkOptions) { o.followSymlinks = b }
 }
@@ -169,21 +170,37 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 func walkSymlinkAware(root string, fn WalkFunc, cfg walkOptions) error {
 	visited := map[string]struct{}{}
 	cleanRoot := filepath.Clean(root)
-	return walkSymlinkRec(cleanRoot, cleanRoot, 0, fn, cfg, visited)
+	return walkSymlinkRec(cleanRoot, cleanRoot, "", 0, fn, cfg, visited)
 }
 
-func walkSymlinkRec(root, path string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
+// walkSymlinkRec visits path and, for a directory, its entries.
+// realHint is path with every symlink resolved, or "" when it isn't known yet.
+// An entry that isn't itself a symlink resolves to its directory's
+// real path joined with its name, which is what [filepath.EvalSymlinks]
+// would return, so only symlinks need resolving.
+func walkSymlinkRec(root, path, realHint string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
 	info, err := os.Stat(path)
+	if errors.Is(err, stdfs.ErrNotExist) {
+		// A dangling symlink: report the link itself.
+		if li, lerr := os.Lstat(path); lerr == nil && li.Mode()&os.ModeSymlink != 0 {
+			info, err = li, nil
+		}
+	}
 	if err != nil {
 		if cfg.errorHandler != nil {
 			return cfg.errorHandler(path, err)
 		}
-		return err //nolint:wrapcheck // outer Walk wraps via *PathError
+		return err
 	}
 
-	resolved, rerr := filepath.EvalSymlinks(path)
-	if rerr != nil {
-		resolved = path
+	resolved, realKnown := realHint, realHint != ""
+	if !realKnown {
+		var rerr error
+		if resolved, rerr = filepath.EvalSymlinks(path); rerr != nil {
+			resolved = path
+		} else {
+			realKnown = true
+		}
 	}
 	if _, seen := visited[resolved]; seen {
 		return nil
@@ -226,7 +243,11 @@ func walkSymlinkRec(root, path string, depth int, fn WalkFunc, cfg walkOptions, 
 				continue
 			}
 		}
-		if rerr := walkSymlinkRec(root, child, depth+1, fn, cfg, visited); rerr != nil {
+		childReal := ""
+		if realKnown && e.Type()&os.ModeSymlink == 0 {
+			childReal = filepath.Join(resolved, e.Name())
+		}
+		if rerr := walkSymlinkRec(root, child, childReal, depth+1, fn, cfg, visited); rerr != nil {
 			if errors.Is(rerr, filepath.SkipAll) {
 				return rerr
 			}

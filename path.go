@@ -51,11 +51,24 @@ func WithStrictExpansion() PathOption {
 //	Expand("${XDG_CACHE_HOME}/data") -> "/Users/alice/.cache/data"
 //	Expand("~bob/notes")             -> "/Users/bob/notes"  (or error)
 //
-// The tilde is only recognized at the start of path. A `$` not
-// followed by a name, or an unclosed `${`, is kept literally. An unset
-// env var expands to "" by default; pass [WithStrictExpansion] to
-// error instead. A path containing a NUL byte returns an error
-// wrapping [ErrInvalidPath].
+// Inside braces the POSIX shell operators are supported, one pass (a
+// word is not expanded again):
+//
+//	${VAR:-word}  word if VAR is unset or empty
+//	${VAR-word}   word if VAR is unset
+//	${VAR:+word}  word if VAR is set and not empty, else ""
+//	${VAR+word}   word if VAR is set, else ""
+//	${VAR:?msg}   error if VAR is unset or empty
+//	${VAR?msg}    error if VAR is unset
+//
+// Any other ${...} form returns an error wrapping [ErrInvalidPath].
+//
+// The tilde is only recognized at the start of path, and the home
+// directory it expands to is used as is: a `$` in it is not expanded.
+// A `$` not followed by a name, or an unclosed `${`, is kept
+// literally. An unset env var expands to "" by default; pass
+// [WithStrictExpansion] to error instead. A path containing a NUL
+// byte returns an error wrapping [ErrInvalidPath].
 func Expand(path string, opts ...PathOption) (string, error) {
 	cfg := pathOptions{}
 	for _, opt := range opts {
@@ -68,20 +81,26 @@ func Expand(path string, opts ...PathOption) (string, error) {
 		return "", &PathError{Op: opExpand, Path: path, Cause: ErrInvalidPath}
 	}
 
+	// As in a shell, the home directory a tilde expands to is not
+	// expanded again: variables are expanded in the rest only.
+	home, rest := "", path
 	if strings.HasPrefix(path, "~") {
-		expanded, err := expandHome(path)
-		if err != nil {
+		var err error
+		if home, rest, err = expandHome(path); err != nil {
 			return "", err
 		}
-		path = expanded
 	}
-
-	return expandVars(path, cfg.strictExpansion)
+	expanded, err := expandVars(rest, cfg.strictExpansion)
+	if err != nil {
+		return "", &PathError{Op: opExpand, Path: path, Cause: err}
+	}
+	return home + expanded, nil
 }
 
-// expandHome resolves a leading ~ or ~user. The function is invoked
-// only when path starts with "~".
-func expandHome(path string) (string, error) {
+// expandHome resolves a leading ~ or ~user, returning the home
+// directory and the rest of path after the user name. The function is
+// invoked only when path starts with "~".
+func expandHome(path string) (home, rest string, err error) {
 	// Find the first separator after the tilde; everything between
 	// "~" and the separator is the username.
 	end := 1
@@ -89,27 +108,25 @@ func expandHome(path string) (string, error) {
 		end++
 	}
 	username := path[1:end]
-	rest := path[end:]
+	rest = path[end:]
 
-	var home string
 	if username == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return "", &PathError{Op: opExpand, Path: path, Cause: err}
+		h, herr := os.UserHomeDir()
+		if herr != nil {
+			return "", "", &PathError{Op: opExpand, Path: path, Cause: herr}
 		}
-		home = h
-	} else {
-		u, err := user.Lookup(username)
-		if err != nil {
-			return "", &PathError{Op: opExpand, Path: path, Cause: err}
-		}
-		home = u.HomeDir
+		return h, rest, nil
 	}
-	return home + rest, nil
+	u, lerr := user.Lookup(username)
+	if lerr != nil {
+		return "", "", &PathError{Op: opExpand, Path: path, Cause: lerr}
+	}
+	return u.HomeDir, rest, nil
 }
 
-// expandVars resolves $VAR and ${VAR} references. strict=true causes
-// an unset variable to return an error instead of expanding to "".
+// expandVars resolves $VAR and ${...} references. strict=true causes
+// an unset plain reference to return an error instead of expanding to "".
+// The caller wraps the error.
 func expandVars(path string, strict bool) (string, error) {
 	var b strings.Builder
 	b.Grow(len(path))
@@ -119,23 +136,15 @@ func expandVars(path string, strict bool) (string, error) {
 			i++
 			continue
 		}
-		// Scan a $NAME or ${NAME} reference.
-		name, consumed := scanVarRef(path[i:])
+		ref, consumed := scanVarRef(path[i:])
 		if consumed == 0 {
 			b.WriteByte(path[i])
 			i++
 			continue
 		}
-		v, ok := os.LookupEnv(name)
-		if !ok {
-			if strict {
-				return "", &PathError{
-					Op:    opExpand,
-					Path:  path,
-					Cause: fmt.Errorf("%w: %q", errUnsetExpansion, name),
-				}
-			}
-			// Unset to expand to "".
+		v, err := ref.eval(strict)
+		if err != nil {
+			return "", err
 		}
 		b.WriteString(v)
 		i += consumed
@@ -143,28 +152,99 @@ func expandVars(path string, strict bool) (string, error) {
 	return b.String(), nil
 }
 
-// scanVarRef parses a $VAR or ${VAR} reference at the start of s.
-// Returns the name and the number of bytes consumed; consumed=0 means
-// no recognizable reference (lone $ or $<non-ident>).
-func scanVarRef(s string) (name string, consumed int) {
+// varRef is one parsed $NAME or ${NAME[op word]} reference. invalid is set
+// for a ${...} whose content is not a name or a name plus a supported
+// operator.
+type varRef struct {
+	name, op, word string
+	invalid        bool
+}
+
+// eval resolves r against the environment.
+func (r varRef) eval(strict bool) (string, error) {
+	if r.invalid {
+		return "", fmt.Errorf("%w: unsupported expansion ${%s}", ErrInvalidPath, r.word)
+	}
+	v, set := os.LookupEnv(r.name)
+	switch r.op {
+	case ":-":
+		if v == "" {
+			return r.word, nil
+		}
+	case "-":
+		if !set {
+			return r.word, nil
+		}
+	case ":+":
+		if v == "" {
+			return "", nil
+		}
+		return r.word, nil
+	case "+":
+		if !set {
+			return "", nil
+		}
+		return r.word, nil
+	case ":?", "?":
+		if (r.op == ":?" && v == "") || !set {
+			msg := r.word
+			if msg == "" {
+				msg = "unset or empty"
+			}
+			return "", fmt.Errorf("%w: %q: %s", errUnsetExpansion, r.name, msg)
+		}
+	default:
+		if !set && strict {
+			return "", fmt.Errorf("%w: %q", errUnsetExpansion, r.name)
+		}
+	}
+	return v, nil
+}
+
+// scanVarRef parses a $NAME or ${...} reference at the start of s and
+// returns it with the number of bytes consumed; consumed=0 means no
+// reference (a lone $, $<non-name>, or an unclosed ${).
+func scanVarRef(s string) (ref varRef, consumed int) {
 	if len(s) < 2 || s[0] != '$' {
-		return "", 0
+		return varRef{}, 0
 	}
 	if s[1] == '{' {
 		end := strings.IndexByte(s, '}')
 		if end < 0 {
-			return "", 0
+			return varRef{}, 0
 		}
-		return s[2:end], end + 1
+		return parseBraced(s[2:end]), end + 1
 	}
 	end := 1
 	for end < len(s) && isVarRefByte(s[end]) {
 		end++
 	}
 	if end == 1 {
-		return "", 0
+		return varRef{}, 0
 	}
-	return s[1:end], end
+	return varRef{name: s[1:end]}, end
+}
+
+// parseBraced reads the content of ${...}: a name, optionally followed
+// directly by one of the operators :- - :+ + :? ? and its word.
+func parseBraced(expr string) varRef {
+	n := 0
+	for n < len(expr) && isVarRefByte(expr[n]) {
+		n++
+	}
+	if n == 0 {
+		return varRef{invalid: true, word: expr}
+	}
+	name, rest := expr[:n], expr[n:]
+	if rest == "" {
+		return varRef{name: name}
+	}
+	for _, op := range [...]string{":-", ":+", ":?", "-", "+", "?"} {
+		if strings.HasPrefix(rest, op) {
+			return varRef{name: name, op: op, word: rest[len(op):]}
+		}
+	}
+	return varRef{invalid: true, word: expr}
 }
 
 func isVarRefByte(c byte) bool {

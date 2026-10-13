@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -51,15 +50,20 @@ type LockHandle struct {
 
 // Lock acquires an exclusive advisory lock on path, blocking until
 // the lock is available. The lockfile is created if it does not yet
-// exist (mode 0o644); an empty path returns an error wrapping
-// [ErrInvalidPath]. Returns a [*LockHandle] that the caller must
-// Release.
+// exist (mode 0o644); a symlink at path is refused with an error
+// wrapping [ErrSymlinkLoop], and an empty path returns an error
+// wrapping [ErrInvalidPath]. Returns a [*LockHandle] that the caller
+// must Release.
 //
 // On POSIX this is flock(2). On Windows it is LockFileEx over a single
 // byte far past end-of-file, so the lockfile's content stays readable
 // while the lock is held. The lock belongs to the open file handle,
 // not the process: a second Lock on the same path from the same
-// process blocks too.
+// process blocks too. AIX is the exception: there it is a fcntl(2)
+// record lock, which belongs to the process, so a second Lock from
+// the same process succeeds at once, and closing any descriptor of
+// the file releases it. On js/wasm, wasip1 and Plan 9, Lock returns
+// [ErrNotSupported].
 //
 // Advisory only: cooperating processes must agree to call Lock to
 // see each other's locks. Direct file reads and writes ignore the
@@ -238,7 +242,10 @@ func PIDLock(path string, opts ...PIDLockOption) (*LockHandle, error) {
 
 // Release releases the lock and closes the underlying file. It runs
 // once; later calls return the first call's result. Release does not
-// remove the lockfile from disk.
+// remove the lockfile from disk. For a [PIDLock] handle it empties the
+// file before unlocking, so only a holder that exited without
+// releasing leaves a PID behind for the next PIDLock to report as
+// stale.
 func (h *LockHandle) Release() error {
 	if h == nil {
 		return nil
@@ -261,6 +268,9 @@ func (h *LockHandle) PID() int {
 func (h *LockHandle) releaseInternal() error {
 	if h.f == nil {
 		return nil
+	}
+	if h.pid != 0 {
+		_ = h.f.Truncate(0) //nolint:errcheck // best effort: a PID left behind is only reported as a stale lock later
 	}
 	if err := unlockFile(h.f); err != nil {
 		_ = h.f.Close()
@@ -303,9 +313,13 @@ func acquireLockWithWriter(path string, kind lockKind, writePID int, writer func
 		return nil, wrapPathError(opLock, path, ErrInvalidPath)
 	}
 
-	flags := os.O_RDWR | os.O_CREATE
-	f, err := os.OpenFile(path, flags, lockFileMode)
+	// The lockfile often lives in a shared directory, so a symlink
+	// planted at path is refused rather than followed.
+	f, err := openNoFollow(path, os.O_RDWR|os.O_CREATE, lockFileMode)
 	if err != nil {
+		if pe, ok := errors.AsType[*PathError](err); ok {
+			err = pe.Cause
+		}
 		return nil, wrapPathError(opLock, path, err)
 	}
 
@@ -390,19 +404,4 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	return platformPIDAlive(pid)
-}
-
-// pidAliveSignal0 sends signal 0 to pid (POSIX). Returns true when
-// the kill succeeds or fails with EPERM (process exists but we lack
-// permission to signal it). False on ESRCH or any other error.
-func pidAliveSignal0(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
 }

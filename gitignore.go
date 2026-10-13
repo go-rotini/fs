@@ -1,21 +1,21 @@
 package fs
 
 import (
-	"bufio"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
 	opLoadGitignore = "loadgitignore"
 
 	// maxGitignoreDoubleStar caps the number of `**` segments in a
-	// single pattern. matchSegments is O(n^k) in k (the `**` count);
-	// an adversarial pattern against a deep path could exponentially
-	// blow up matching otherwise. git itself caps near 16.
+	// single pattern; patterns with more are dropped.
 	maxGitignoreDoubleStar = 16
+
+	// maxGitignoreFileSize is the largest ignore file git reads.
+	maxGitignoreFileSize = 100 << 20
 )
 
 // Gitignore is a compiled set of .gitignore-style ignore rules.
@@ -39,6 +39,8 @@ type gitignorePattern struct {
 	dirOnly  bool
 	anchored bool
 	segments []string
+	// doubleStars counts the `**` segments.
+	doubleStars int
 }
 
 // NewGitignore compiles patterns into a [*Gitignore]. Each element is
@@ -55,29 +57,24 @@ func NewGitignore(patterns []string) *Gitignore {
 }
 
 // LoadGitignore reads patterns from filePath and compiles them into
-// a [*Gitignore].
+// a [*Gitignore]. As git does, it skips a leading UTF-8 byte order
+// mark and accepts lines of any length; a file over 100 MiB, which git
+// ignores, returns an error wrapping [ErrFileTooLarge].
 func LoadGitignore(filePath string) (*Gitignore, error) {
-	f, err := os.Open(filePath)
+	data, err := ReadFile(filePath, WithMaxSize(maxGitignoreFileSize))
 	if err != nil {
-		return nil, wrapPathError(opLoadGitignore, filePath, err)
+		return nil, withOp(opLoadGitignore, err)
 	}
-	defer func() { _ = f.Close() }()
-
-	var lines []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		lines = append(lines, sc.Text())
-	}
-	if serr := sc.Err(); serr != nil {
-		return nil, wrapPathError(opLoadGitignore, filePath, serr)
-	}
-	return NewGitignore(lines), nil
+	return NewGitignore(strings.Split(string(StripUTF8BOM(data)), "\n")), nil
 }
 
 // Match reports whether relPath is ignored. relPath must be relative
 // to the directory the .gitignore was placed in, using POSIX
-// separators. isDir indicates whether the entry is a directory;
-// dir-only patterns (trailing `/`) match only when this is true.
+// separators. isDir indicates whether the entry is a directory: a
+// dir-only pattern (trailing `/`) matches relPath itself only when it
+// is a directory, and matches everything below a directory it
+// matches. A trailing `/**` matches everything below a directory but
+// not the directory itself.
 //
 // Match implements the gitignore precedence rule: later patterns
 // override earlier ones. A negation (leading `!`) re-includes a
@@ -93,12 +90,12 @@ func (g *Gitignore) Match(relPath string, isDir bool) bool {
 		return false
 	}
 
+	pathSegs := strings.Split(relPath, "/")
+	m := segMatcherPool.Get().(*segMatcher) //nolint:forcetypeassert // the pool only holds *segMatcher
+	defer segMatcherPool.Put(m)
 	ignored := false
 	for _, p := range g.patterns {
-		if p.dirOnly && !isDir {
-			continue
-		}
-		if p.matches(relPath) {
+		if p.matches(m, pathSegs, isDir) {
 			ignored = !p.negated
 		}
 	}
@@ -151,55 +148,133 @@ func parseGitignoreLine(line string) (gitignorePattern, bool) {
 			doubleStars++
 		}
 	}
+	p.doubleStars = doubleStars
 	if doubleStars > maxGitignoreDoubleStar {
 		return gitignorePattern{}, false
 	}
 	return p, true
 }
 
-// matches reports whether p matches relPath.
+// matches reports whether p matches the path split into segs.
 //
-// For anchored patterns, p.segments are matched against the head of
-// relPath's segments. For unanchored patterns, matching is attempted
-// at every starting index. `**` consumes zero or more path segments.
-func (p gitignorePattern) matches(relPath string) bool {
-	pathSegs := strings.Split(relPath, "/")
-
-	if p.anchored {
-		return matchSegments(p.segments, pathSegs)
+// A pattern matches when it matches a run of whole segments that
+// starts at the first segment (anchored) or at any segment
+// (unanchored); what follows the run lies below a matched directory.
+// A run that ends at the last segment is the entry itself, which a
+// dir-only pattern matches only when isDir. `**` matches zero or more
+// segments, except at the end of the pattern, where it matches one or
+// more.
+func (p gitignorePattern) matches(m *segMatcher, segs []string, isDir bool) bool {
+	if p.doubleStars == 0 {
+		// Without `**` a run is exactly len(p.segments) long, so each
+		// start is one fixed comparison.
+		n := len(p.segments)
+		last := len(segs) - n
+		if p.anchored {
+			last = min(last, 0)
+		}
+		for s := 0; s <= last; s++ {
+			if (s+n < len(segs) || !p.dirOnly || isDir) && segmentsMatch(p.segments, segs[s:s+n]) {
+				return true
+			}
+		}
+		return false
 	}
-	for i := 0; i <= len(pathSegs); i++ {
-		if matchSegments(p.segments, pathSegs[i:]) {
+	for _, end := range m.run(p.segments, segs, p.anchored, false) {
+		if end < len(segs) || !p.dirOnly || isDir {
 			return true
 		}
 	}
 	return false
 }
 
-// matchSegments runs pattern segments against path segments with
-// `**` awareness. Returns true when the pattern consumes a prefix of
-// the path, giving the standard parent-dir-ignore semantics (pattern
-// "foo" matches path "foo/bar").
-func matchSegments(pat, p []string) bool {
-	if len(pat) == 0 {
-		return true
+// segmentsMatch reports whether each segment glob in pat matches the
+// segment at the same index of segs; they have the same length.
+func segmentsMatch(pat, segs []string) bool {
+	for i, g := range pat {
+		if ok, err := path.Match(g, segs[i]); err != nil || !ok {
+			return false
+		}
 	}
-	if pat[0] == "**" {
-		for i := 0; i <= len(p); i++ {
-			if matchSegments(pat[1:], p[i:]) {
-				return true
+	return true
+}
+
+// segMatcherPool reuses matcher buffers across [Gitignore.Match] calls.
+var segMatcherPool = sync.Pool{New: func() any { return new(segMatcher) }}
+
+// segMatcher simulates a pattern as a set of positions in its segment
+// list, advanced one path segment at a time. That is O(pattern ×
+// path) for any number of `**`, where trying every split of the path
+// for each `**` would be exponential. Its buffers are reused across
+// patterns.
+type segMatcher struct {
+	cur, next []bool
+	ends      []int
+}
+
+// run returns the path indexes at which some run of segments ending
+// there is fully matched by pat, in increasing order. Unless all is
+// set, it stops at the first index before the last segment, since
+// that alone decides a gitignore match.
+func (m *segMatcher) run(pat, segs []string, anchored, all bool) []int {
+	n := len(pat)
+	m.cur = resetBools(m.cur, n+1)
+	m.next = resetBools(m.next, n+1)
+	m.ends = m.ends[:0]
+
+	m.cur[0] = true
+	closeOver(pat, m.cur)
+	for j := 0; ; j++ {
+		if m.cur[n] {
+			m.ends = append(m.ends, j)
+			if j < len(segs) && !all {
+				return m.ends
 			}
 		}
-		return false
+		if j == len(segs) {
+			return m.ends
+		}
+		clear(m.next)
+		for k := range n {
+			if !m.cur[k] {
+				continue
+			}
+			if pat[k] == "**" {
+				m.next[k] = true
+				if k == n-1 {
+					m.next[n] = true // a trailing ** has consumed a segment
+				}
+				continue
+			}
+			if ok, err := path.Match(pat[k], segs[j]); err == nil && ok {
+				m.next[k+1] = true
+			}
+		}
+		if !anchored {
+			m.next[0] = true // a run may also start at the next segment
+		}
+		closeOver(pat, m.next)
+		m.cur, m.next = m.next, m.cur
 	}
-	if len(p) == 0 {
-		return false
+}
+
+// closeOver adds, for every reachable `**` that isn't the last
+// segment, the position after it: the `**` matching zero segments.
+func closeOver(pat []string, set []bool) {
+	for k := range len(pat) - 1 {
+		if set[k] && pat[k] == "**" {
+			set[k+1] = true
+		}
 	}
-	matched, err := path.Match(pat[0], p[0])
-	if err != nil || !matched {
-		return false
+}
+
+func resetBools(b []bool, n int) []bool {
+	if cap(b) < n {
+		return make([]bool, n)
 	}
-	return matchSegments(pat[1:], p[1:])
+	b = b[:n]
+	clear(b)
+	return b
 }
 
 // WithWalkGitignore adds gitignore-based filtering to a [Walk]. The

@@ -3,6 +3,8 @@
 package fs
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,4 +43,29 @@ func TestLongPath_UNC(t *testing.T) {
 	if !strings.HasPrefix(got, `\\?\UNC\`) {
 		t.Errorf("UNC long path missing \\?\\UNC\\ prefix: %q", got)
 	}
+}
+
+// Locks and no-follow opens work on paths past MAX_PATH, as os.OpenFile does.
+func TestLock_LongPath(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), strings.Repeat("d", 100), strings.Repeat("e", 100), strings.Repeat("f", 100))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "app.lock")
+	if len(path) < maxPath {
+		t.Fatalf("test path is only %d characters", len(path))
+	}
+	h, err := Lock(path)
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if err := h.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	f, err := OpenNoFollow(path, os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenNoFollow: %v", err)
+	}
+	_ = f.Close()
 }

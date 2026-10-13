@@ -45,6 +45,23 @@ func TestExpand_TildeHome(t *testing.T) {
 	}
 }
 
+// The home directory a tilde expands to is not expanded again, as in a shell.
+func TestExpand_TildeHomeNotReexpanded(t *testing.T) {
+	homeVar := "HOME"
+	if runtime.GOOS == "windows" {
+		homeVar = "USERPROFILE"
+	}
+	t.Setenv("ct", "INJECTED")
+	t.Setenv("sub", "s")
+	for _, home := range []string{"/home/ac$ct", "/home/a${b c}", "/home/a${b"} {
+		t.Setenv(homeVar, home)
+		got, err := Expand("~/x/$sub")
+		if err != nil || got != home+"/x/s" {
+			t.Errorf("home %q: Expand(~/x/$sub) = %q, %v; want %q", home, got, err, home+"/x/s")
+		}
+	}
+}
+
 func TestExpand_TildeMidPath(t *testing.T) {
 	t.Parallel()
 	// ~ only at start; mid-path is literal.
@@ -477,8 +494,8 @@ func TestScanVarRef(t *testing.T) {
 		{"$FOO_BAR123/x", "FOO_BAR123", 11},
 	}
 	for _, c := range cases {
-		name, n := scanVarRef(c.in)
-		if name != c.wantName || n != c.wantN {
+		ref, n := scanVarRef(c.in)
+		if name := ref.name; name != c.wantName || n != c.wantN {
 			t.Errorf("scanVarRef(%q) = (%q, %d), want (%q, %d)",
 				c.in, name, n, c.wantName, c.wantN)
 		}
@@ -545,5 +562,41 @@ func TestExpand_KnownUser(t *testing.T) {
 	}
 	if _, err := Expand("~" + u.Username + "/x"); err != nil {
 		t.Errorf("Expand(~%s/x): %v", u.Username, err)
+	}
+}
+
+func TestExpand_BracedOperators(t *testing.T) {
+	t.Setenv("FSX_SET", "v")
+	t.Setenv("FSX_EMPTY", "")
+	ok := []struct{ in, want string }{
+		{"${FSX_UNSET:-/dir}/cfg", "/dir/cfg"},
+		{"${FSX_EMPTY:-/dir}/cfg", "/dir/cfg"},
+		{"${FSX_SET:-/dir}/cfg", "v/cfg"},
+		{"${FSX_UNSET-/dir}", "/dir"},
+		{"${FSX_EMPTY-/dir}", ""},
+		{"${FSX_SET:+alt}", "alt"},
+		{"${FSX_EMPTY:+alt}", ""},
+		{"${FSX_EMPTY+alt}", "alt"},
+		{"${FSX_UNSET+alt}", ""},
+		{"${FSX_SET:?need it}", "v"},
+		{"${FSX_EMPTY?need it}", ""},
+		{"${FSX_UNSET-a:-b}", "a:-b"},
+		{"${FSX_UNSET:-$FSX_SET}", "$FSX_SET"},
+	}
+	for _, c := range ok {
+		got, err := Expand(c.in, WithStrictExpansion())
+		if err != nil || got != c.want {
+			t.Errorf("Expand(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+	for _, in := range []string{"${FSX_UNSET:?need it}", "${FSX_EMPTY:?x}", "${FSX_UNSET?x}"} {
+		if _, err := Expand(in); !errors.Is(err, errUnsetExpansion) {
+			t.Errorf("Expand(%q) err = %v, want errUnsetExpansion", in, err)
+		}
+	}
+	for _, in := range []string{"${}", "${A B}", "${FSX_SET=x}", "${-x}", "${FSX_SET#x}"} {
+		if _, err := Expand(in); !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("Expand(%q) err = %v, want ErrInvalidPath", in, err)
+		}
 	}
 }

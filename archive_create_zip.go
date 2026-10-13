@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"io"
 	stdfs "io/fs"
+	"os"
 	"path/filepath"
 )
 
@@ -26,6 +27,9 @@ func createZip(w io.Writer, root string, cfg archiveCreateOptions) error {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if cfg.exclude != nil && os.SameFile(info, cfg.exclude) {
 			return nil
 		}
 
@@ -81,7 +85,7 @@ func copyFileIntoZip(path string, ww io.Writer) error {
 		return oerr
 	}
 	defer f.Close()
-	if _, cerr := io.Copy(ww, hookedReader{f}); cerr != nil {
+	if _, cerr := io.Copy(ww, fileReader(f)); cerr != nil {
 		return cerr //nolint:wrapcheck // outer caller wraps
 	}
 	return nil

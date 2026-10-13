@@ -58,10 +58,14 @@ func MountPoint(path string) (string, error) { return mountPointOf(path) }
 func FilesystemType(path string) (string, error) { return filesystemTypeOf(path) }
 
 // IsNetworkFS reports whether path lives on a network filesystem
-// (NFS, SMB/CIFS, AFP, WebDAV), judged from [FilesystemType]. Every
-// FUSE filesystem counts as network. A type-detection error is folded
-// to false.
+// (NFS, SMB/CIFS, AFP, WebDAV, 9P, Ceph, GlusterFS, AFS and
+// similar), judged from [FilesystemType]; on Windows a network drive
+// or share also counts. Every FUSE filesystem counts as network. A
+// type-detection error is folded to false.
 func IsNetworkFS(path string) bool {
+	if isRemoteVolume(path) {
+		return true
+	}
 	fsType, err := FilesystemType(path)
 	if err != nil {
 		return false
@@ -72,7 +76,8 @@ func IsNetworkFS(path string) bool {
 func isNetworkFSType(fsType string) bool {
 	t := strings.ToLower(fsType)
 	switch t {
-	case "nfs", "nfs4", "cifs", "smb", "smbfs", "afpfs", "webdav":
+	case "nfs", "nfs3", "nfs4", "cifs", "smb", "smb2", "smb3", "smbfs", "afpfs", "webdav",
+		"9p", "ceph", "glusterfs", "lustre", "afs", "ncpfs", "coda", "gpfs", "beegfs": //nolint:misspell // lustre is a filesystem
 		return true
 	}
 	// fuse-mounted network filesystems advertise as "fuse" or "fuse.<name>"

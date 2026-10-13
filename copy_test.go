@@ -208,6 +208,9 @@ func TestCopyFile_NotRegular(t *testing.T) {
 	if !errors.Is(err, ErrNotSupported) {
 		t.Errorf("got %v, want ErrNotSupported", err)
 	}
+	if msg := err.Error(); !strings.Contains(msg, "unsupported file type: directory") || strings.Contains(msg, "platform") {
+		t.Errorf("%q does not name the file type", msg)
+	}
 }
 
 // --- CopyDir ---

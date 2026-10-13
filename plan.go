@@ -50,7 +50,8 @@ type PlanAction int
 
 const (
 	// PlanActionCreate writes a new file. It fails with an error
-	// wrapping [ErrAlreadyExists] if the path exists at apply time.
+	// wrapping [ErrAlreadyExists] if the path exists at apply time; a
+	// symlink there counts, even one whose target is missing.
 	PlanActionCreate PlanAction = iota + 1
 
 	// PlanActionUpdate writes a file, creating it if missing. Existing
@@ -456,7 +457,7 @@ func applyTransientOp(op PlanOp, cfg applyConfig) error {
 	}
 	switch op.Action {
 	case PlanActionCreate:
-		if Exists(op.Path) {
+		if _, serr := osLstat(op.Path); serr == nil {
 			return wrapPathError(opPlanApply, op.Path, ErrAlreadyExists)
 		}
 		return WriteFile(op.Path, op.Data, WithPerm(opPerm(op)))

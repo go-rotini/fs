@@ -58,7 +58,11 @@ func IsWritable(path string) bool {
 		return false
 	}
 	// FILE_ATTRIBUTE_READONLY check via syscall.GetFileAttributes.
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	long, err := LongPath(path)
+	if err != nil {
+		return false
+	}
+	pathPtr, err := syscall.UTF16PtrFromString(long)
 	if err != nil {
 		return false
 	}

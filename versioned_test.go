@@ -266,6 +266,9 @@ func TestWriteFileVersioned_UnwritableParentRejected(t *testing.T) {
 	if runtime.GOOS == goosWindows {
 		t.Skip("CI runs elevated on Windows, so the drive root is writable")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can create the missing parent")
+	}
 	if _, err := WriteFileVersioned("/nonexistent-root-XYZ123/nope/path", []byte("data")); err == nil {
 		t.Error("expected error for unwritable parent path")
 	}

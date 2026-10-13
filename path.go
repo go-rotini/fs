@@ -415,7 +415,10 @@ func MustBeChildOf(parent, child string) error {
 //
 // Both parent and path are themselves passed through
 // [filepath.EvalSymlinks] before the containment check, so symlinked
-// roots (e.g., macOS's /var to /private/var) compare correctly.
+// roots (e.g., macOS's /var to /private/var) compare correctly. On
+// Windows, directory junctions are followed too, and a path through any
+// other reparse point that redirects a lookup fails with
+// [ErrEscapesRoot].
 func EvalSymlinksWithin(parent, path string) (string, error) {
 	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -429,9 +432,15 @@ func EvalSymlinksWithin(parent, path string) (string, error) {
 	if err != nil {
 		return "", &PathError{Op: opAbs, Path: parent, Cause: err}
 	}
+	if parentAbs, err = resolveJunctions(parentAbs); err != nil {
+		return "", wrapPathError(opEvalSymlinks, parent, err)
+	}
 	resolvedAbs, err := filepath.Abs(resolvedPath)
 	if err != nil {
 		return "", &PathError{Op: opAbs, Path: resolvedPath, Cause: err}
+	}
+	if resolvedAbs, err = resolveJunctions(resolvedAbs); err != nil {
+		return "", wrapPathError(opEvalSymlinks, path, err)
 	}
 	ok, err := IsSubpath(parentAbs, resolvedAbs)
 	if err != nil {

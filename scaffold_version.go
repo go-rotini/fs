@@ -25,9 +25,9 @@ import (
 // kept, even when the source has changed. Use [ScaffoldOverwriteAll]
 // to replace them.
 //
-// A path that resolves outside dst through a symlink already on disk
-// fails with an error wrapping [ErrEscapesRoot]; entries before it
-// stay written.
+// A path that resolves outside dst through a link already on disk (a
+// symlink or a Windows directory junction) fails with an error
+// wrapping [ErrEscapesRoot]; entries before it stay written.
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
 

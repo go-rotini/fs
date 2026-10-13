@@ -103,9 +103,10 @@ var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflic
 // contents are not rendered until [ScaffoldApply].
 //
 // Every rendered path must stay inside dst, both as written and as it
-// resolves through the symlinks already on disk; one that doesn't,
-// such as a variable rendering to `../../x`, aborts the plan with an
-// error wrapping [ErrEscapesRoot].
+// resolves through the links already on disk (symlinks and Windows
+// directory junctions); one that does not, such as a variable
+// rendering to `../../x`, aborts the plan with an error wrapping
+// [ErrEscapesRoot].
 func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([]ScaffoldAction, error) {
 	cfg := newScaffoldOptions(opts)
 	if cfg.onConflict == ScaffoldPromptInteractive && cfg.promptFunc == nil {

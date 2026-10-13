@@ -551,3 +551,41 @@ func TestFault_Rotator_FailedSizeRotationKeepsLine(t *testing.T) {
 		t.Errorf("live file = %q, want both lines", got)
 	}
 }
+
+// After a threshold rotation fails, writes in the next second append without trying it again;
+// the first write after that retries. Every line lands in the live file.
+func TestFault_Rotator_FailedRotationBacksOff(t *testing.T) {
+	_ = newFaultyHooks(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "app.log")
+	r, err := NewRotator(path, WithRotateMaxBytes(4), WithRotateClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := r.Write([]byte("one\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	failing := errors.New("rename refused")
+	tries := 0
+	osRename = func(string, string) error { tries++; return failing }
+	if _, err := r.Write([]byte("two\n")); !errors.Is(err, failing) {
+		t.Fatalf("first Write: got %v, want the rename error", err)
+	}
+	for _, line := range []string{"three\n", "four\n"} {
+		if _, err := r.Write([]byte(line)); err != nil {
+			t.Fatalf("Write during the back-off: %v", err)
+		}
+	}
+	if tries != 1 {
+		t.Errorf("rename tried %d times in the back-off; want 1", tries)
+	}
+	now = now.Add(time.Second)
+	if _, err := r.Write([]byte("five\n")); !errors.Is(err, failing) || tries != 2 {
+		t.Errorf("Write after the back-off: %v with %d tries; want a retry", err, tries)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "one\ntwo\nthree\nfour\nfive\n" {
+		t.Errorf("live file = %q, want every line", got)
+	}
+}

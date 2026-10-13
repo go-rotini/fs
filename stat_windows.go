@@ -72,7 +72,11 @@ func winAttrs(path, op string) (*syscall.Win32FileAttributeData, error) {
 
 // winVolumeSerial returns the volume serial number containing path.
 func winVolumeSerial(path string) (uint32, error) {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	long, err := LongPath(path)
+	if err != nil {
+		return 0, err
+	}
+	pathPtr, err := syscall.UTF16PtrFromString(long)
 	if err != nil {
 		return 0, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}

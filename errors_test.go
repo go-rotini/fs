@@ -356,8 +356,8 @@ func TestWrapPathError_DoesNotRepeatSentinel(t *testing.T) {
 	t.Parallel()
 	inner := wrapPathError("inner", "/p", stdfs.ErrExist)
 	outer := wrapPathError("outer", "/p", inner)
-	if n := strings.Count(outer.Error(), "fs: already exists"); n != 1 {
-		t.Errorf("%q mentions the sentinel %d times; want 1", outer, n)
+	if n := strings.Count(outer.Error(), "already exists"); n != 1 {
+		t.Errorf("%q says \"already exists\" %d times; want 1", outer, n)
 	}
 	if !errors.Is(outer, ErrAlreadyExists) || !errors.Is(outer, stdfs.ErrExist) {
 		t.Errorf("%v lost its sentinels", outer)
@@ -389,5 +389,33 @@ func TestSentinels_TextOmitsStdlibPhrase(t *testing.T) {
 	_, err := os.Open(filepath.Join(t.TempDir(), "missing"))
 	if msg := wrapPathError("read", "/p", err).Error(); strings.Contains(msg, stdfs.ErrNotExist.Error()) {
 		t.Errorf("%q repeats %q", msg, stdfs.ErrNotExist)
+	}
+}
+
+// A message names the path, and carries the "fs:" prefix, once; the error still matches the
+// sentinel, the io/fs error and the OS *PathError.
+func TestPathError_MessageNamesPathOnce(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "missing")
+	_, err := ReadFile(path)
+	if err == nil {
+		t.Fatal("ReadFile of a missing file succeeded")
+	}
+	msg := err.Error()
+	if n := strings.Count(msg, path); n != 1 {
+		t.Errorf("%q names the path %d times; want 1", msg, n)
+	}
+	if n := strings.Count(msg, "fs: "); n != 1 {
+		t.Errorf("%q has the fs: prefix %d times; want 1", msg, n)
+	}
+	if !errors.Is(err, ErrNotFound) || !errors.Is(err, stdfs.ErrNotExist) {
+		t.Errorf("%v lost its sentinels", err)
+	}
+	if _, ok := errors.AsType[*stdfs.PathError](err); !ok {
+		t.Errorf("%v no longer carries the OS *PathError", err)
+	}
+	other := wrapPathError("copy", "/a", &stdfs.PathError{Op: "open", Path: "/b", Err: syscall.ENOENT})
+	if msg := other.Error(); !strings.Contains(msg, "open /b") {
+		t.Errorf("%q drops the other path the OS error names", msg)
 	}
 }

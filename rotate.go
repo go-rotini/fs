@@ -30,6 +30,10 @@ const (
 
 	rotateGzipExt              = ".gz"
 	rotateFilePerm os.FileMode = 0o644
+
+	// rotateRetryDelay is how long Write waits to try a threshold
+	// rotation again after one fails.
+	rotateRetryDelay = time.Second
 )
 
 // ErrRotatorClosed is returned by [Rotator.Write] after [Rotator.Close]
@@ -65,6 +69,7 @@ type Rotator struct {
 	held     stdfs.FileInfo // f's identity, from when it was opened
 	curBytes int64
 	openedAt time.Time
+	retryAt  time.Time // after a failed threshold rotation, when Write tries again
 	closed   bool
 }
 
@@ -177,8 +182,9 @@ func NewRotator(path string, opts ...RotatorOption) (*Rotator, error) {
 // one is opened first. Returns len(p) on success.
 //
 // If that rotation fails, p is still appended to the file at path and
-// Write returns len(p) with the rotation error; the next Write tries
-// the rotation again.
+// Write returns len(p) with the rotation error. Writes in the next
+// second append without trying the rotation; the first Write after
+// that tries it again.
 func (r *Rotator) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -188,8 +194,10 @@ func (r *Rotator) Write(p []byte) (int, error) {
 	}
 
 	var rotErr error
-	if r.shouldRotateLocked(int64(len(p))) {
-		rotErr = r.rotateLocked()
+	if r.shouldRotateLocked(int64(len(p))) && !r.cfg.nowFn().Before(r.retryAt) {
+		if rotErr = r.rotateLocked(); rotErr != nil {
+			r.retryAt = r.cfg.nowFn().Add(rotateRetryDelay)
+		}
 	}
 	if r.f == nil {
 		if err := r.reopenLocked(); err != nil {

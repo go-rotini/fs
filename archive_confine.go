@@ -7,16 +7,16 @@ import (
 	"strings"
 )
 
-// maxLinkHops bounds how many symlinks realPath follows, as the kernel bounds a lookup.
+// maxLinkHops bounds how many links realPath follows, as the kernel bounds a lookup.
 const maxLinkHops = 40
 
 // extractRoot confines writes (an archive extraction, a scaffold) to their destination as the
-// destination exists on disk, symlinks resolved, so a path can't reach outside it through a
-// link already in the tree.
+// destination exists on disk, links resolved, so a path can't reach outside it through a
+// link already in the tree. A link is a symlink or, on Windows, a directory junction.
 type extractRoot struct {
 	op   string // the operation errors are reported under
 	dir  string // the destination, absolute
-	real string // the destination with every symlink resolved
+	real string // the destination with every link resolved
 }
 
 func newExtractRoot(op, dst string) (extractRoot, error) {
@@ -31,7 +31,7 @@ func newExtractRoot(op, dst string) (extractRoot, error) {
 	return extractRoot{op: op, dir: abs, real: resolved}, nil
 }
 
-// confine returns an error wrapping [ErrEscapesRoot] when p, followed through the symlinks
+// confine returns an error wrapping [ErrEscapesRoot] when p, followed through the links
 // that exist now, lies outside the destination.
 func (r extractRoot) confine(p string) error {
 	resolved, err := realPath(p, 0)
@@ -44,9 +44,9 @@ func (r extractRoot) confine(p string) error {
 	return nil
 }
 
-// realPath resolves the absolute path p one element at a time, following every symlink that
-// exists and applying each ".." to the directory it is reached from, as the kernel does. p is
-// split as written, never cleaned first: cleaning "link/.." would drop the link unfollowed.
+// realPath resolves the absolute path p one element at a time, following every link that
+// exists and applying each ".." to the directory it is reached from, as the kernel does. p
+// is split as written, never cleaned first: cleaning "link/.." would drop the link unfollowed.
 // Elements past the first that doesn't exist are joined as written.
 func realPath(p string, hops int) (string, error) {
 	vol := filepath.VolumeName(p)
@@ -68,7 +68,11 @@ func realPath(p string, hops int) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if info.Mode()&os.ModeSymlink == 0 {
+		link, err := isLink(next, info)
+		if err != nil {
+			return "", err
+		}
+		if !link {
 			cur = next
 			continue
 		}
@@ -149,12 +153,19 @@ func (m madeLinks) check(root extractRoot) error {
 	return first
 }
 
-// replaceLink removes a symlink at target, so an entry written there replaces the link instead
+// replaceLink removes a link at target, so an entry written there replaces the link instead
 // of writing through it.
 func replaceLink(target string) error {
 	info, err := osLstat(target)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return nil //nolint:nilerr // nothing there, or not a link: the write handles it
+	if err != nil {
+		return nil //nolint:nilerr // nothing there: the write handles it
+	}
+	link, err := isLink(target, info)
+	if err != nil {
+		return wrapPathError(opExtractArchive, target, err)
+	}
+	if !link {
+		return nil
 	}
 	if err := osRemove(target); err != nil {
 		return wrapPathError(opExtractArchive, target, err)
@@ -163,7 +174,7 @@ func replaceLink(target string) error {
 }
 
 // prepareFile readies target for a file entry: its directory, checked against root and then
-// created, and no symlink at target itself.
+// created, and no link at target itself.
 func prepareFile(root extractRoot, target string) error {
 	dir := filepath.Dir(target)
 	if err := root.confine(dir); err != nil {

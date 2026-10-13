@@ -25,24 +25,29 @@ type PathError struct {
 }
 
 // Error renders as "fs: <op> <path>: <cause>", leaving out an empty op
-// or path. For programmatic inspection use the Op, Path and Cause
-// fields rather than parsing the string.
+// or path. An OS error cause is shown without the sentinel that
+// classifies it, and by its error text alone when it names the same
+// path, such as "fs: readfile a.txt: no such file or directory"; both
+// still match through [errors.Is] and [errors.As]. For programmatic
+// inspection use the Op, Path and Cause fields rather than parsing the
+// string.
 func (e *PathError) Error() string {
 	if e == nil {
 		return "fs: path error"
 	}
+	cause := causeText(e.Path, e.Cause)
 	switch {
 	case e.Op == "" && e.Path == "":
-		if e.Cause != nil {
-			return fmt.Sprintf("fs: %v", e.Cause)
+		if e.Cause == nil {
+			return "fs: path error"
 		}
-		return "fs: path error"
+		return "fs: " + cause
 	case e.Op == "":
-		return fmt.Sprintf("fs: %s: %v", e.Path, e.Cause)
+		return "fs: " + e.Path + ": " + cause
 	case e.Path == "":
-		return fmt.Sprintf("fs: %s: %v", e.Op, e.Cause)
+		return "fs: " + e.Op + ": " + cause
 	default:
-		return fmt.Sprintf("fs: %s %s: %v", e.Op, e.Path, e.Cause)
+		return "fs: " + e.Op + " " + e.Path + ": " + cause
 	}
 }
 
@@ -210,6 +215,32 @@ type stdSentinelError struct {
 func (e *stdSentinelError) Error() string { return e.msg }
 func (e *stdSentinelError) Unwrap() error { return e.std }
 
+// classifiedError joins an OS error with the package sentinel that classifies it, so
+// [errors.Is] matches both.
+type classifiedError struct {
+	class error // a package sentinel, such as ErrNotFound
+	cause error // the OS error
+}
+
+func (e *classifiedError) Error() string   { return e.class.Error() + ": " + e.cause.Error() }
+func (e *classifiedError) Unwrap() []error { return []error{e.class, e.cause} }
+
+// causeText renders cause for a [PathError] on path. A sentinel joined to an OS error is left
+// out, since the OS error says the same, and an OS error that names path itself is reduced to
+// its error text, so the message names the path once.
+func causeText(path string, cause error) string {
+	if cause == nil {
+		return "<nil>"
+	}
+	if c, ok := cause.(*classifiedError); ok { //nolint:errorlint // only the cause itself, not deeper wraps
+		cause = c.cause
+	}
+	if pe, ok := cause.(*stdfs.PathError); ok && pe.Path == path && pe.Err != nil { //nolint:errorlint // only the cause itself
+		return pe.Err.Error()
+	}
+	return cause.Error()
+}
+
 // FormatError renders err into a human-readable string. *MultiError
 // renders each branch on its own line; *PathError renders as
 // "fs: <op> <path>: <cause>". Pass color=true to wrap each message in
@@ -277,15 +308,15 @@ func normalizeCause(cause error) error {
 		errors.Is(cause, ErrCrossDevice):
 		return cause
 	case errors.Is(cause, stdfs.ErrNotExist):
-		return fmt.Errorf("%w: %w", ErrNotFound, cause)
+		return &classifiedError{class: ErrNotFound, cause: cause}
 	case isNotEmptyErrno(cause):
-		return fmt.Errorf("%w: %w", ErrNotEmpty, cause)
+		return &classifiedError{class: ErrNotEmpty, cause: cause}
 	case errors.Is(cause, stdfs.ErrExist):
-		return fmt.Errorf("%w: %w", ErrAlreadyExists, cause)
+		return &classifiedError{class: ErrAlreadyExists, cause: cause}
 	case errors.Is(cause, stdfs.ErrPermission):
-		return fmt.Errorf("%w: %w", ErrPermission, cause)
+		return &classifiedError{class: ErrPermission, cause: cause}
 	case isCrossDeviceErrno(cause):
-		return fmt.Errorf("%w: %w", ErrCrossDevice, cause)
+		return &classifiedError{class: ErrCrossDevice, cause: cause}
 	default:
 		return cause
 	}

@@ -13,21 +13,24 @@ const opLongPath = "longpath"
 // longer than this require the `\\?\` prefix on most Win32 APIs.
 const maxPath = 260
 
-// LongPath returns path prefixed with `\\?\` (or `\\?\UNC\` for UNC
-// paths) when len(path) >= MAX_PATH and the prefix isn't already
-// present. The path is absolutized first since the long-path prefix
-// requires absolute paths. Paths that already have a long-path
-// prefix or that fit within MAX_PATH are returned unchanged.
+// LongPath returns path as an absolute path prefixed with `\\?\` (or
+// `\\?\UNC\` for UNC paths) when its absolute form, which for a
+// relative path includes the working directory, is MAX_PATH or more
+// characters long. Paths that already have the prefix or whose
+// absolute form fits within MAX_PATH are returned unchanged.
 func LongPath(path string) (string, error) {
-	if len(path) < maxPath {
+	if strings.HasPrefix(path, `\\?\`) {
 		return path, nil
 	}
-	if strings.HasPrefix(path, `\\?\`) {
+	if len(path) < maxPath && filepath.IsAbs(path) {
 		return path, nil
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", wrapPathError(opLongPath, path, err)
+	}
+	if len(abs) < maxPath {
+		return path, nil
 	}
 	if strings.HasPrefix(abs, `\\?\`) {
 		return abs, nil

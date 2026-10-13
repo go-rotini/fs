@@ -678,3 +678,25 @@ func TestRollback_RestoresMtime(t *testing.T) {
 		t.Errorf("mode = %v, want 0640", info.Mode().Perm())
 	}
 }
+
+// Create treats a dangling symlink as an existing path in both run modes, and keeps the link.
+func TestApply_CreateOverDanglingSymlinkAgrees(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	dir := t.TempDir()
+	for name, apply := range map[string]func(*Plan) error{
+		"transient": func(p *Plan) error { return ApplyTransient(p) },
+		"journaled": func(p *Plan) error { return Apply(p, filepath.Join(dir, "journal")) },
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.Symlink("nowhere", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := apply(NewPlan().Create(path, []byte("x"), 0o644)); !errors.Is(err, ErrAlreadyExists) {
+			t.Errorf("%s: got %v, want ErrAlreadyExists", name, err)
+		}
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s: the symlink was replaced", name)
+		}
+	}
+}

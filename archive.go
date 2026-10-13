@@ -84,19 +84,21 @@ const (
 //
 // Every entry path, and every tar symlink or hard-link target, must
 // stay inside dst before anything is written: as written, and as it
-// resolves on disk through the symlinks there at that moment,
-// including ones already in dst and ones the archive made. A
-// crafted entry such as `../../etc/passwd`, or one that reaches out
-// through a chain of links, fails with [ErrEscapesRoot] instead of
-// escaping dst (zip-slip / tar-slip). An entry at a path that holds
-// a symlink replaces the link rather than writing through it. A hard
-// link to a symlink is made as a copy of that symlink. When the
+// resolves on disk through the links there at that moment (symlinks
+// and, on Windows, directory junctions), including ones already in
+// dst and ones the archive made. A crafted entry such as
+// `../../etc/passwd`, or one that reaches out through a chain of
+// links, fails with [ErrEscapesRoot] instead of escaping dst
+// (zip-slip / tar-slip), as does a path through any other Windows
+// reparse point that redirects a lookup. An entry at a path that
+// holds a link replaces the link rather than writing through it. A
+// hard link to a symlink is made as a copy of that symlink. When the
 // extraction ends, finished or failed, each symlink the archive made
 // is checked again; every one that a later entry made lead outside
-// is removed and the call fails. A leading slash on an entry name is dropped, so
-// absolute entries land under dst. Device nodes, FIFOs and other
-// special entries are skipped. Another process changing dst during
-// the extraction can still race these checks.
+// is removed and the call fails. A leading slash on an entry name is
+// dropped, so absolute entries land under dst. Device nodes, FIFOs
+// and other special entries are skipped. Another process changing
+// dst during the extraction can still race these checks.
 //
 // Modes are masked to 0o644 for files and 0o755 for directories
 // unless [WithPreserveMode]. Cumulative bytes written are capped by

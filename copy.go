@@ -2,7 +2,6 @@ package fs
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	stdfs "io/fs"
 	"os"
@@ -117,7 +116,7 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	}
 
 	if !srcInfo.Mode().IsRegular() {
-		return wrapPathError(opCopyFile, src, fmt.Errorf("%w: source is %s", ErrNotSupported, srcInfo.Mode().Type()))
+		return wrapPathError(opCopyFile, src, unsupportedTypeError{srcInfo.Mode()})
 	}
 
 	if !cfg.overwrite {
@@ -421,3 +420,28 @@ func Move(src, dst string, opts ...CopyOption) error {
 func isCrossDevice(err error) bool {
 	return isCrossDeviceErrno(err) || errors.Is(err, ErrCrossDevice)
 }
+
+// unsupportedTypeError reports a file of a type an operation can't handle, such as a FIFO
+// given to [CopyFile]. It matches [ErrNotSupported].
+type unsupportedTypeError struct{ mode os.FileMode }
+
+func (e unsupportedTypeError) Error() string {
+	var name string
+	switch m := e.mode; {
+	case m.IsDir():
+		name = "directory"
+	case m&os.ModeNamedPipe != 0:
+		name = "named pipe"
+	case m&os.ModeSocket != 0:
+		name = "socket"
+	case m&os.ModeCharDevice != 0:
+		name = "character device"
+	case m&os.ModeDevice != 0:
+		name = "device"
+	default:
+		name = "irregular file"
+	}
+	return "fs: unsupported file type: " + name
+}
+
+func (unsupportedTypeError) Unwrap() error { return ErrNotSupported }

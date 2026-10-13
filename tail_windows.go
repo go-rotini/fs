@@ -14,7 +14,11 @@ import (
 // handle; granting it lets rename-based rotation work on Windows the
 // way it does on POSIX.
 func openSharedRead(path string) (*os.File, error) {
-	p, err := syscall.UTF16PtrFromString(path)
+	long, err := LongPath(path)
+	if err != nil {
+		return nil, err
+	}
+	p, err := syscall.UTF16PtrFromString(long)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // caller wraps via *PathError
 	}

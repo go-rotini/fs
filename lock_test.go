@@ -496,3 +496,60 @@ func TestPIDLock_FingerprintRejectsRecycledPID(t *testing.T) {
 		t.Errorf("err = %v; want ErrStaleLock (fingerprint mismatch should reclaim)", err)
 	}
 }
+
+func TestPIDLock_ReleaseClearsPID(t *testing.T) {
+	t.Parallel()
+	path := lockPath(t)
+	h, err := PIDLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Release(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Errorf("lockfile after a clean Release = %q; want empty, so the next PIDLock doesn't report a stale lock", data)
+	}
+	h2, err := PIDLock(path)
+	if err != nil {
+		t.Fatalf("PIDLock after a clean release: %v", err)
+	}
+	_ = h2.Release()
+}
+
+func TestLock_RefusesSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("IMPORTANT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "app.pid")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	h, err := PIDLock(link)
+	if err == nil {
+		_ = h.Release()
+	}
+	if !errors.Is(err, ErrSymlinkLoop) {
+		t.Errorf("PIDLock(symlink) err = %v; want ErrSymlinkLoop", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "created-through-link"), filepath.Join(dir, "l2")); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := Lock(filepath.Join(dir, "l2")); err == nil {
+		_ = h.Release()
+		t.Error("Lock followed a dangling symlink")
+	}
+	if Exists(filepath.Join(dir, "created-through-link")) {
+		t.Error("Lock created a file through a symlink")
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "IMPORTANT\n" {
+		t.Errorf("victim = %q; PIDLock wrote through the symlink", got)
+	}
+}

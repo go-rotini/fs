@@ -415,25 +415,6 @@ func TestWalk_FollowSymlinksFnError(t *testing.T) {
 	}
 }
 
-func TestWalk_FollowSymlinks_MissingTarget(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	root := filepath.Join(dir, "root")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	// Create a dangling symlink (target missing).
-	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(root, "lnk")); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-	err := Walk(root, func(_ string, _ stdfs.DirEntry, _ error) error {
-		return nil
-	}, WalkFollowSymlinks(true))
-	if err == nil {
-		t.Fatal("expected error from dangling symlink stat")
-	}
-}
-
 func TestWalk_FollowSymlinks_ErrorHandlerSwallowsStatError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -469,5 +450,108 @@ func TestWalk_FollowSymlinks_LoopDetection(t *testing.T) {
 	}, WalkFollowSymlinks(true))
 	if err != nil {
 		t.Errorf("Walk: %v", err)
+	}
+}
+
+// A root spelled un-cleaned is still the root: filters never apply to it, and depth counts
+// from it. Not parallel: it changes the working directory.
+func TestWalk_UncleanRoot(t *testing.T) {
+	dir := t.TempDir()
+	for _, p := range []string{".hidden/a/b/c.txt", ".hidden/.inner/x.txt"} {
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+
+	collect := func(root string, opts ...WalkOption) []string {
+		var got []string
+		err := Walk(root, func(path string, _ stdfs.DirEntry, _ error) error {
+			got = append(got, filepath.ToSlash(path))
+			return nil
+		}, opts...)
+		if err != nil {
+			t.Fatalf("Walk(%q): %v", root, err)
+		}
+		return got
+	}
+
+	got := collect("./.hidden", WalkSkipHidden(true))
+	want := []string{"./.hidden", ".hidden/a", ".hidden/a/b", ".hidden/a/b/c.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("skip hidden from ./.hidden: got %v, want %v", got, want)
+	}
+
+	got = collect(".", WalkMaxDepth(1))
+	if strings.Join(got, ",") != ".,.hidden" {
+		t.Errorf("max depth 1 from .: got %v, want [. .hidden]", got)
+	}
+}
+
+func TestWalk_FollowSymlinksReportsDanglingLink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "b-dangling")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	err := Walk(dir, func(p string, d stdfs.DirEntry, _ error) error {
+		if p != dir {
+			seen = append(seen, filepath.Base(p))
+			if filepath.Base(p) == "b-dangling" && d.Type()&os.ModeSymlink == 0 {
+				t.Error("the dangling link was not reported as a symlink")
+			}
+		}
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if strings.Join(seen, ",") != "a,b-dangling,c" {
+		t.Errorf("seen = %v; want a, b-dangling, c", seen)
+	}
+}
+
+func TestWalk_FollowSymlinksDedupesThroughLinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "real", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real", "sub", "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real", "sub", "f"), filepath.Join(dir, "real", "flink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..", filepath.Join(dir, "real", "sub", "loop")); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	err := Walk(dir, func(p string, _ stdfs.DirEntry, _ error) error {
+		rel, _ := filepath.Rel(dir, p)
+		seen = append(seen, filepath.ToSlash(rel))
+		return nil
+	}, WalkFollowSymlinks(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// alias resolves to real and is visited first, so real is skipped;
+	// alias/flink resolves to sub/f, so alias/sub/f is skipped; loop resolves to real.
+	want := ".,alias,alias/flink,alias/sub"
+	if got := strings.Join(seen, ","); got != want {
+		t.Errorf("visited %s; want %s", got, want)
 	}
 }

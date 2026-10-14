@@ -23,11 +23,11 @@ const (
 	// errLockViolation is the GetLastError code returned by LockFileEx
 	// when LOCKFILE_FAIL_IMMEDIATELY was set and the region is held by
 	// another holder.
-	winErrLockViolation = syscall.Errno(33)
+	errLockViolation = syscall.Errno(33)
 	// errIOPending is returned for asynchronous LockFileEx calls; we
 	// pass a NULL async event so this should never occur, but check
 	// defensively.
-	winErrIOPending = syscall.Errno(997)
+	errIOPending = syscall.Errno(997)
 
 	// LockFileEx locks a single sentinel byte at this offset rather
 	// than the whole file. Windows byte-range locks are mandatory:
@@ -77,7 +77,7 @@ func osFlock(f *os.File, kind lockKind) error {
 	if r1 != 0 {
 		return nil
 	}
-	if errors.Is(e1, winErrLockViolation) || errors.Is(e1, syscall.ERROR_IO_PENDING) || errors.Is(e1, winErrIOPending) {
+	if errors.Is(e1, errLockViolation) || errors.Is(e1, syscall.ERROR_IO_PENDING) || errors.Is(e1, errIOPending) {
 		// LOCKFILE_FAIL_IMMEDIATELY: the lock is held by another holder.
 		return errLockBusy
 	}
@@ -134,10 +134,10 @@ func platformPIDAlive(pid int) bool {
 	if h == 0 {
 		return !errors.Is(callErr, errInvalidParameter)
 	}
-	defer func() { _, _, _ = procCloseHandle.Call(h) }()
+	defer func() { _, _, _ = procCloseHandle.Call(h) }() //nolint:errcheck // a failed close only leaks the handle
 
 	var exitCode uint32
-	r1, _, _ := procGetExitCodeProcess.Call(h, uintptr(unsafe.Pointer(&exitCode)))
+	r1, _, _ := procGetExitCodeProcess.Call(h, uintptr(unsafe.Pointer(&exitCode))) //nolint:errcheck // r1 reports the failure; its cause doesn't change the answer
 	if r1 == 0 {
 		return true // probe failed; conservative
 	}

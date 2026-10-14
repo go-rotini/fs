@@ -1,0 +1,187 @@
+package fs
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// maxLinkHops bounds how many links realPath follows, as the kernel bounds a lookup.
+const maxLinkHops = 40
+
+// extractRoot confines writes (an archive extraction, a scaffold) to their destination as the
+// destination exists on disk, links resolved, so a path can't reach outside it through a
+// link already in the tree. A link is a symlink or, on Windows, a directory junction.
+type extractRoot struct {
+	op   string // the operation errors are reported under
+	dir  string // the destination, absolute
+	real string // the destination with every link resolved
+}
+
+func newExtractRoot(op, dst string) (extractRoot, error) {
+	abs, err := filepath.Abs(dst)
+	if err != nil {
+		return extractRoot{}, wrapPathError(op, dst, err)
+	}
+	resolved, err := realPath(abs, 0)
+	if err != nil {
+		return extractRoot{}, wrapPathError(op, dst, err)
+	}
+	return extractRoot{op: op, dir: abs, real: resolved}, nil
+}
+
+// confine returns an error wrapping [ErrEscapesRoot] when p, followed through the links
+// that exist now, lies outside the destination.
+func (r extractRoot) confine(p string) error {
+	resolved, err := realPath(p, 0)
+	if err != nil {
+		return wrapPathError(r.op, p, err)
+	}
+	if ok, err := IsSubpath(r.real, resolved); err != nil || !ok {
+		return wrapPathError(r.op, p, ErrEscapesRoot)
+	}
+	return nil
+}
+
+// realPath resolves the absolute path p one element at a time, following every link that
+// exists and applying each ".." to the directory it is reached from, as the kernel does. p
+// is split as written, never cleaned first: cleaning "link/.." would drop the link unfollowed.
+// Elements past the first that doesn't exist are joined as written.
+func realPath(p string, hops int) (string, error) {
+	vol := filepath.VolumeName(p)
+	cur := vol + string(filepath.Separator)
+	elems := strings.FieldsFunc(p[len(vol):], func(r rune) bool { return r == '/' || r == filepath.Separator })
+	for i, elem := range elems {
+		switch elem {
+		case ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, elem)
+		info, err := osLstat(next)
+		if errors.Is(err, os.ErrNotExist) {
+			return filepath.Join(append([]string{cur}, elems[i:]...)...), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		link, err := isLink(next, info)
+		if err != nil {
+			return "", err
+		}
+		if !link {
+			cur = next
+			continue
+		}
+		if hops >= maxLinkHops {
+			return "", ErrSymlinkLoop
+		}
+		target, err := osReadlink(next)
+		if err != nil {
+			return "", err
+		}
+		if target, err = linkDestination(cur, target); err != nil {
+			return "", err
+		}
+		if cur, err = realPath(target, hops+1); err != nil {
+			return "", err
+		}
+	}
+	return cur, nil
+}
+
+// linkDestination returns the path a symlink in dir whose target is
+// target leads to, before any further links are followed, resolving
+// target the way the OS does. On Windows a target with a leading
+// separator (`\x` or `/x`) is absolute on dir's volume; a
+// drive-relative target (`C:x`) depends on that drive's current
+// directory, so it is refused with [ErrEscapesRoot]. A relative
+// target is appended to dir uncleaned, so ".." applies after any
+// link in dir is followed.
+func linkDestination(dir, target string) (string, error) {
+	switch {
+	case filepath.IsAbs(target):
+		return target, nil
+	case filepath.VolumeName(target) != "":
+		return "", ErrEscapesRoot
+	case target != "" && os.IsPathSeparator(target[0]):
+		return filepath.VolumeName(dir) + target, nil
+	default:
+		return dir + string(filepath.Separator) + target, nil
+	}
+}
+
+// madeLinks records the symlinks an extraction creates, to check again once every entry is
+// written: an entry after a link can change where the link leads.
+type madeLinks []string
+
+// make creates target as a symlink to linkname, inside root as the tree stands now.
+func (m *madeLinks) make(root extractRoot, target, linkname string) error {
+	if err := prepareFile(root, target); err != nil {
+		return err
+	}
+	_ = osRemove(target) //nolint:errcheck // best-effort: missing target is the common case
+	if err := osSymlink(linkname, target); err != nil {
+		return wrapPathError(opExtractArchive, target, err)
+	}
+	if err := root.confine(target); err != nil {
+		_ = osRemove(target) //nolint:errcheck // best-effort: the error below is what matters
+		return err
+	}
+	*m = append(*m, target)
+	return nil
+}
+
+// check confirms every link still there leads inside root in the tree as it stands. Every link
+// that leads outside is removed, and the error, wrapping [ErrEscapesRoot], names the first.
+func (m madeLinks) check(root extractRoot) error {
+	var first error
+	for _, target := range m {
+		if info, err := osLstat(target); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue // a later entry replaced it
+		}
+		if err := root.confine(target); err != nil {
+			_ = osRemove(target) //nolint:errcheck // best-effort: the error below is what matters
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+// replaceLink removes a link at target, so an entry written there replaces the link instead
+// of writing through it.
+func replaceLink(target string) error {
+	info, err := osLstat(target)
+	if err != nil {
+		return nil //nolint:nilerr // nothing there: the write handles it
+	}
+	link, err := isLink(target, info)
+	if err != nil {
+		return wrapPathError(opExtractArchive, target, err)
+	}
+	if !link {
+		return nil
+	}
+	if err := osRemove(target); err != nil {
+		return wrapPathError(opExtractArchive, target, err)
+	}
+	return nil
+}
+
+// prepareFile readies target for a file entry: its directory, checked against root and then
+// created, and no link at target itself.
+func prepareFile(root extractRoot, target string) error {
+	dir := filepath.Dir(target)
+	if err := root.confine(dir); err != nil {
+		return err
+	}
+	if err := osMkdirAll(dir, Mode0755); err != nil {
+		return wrapPathError(opExtractArchive, dir, err)
+	}
+	return replaceLink(target)
+}

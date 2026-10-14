@@ -10,23 +10,24 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const opWatcher = "watcher"
 
-// Sentinel errors for the watcher surface. Wrapped via *PathError at
-// the cross-platform shell entry points.
+// Sentinel errors for the watcher. They are returned wrapped in a
+// [*PathError].
 var (
 	// ErrWatcherEmptyPath is returned by [NewWatcher] / [NewLazyWatcher]
 	// / [NewDirWatcher] when path is empty.
 	ErrWatcherEmptyPath = errors.New("fs: watcher: path must not be empty")
 
-	// ErrWatcherNilContext is returned by [(*Watcher).Subscribe] when
+	// ErrWatcherNilContext is returned by [Watcher.Subscribe] when
 	// ctx is nil.
 	ErrWatcherNilContext = errors.New("fs: watcher: nil context")
 
-	// ErrWatcherClosed is returned by [(*Watcher).Subscribe] when the
+	// ErrWatcherClosed is returned by [Watcher.Subscribe] when the
 	// watcher has already been closed.
 	ErrWatcherClosed = errors.New("fs: watcher: closed")
 )
@@ -36,18 +37,15 @@ var (
 // editor atomic-save patterns (write-temp + rename) are detected
 // correctly.
 //
-// In v0.1 every Watcher uses the polling backend regardless of
-// platform; `os.Lstat` in a loop at the configured interval
-// (default 1 second; override via [WithPolling]). The
-// platform-native backends (inotify on Linux, kqueue on macOS/BSD,
-// ReadDirectoryChangesW on Windows) are scheduled for a follow-up
-// release; the API will not change when they land.
+// Every Watcher polls: it calls [os.Lstat] on its watched paths at the
+// configured interval (default 1 second; see [WithPolling]). There is
+// no inotify, kqueue or ReadDirectoryChangesW backend.
 //
 // Construct via [NewWatcher] (existing path), [NewLazyWatcher]
 // (path may not exist yet), or [NewDirWatcher] (recursive directory
-// watching). Each [(*Watcher).Subscribe] call returns an
-// independent buffered channel; surplus events on a slow subscriber
-// are dropped.
+// watching). Each [Watcher.Subscribe] call returns an independent
+// buffered channel (see [WithBufferSize]); events a slow subscriber
+// has no room for are dropped, and it is then sent [WatchOverflow].
 type Watcher struct {
 	target    string // absolute, cleaned
 	parentDir string // absolute, cleaned (filepath.Dir(target))
@@ -60,6 +58,10 @@ type Watcher struct {
 	backend   watcherBackend
 	debouncer *debouncer
 
+	// lost is set when the backend or debouncer dropped an event, which
+	// every subscriber must hear about.
+	lost atomic.Bool
+
 	mu         sync.Mutex
 	closed     bool
 	subs       []*watcherSub
@@ -71,12 +73,16 @@ type watcherSub struct {
 	ch     chan WatchEvent
 	ctx    context.Context
 	cancel context.CancelFunc
+	lost   bool // events were dropped; WatchOverflow is owed (guarded by Watcher.mu)
 }
 
-// NewWatcher constructs a [*Watcher] for an existing path. The path
-// is resolved to an absolute path; parent-directory watching plus
-// basename filtering means atomic-rename saves are observed
-// correctly on every backend.
+// overflowRetry is how often a [WatchOverflow] that found no room is
+// offered again.
+const overflowRetry = 50 * time.Millisecond
+
+// NewWatcher constructs a [*Watcher] for an existing path, made
+// absolute. Watching the parent directory with basename filtering
+// means atomic-rename saves are observed.
 func NewWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -88,8 +94,8 @@ func NewWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 }
 
 // NewLazyWatcher constructs a [*Watcher] for a path that may not
-// exist yet. The watcher fires `WatchCreate` on the path when it
-// appears.
+// exist yet; its parent directory must exist. The watcher reports
+// [WatchCreate] when the path appears.
 func NewLazyWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -97,8 +103,15 @@ func NewLazyWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	return newWatcher(path, false, true, opts)
 }
 
-// NewDirWatcher watches an entire directory tree. Use
-// [WithRecursive(false)] to limit to a single directory level.
+// NewDirWatcher watches a directory and, by default, every
+// subdirectory beneath it, including ones created after it is called;
+// pass [WithRecursive](false) to watch only the top level. It reports
+// entries appearing ([WatchCreate]) and disappearing ([WatchRemove])
+// in watched directories, writes and permission changes to the files
+// in them ([WatchWrite], [WatchChmod]), and changes to the directories
+// themselves. When a new subdirectory appears, its contents are
+// reported as created too. Each poll stats every entry of every
+// watched directory, so cost grows with the size of the tree.
 func NewDirWatcher(path string, opts ...WatcherOption) (*Watcher, error) {
 	if path == "" {
 		return nil, wrapPathError(opWatcher, "", ErrWatcherEmptyPath)
@@ -143,11 +156,8 @@ func newWatcher(path string, isDir, lazy bool, opts []WatcherOption) (*Watcher, 
 		w.basename = "" // directory watch matches everything beneath target
 	}
 
-	backend, err := w.selectBackend()
-	if err != nil {
-		w.debouncer.Close()
-		return nil, wrapPathError(opWatcher, path, err)
-	}
+	w.debouncer.onDrop = w.markLost
+	backend := w.newPolling()
 	w.backend = backend
 
 	if err := w.registerInitial(lazy); err != nil {
@@ -160,26 +170,23 @@ func newWatcher(path string, isDir, lazy bool, opts []WatcherOption) (*Watcher, 
 	return w, nil
 }
 
-// selectBackend returns the native backend if available, or falls
-// back to polling. WithPolling forces polling regardless of
-// availability.
-func (w *Watcher) selectBackend() (watcherBackend, error) {
-	if w.cfg.forcePolling {
-		return newPollingBackend(w.cfg.pollingInterval), nil
+// newPolling returns the polling backend; a directory watcher's also
+// reports writes to the files in watched directories.
+func (w *Watcher) newPolling() *pollingBackend {
+	b := newPollingBackend(w.cfg.pollingInterval)
+	b.mu.Lock()
+	b.onDrop = w.markLost
+	b.mu.Unlock()
+	if w.isDir {
+		b.reportChildWrites()
 	}
-	native, err := newNativeWatcherBackend(w.cfg)
-	if err == nil {
-		return native, nil
-	}
-	if !errors.Is(err, errWatcherUnsupportedBackend) {
-		return nil, err
-	}
-	w.logger.Debug("watcher: native backend unavailable, falling back to polling", "err", err)
-	interval := w.cfg.pollingInterval
-	if interval <= 0 {
-		interval = defaultWatcherPollingInterval
-	}
-	return newPollingBackend(interval), nil
+	return b
+}
+
+// markLost records that an event was dropped before fan-out, so every
+// subscriber is sent [WatchOverflow].
+func (w *Watcher) markLost() {
+	w.lost.Store(true)
 }
 
 // registerInitial adds the appropriate paths to the backend.
@@ -248,9 +255,11 @@ func (w *Watcher) addSubdirectoriesUnder(root string) error {
 }
 
 // Subscribe returns a buffered channel that receives [WatchEvent]
-// values until ctx is canceled or [(*Watcher).Close] is called. Each
-// Subscribe creates an independent subscription; surplus events on
-// a slow subscriber are dropped rather than blocking the worker.
+// values until ctx is canceled or [Watcher.Close] is called, at which
+// point the channel is closed. Each Subscribe creates an independent
+// subscription; events a slow subscriber has no room for are dropped
+// rather than blocking the watcher, and the subscriber is then sent
+// [WatchOverflow].
 func (w *Watcher) Subscribe(ctx context.Context) (<-chan WatchEvent, error) {
 	if ctx == nil {
 		return nil, wrapPathError(opWatcher, w.target, ErrWatcherNilContext)
@@ -305,14 +314,20 @@ func (w *Watcher) worker() {
 	go func() {
 		defer close(pumpDone)
 		for ev := range rawCh {
-			if w.shouldEmit(ev.path) {
-				w.debouncer.In(ev)
+			if !w.shouldEmit(ev.path) {
+				continue
 			}
+			w.debouncer.In(ev)
+			w.followSubdirectory(ev)
 		}
 	}()
 	defer func() { <-pumpDone }()
 
 	for {
+		var retry <-chan time.Time
+		if w.overflowOwed() {
+			retry = time.After(overflowRetry)
+		}
 		select {
 		case <-w.workerStop:
 			return
@@ -320,9 +335,64 @@ func (w *Watcher) worker() {
 			if !ok {
 				return
 			}
-			w.fanOut(WatchEvent{Path: ev.path, Op: ev.op, Time: time.Now()})
+			w.fanOut(&WatchEvent{Path: ev.path, Op: ev.op, Time: time.Now()})
+		case <-retry:
+			w.fanOut(nil)
 		}
 	}
+}
+
+// overflowOwed reports whether some subscriber is still owed a
+// [WatchOverflow].
+func (w *Watcher) overflowOwed() bool {
+	if w.lost.Load() {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, s := range w.subs {
+		if s.lost {
+			return true
+		}
+	}
+	return false
+}
+
+// followSubdirectory keeps a recursive directory watch in step with
+// the tree: a directory that appears beneath the target is watched,
+// with everything already inside it reported as created, and one that
+// disappears is no longer watched.
+func (w *Watcher) followSubdirectory(ev rawWatchEvent) {
+	if !w.isDir || !w.recursive || ev.path == w.target {
+		return
+	}
+	if ev.op&WatchRemove != 0 && ev.op&WatchCreate == 0 {
+		_ = w.backend.RemovePath(ev.path) //nolint:errcheck // only fails to resolve an absolute path, which ev.path already is
+		return
+	}
+	if ev.op&WatchCreate == 0 {
+		return
+	}
+	if info, err := os.Lstat(ev.path); err != nil || !info.IsDir() {
+		return
+	}
+	// The directory is registered before it is read, so an entry
+	// created in between is either listed here or reported by the
+	// next poll.
+	_ = filepath.WalkDir(ev.path, func(path string, d stdfs.DirEntry, err error) error { //nolint:errcheck // the callback never returns an error
+		if err != nil {
+			return nil //nolint:nilerr // tolerate inaccessible entries and keep walking
+		}
+		if d.IsDir() {
+			if aerr := w.backend.AddPath(path); aerr != nil {
+				w.logger.Debug("watcher: AddPath failed", "path", path, "err", aerr)
+			}
+		}
+		if path != ev.path {
+			w.debouncer.In(rawWatchEvent{path: path, op: WatchCreate})
+		}
+		return nil
+	})
 }
 
 // shouldEmit applies the basename filter for file watchers. For
@@ -357,29 +427,46 @@ func hasParentDir(child, parent string) bool {
 	return true
 }
 
-func (w *Watcher) fanOut(ev WatchEvent) {
+// fanOut sends ev (nil to only settle owed overflows) to every
+// subscriber. A subscriber that missed events first gets a
+// [WatchOverflow]; until that is delivered, its later events are
+// dropped too, since it must rescan anyway.
+func (w *Watcher) fanOut(ev *WatchEvent) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.lost.Swap(false) {
+		for _, s := range w.subs {
+			s.lost = true
+		}
+	}
 	for _, s := range w.subs {
+		if s.lost {
+			select {
+			case s.ch <- WatchEvent{Path: w.target, Op: WatchOverflow, Time: time.Now()}:
+				s.lost = false
+			default:
+			}
+			if s.lost {
+				continue
+			}
+		}
+		if ev == nil {
+			continue
+		}
 		select {
-		case s.ch <- ev:
+		case s.ch <- *ev:
 		case <-s.ctx.Done():
 			// Subscription canceled mid-fanout; skip.
 		default:
-			// Slow subscriber; drop.
+			// Slow subscriber; drop and owe it an overflow.
+			s.lost = true
 			w.logger.Debug("watcher: dropping event for slow subscriber", "path", ev.Path)
 		}
 	}
 }
 
-// Close releases all resources. Idempotent; repeated calls are
-// no-ops.
-//
-// The error return is reserved for forward compatibility. v0.1
-// always returns nil; once native backends (inotify, kqueue,
-// ReadDirectoryChangesW) are wired up, a Close-time flush or
-// fd-release failure may surface here. Existing callers that
-// already check the return will not need to change.
+// Close stops the watcher and closes every subscription channel.
+// Idempotent. It currently always returns nil.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
 	if w.closed {

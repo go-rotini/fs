@@ -5,7 +5,6 @@ import (
 	"fmt"
 	stdfs "io/fs"
 	"strings"
-	"syscall"
 )
 
 // unknownLabel is the canonical string returned by stringer-style
@@ -14,38 +13,41 @@ import (
 const unknownLabel = "unknown"
 
 // PathError wraps an underlying filesystem error with the operation
-// and path that produced it. The package returns *PathError from every
-// op-with-a-path entry point; Cause is typically a *os.PathError or a
-// syscall.Errno.
+// and path that produced it. The package returns *PathError from
+// nearly every function that touches a path.
 type PathError struct {
-	Op    string
-	Path  string
+	// Op names the operation, such as "copyfile" or "walk".
+	Op string
+	// Path is the path the operation failed on; it may be empty.
+	Path string
+	// Cause is the underlying error.
 	Cause error
 }
 
-// Error renders as "fs: <op> <path>: <cause>".
-//
-// The render format is part of the public API: callers can rely on
-// the "fs: " prefix and on the order of op / path / cause. Format
-// changes are reserved for major version bumps (v1 to v2). For
-// programmatic inspection use the Op / Path / Cause fields rather
-// than parsing the string.
+// Error renders as "fs: <op> <path>: <cause>", leaving out an empty op
+// or path. An OS error cause is shown without the sentinel that
+// classifies it, and by its error text alone when it names the same
+// path, such as "fs: readfile a.txt: no such file or directory"; both
+// still match through [errors.Is] and [errors.As]. For programmatic
+// inspection use the Op, Path and Cause fields rather than parsing the
+// string.
 func (e *PathError) Error() string {
 	if e == nil {
 		return "fs: path error"
 	}
+	cause := causeText(e.Path, e.Cause)
 	switch {
 	case e.Op == "" && e.Path == "":
-		if e.Cause != nil {
-			return fmt.Sprintf("fs: %v", e.Cause)
+		if e.Cause == nil {
+			return "fs: path error"
 		}
-		return "fs: path error"
+		return "fs: " + cause
 	case e.Op == "":
-		return fmt.Sprintf("fs: %s: %v", e.Path, e.Cause)
+		return "fs: " + e.Path + ": " + cause
 	case e.Path == "":
-		return fmt.Sprintf("fs: %s: %v", e.Op, e.Cause)
+		return "fs: " + e.Op + ": " + cause
 	default:
-		return fmt.Sprintf("fs: %s %s: %v", e.Op, e.Path, e.Cause)
+		return "fs: " + e.Op + " " + e.Path + ": " + cause
 	}
 }
 
@@ -57,9 +59,12 @@ func (e *PathError) Unwrap() error {
 	return e.Cause
 }
 
-// Is matches another *PathError by type and walks the cause chain so
-// callers can compare against either this package's sentinels or the
-// stdlib's [io/fs.ErrNotExist] / [io/fs.ErrPermission] / [io/fs.ErrExist].
+// Is reports true for any *PathError target, whatever its fields, and
+// otherwise matches target against the cause chain, so callers can
+// compare against either this package's sentinels or the stdlib's
+// [io/fs.ErrNotExist] / [io/fs.ErrPermission] / [io/fs.ErrExist].
+// errors.Is(err, &PathError{...}) therefore only tests the type; use
+// [errors.As] to inspect Op, Path or Cause.
 func (e *PathError) Is(target error) bool {
 	if e == nil {
 		return target == nil
@@ -71,10 +76,10 @@ func (e *PathError) Is(target error) bool {
 }
 
 // MultiError aggregates per-entry errors from bulk operations
-// (CopyDir, RemoveAll under WithStrict, Walk error handler).
-// Implements the Go 1.20+ Unwrap() []error convention so [errors.Is]
-// and [errors.As] walk every branch.
+// ([CopyDir], [RemoveContents]). Its Unwrap() []error method lets
+// [errors.Is] and [errors.As] walk every branch.
 type MultiError struct {
+	// Errors holds the collected errors in the order they occurred.
 	Errors []error
 }
 
@@ -118,22 +123,21 @@ func (m *MultiError) Append(err error) {
 	m.Errors = append(m.Errors, err)
 }
 
-// Sentinel errors. The struct-pointer sentinels (those constructed as
-// &XError{}) match by type via the corresponding Is method; the
-// errors.New sentinels match by value identity.
+// Sentinel errors, matched with [errors.Is].
 //
-// Where applicable, sentinels wrap stdlib equivalents so
-// errors.Is(err, fs.ErrNotFound) matches both this package's
-// ErrNotFound AND the stdlib's [io/fs.ErrNotExist].
+// ErrNotFound, ErrAlreadyExists and ErrPermission wrap their [io/fs]
+// equivalents, and errors returned by this package carry both forms,
+// so errors.Is(err, fs.ErrNotFound) and
+// errors.Is(err, io/fs.ErrNotExist) both match.
 var (
 	// ErrNotFound matches stdlib [io/fs.ErrNotExist] via wrapping.
-	ErrNotFound = fmt.Errorf("fs: not found: %w", stdfs.ErrNotExist)
+	ErrNotFound error = &stdSentinelError{msg: "fs: not found", std: stdfs.ErrNotExist}
 
 	// ErrAlreadyExists matches stdlib [io/fs.ErrExist] via wrapping.
-	ErrAlreadyExists = fmt.Errorf("fs: already exists: %w", stdfs.ErrExist)
+	ErrAlreadyExists error = &stdSentinelError{msg: "fs: already exists", std: stdfs.ErrExist}
 
 	// ErrPermission matches stdlib [io/fs.ErrPermission] via wrapping.
-	ErrPermission = fmt.Errorf("fs: permission denied: %w", stdfs.ErrPermission)
+	ErrPermission error = &stdSentinelError{msg: "fs: permission denied", std: stdfs.ErrPermission}
 
 	// ErrNotDir is returned when a directory was expected but the
 	// path is something else.
@@ -142,9 +146,10 @@ var (
 	// ErrIsDir is returned when a regular file was expected.
 	ErrIsDir = errors.New("fs: is a directory")
 
-	// ErrCrossDevice is returned when a Rename across filesystems
-	// fails (POSIX EXDEV / Windows ERROR_NOT_SAME_DEVICE). [Move]
-	// falls back to Copy + Remove on this; [Rename] surfaces it.
+	// ErrCrossDevice is returned when a rename or hard link crosses
+	// filesystems (EXDEV, or ERROR_NOT_SAME_DEVICE on Windows). [Move]
+	// falls back to copy and remove on it; [Rename] and [Hardlink]
+	// return it.
 	ErrCrossDevice = errors.New("fs: cross-device link")
 
 	// ErrFileTooLarge is returned when a bounded read exceeds the cap
@@ -155,10 +160,9 @@ var (
 	// empty.
 	ErrEmptyFile = errors.New("fs: empty file")
 
-	// ErrEscapesRoot is returned by [IsSubpath] / [MustBeChildOf] /
-	// [EvalSymlinksWithin] when a path tries to escape its
-	// constraint, and by archive extraction when an entry resolves
-	// outside the destination root.
+	// ErrEscapesRoot is returned by [MustBeChildOf] and
+	// [EvalSymlinksWithin] when a path escapes its constraint, and by
+	// [ExtractArchive] when an entry resolves outside the destination.
 	ErrEscapesRoot = errors.New("fs: path escapes constraint root")
 
 	// ErrSymlinkLoop is returned by [EvalSymlinks] after too many
@@ -166,15 +170,17 @@ var (
 	// symlink.
 	ErrSymlinkLoop = errors.New("fs: symlink loop detected")
 
-	// ErrInvalidPath is returned for malformed paths (NUL bytes,
-	// path-separator characters in app-name args, etc.).
+	// ErrInvalidPath is returned for malformed path-like inputs, such
+	// as a path containing a NUL byte or an invalid cache version.
 	ErrInvalidPath = errors.New("fs: invalid path")
 
 	// ErrHashMismatch is returned by [HashCompare] on mismatch.
 	ErrHashMismatch = errors.New("fs: hash mismatch")
 
-	// ErrNotEmpty is returned when a directory expected to be empty
-	// is not.
+	// ErrNotEmpty reports a directory that was expected to be empty
+	// but is not, such as one passed to [Remove] or a [Rename] onto a
+	// directory with entries. Like the OS error it wraps, it also
+	// matches [io/fs.ErrExist].
 	ErrNotEmpty = errors.New("fs: directory not empty")
 
 	// ErrShortRead is returned by [ReadAt] when fewer bytes were
@@ -187,16 +193,53 @@ var (
 	// head`).
 	ErrBrokenPipe = errors.New("fs: broken pipe")
 
-	// ErrNotSupported is returned for queries that the platform
-	// doesn't expose (e.g., birth time on Linux without statx, owner
-	// on Windows).
+	// ErrNotSupported is returned for operations or queries the
+	// platform or input does not support (e.g., file owner on Windows,
+	// copying a device file).
 	ErrNotSupported = errors.New("fs: not supported on this platform")
 
-	// ErrInvalidByteSize is returned by [ParseBytes] / [ParseBytesStrict]
+	// ErrInvalidByteSize is returned by [ParseBytes] / [ParseBytesIEC]
 	// when the input is empty, has no numeric prefix, or has an
 	// unrecognized unit suffix.
 	ErrInvalidByteSize = errors.New("fs: invalid byte size")
 )
+
+// stdSentinelError is a sentinel that wraps its [io/fs] equivalent
+// without repeating that error's text, which the OS error it is
+// joined with already says.
+type stdSentinelError struct {
+	msg string
+	std error
+}
+
+func (e *stdSentinelError) Error() string { return e.msg }
+func (e *stdSentinelError) Unwrap() error { return e.std }
+
+// classifiedError joins an OS error with the package sentinel that classifies it, so
+// [errors.Is] matches both.
+type classifiedError struct {
+	class error // a package sentinel, such as ErrNotFound
+	cause error // the OS error
+}
+
+func (e *classifiedError) Error() string   { return e.class.Error() + ": " + e.cause.Error() }
+func (e *classifiedError) Unwrap() []error { return []error{e.class, e.cause} }
+
+// causeText renders cause for a [PathError] on path. A sentinel joined to an OS error is left
+// out, since the OS error says the same, and an OS error that names path itself, when path isn't
+// empty, is reduced to its error text, so the message names the path once.
+func causeText(path string, cause error) string {
+	if cause == nil {
+		return "<nil>"
+	}
+	if c, ok := cause.(*classifiedError); ok { //nolint:errorlint // only the cause itself, not deeper wraps
+		cause = c.cause
+	}
+	if pe, ok := cause.(*stdfs.PathError); ok && path != "" && pe.Path == path && pe.Err != nil { //nolint:errorlint // only the cause itself
+		return pe.Err.Error()
+	}
+	return cause.Error()
+}
 
 // FormatError renders err into a human-readable string. *MultiError
 // renders each branch on its own line; *PathError renders as
@@ -246,19 +289,34 @@ func wrapPathError(op, path string, cause error) error {
 	return &PathError{Op: op, Path: path, Cause: normalizeCause(cause)}
 }
 
+// withOp reports err, a [*PathError] from a helper, under op.
+func withOp(op string, err error) error {
+	if pe, ok := errors.AsType[*PathError](err); ok {
+		pe.Op = op
+	}
+	return err
+}
+
 // normalizeCause replaces a recognized stdlib sentinel in cause's
 // chain with the package's wrapping form, so a single errors.Is call
-// matches both. Returns cause unchanged for unrecognized errors.
+// matches both. Returns cause unchanged for unrecognized errors and
+// for causes that already carry one of the package's sentinels.
 func normalizeCause(cause error) error {
 	switch {
+	case errors.Is(cause, ErrNotFound), errors.Is(cause, ErrNotEmpty),
+		errors.Is(cause, ErrAlreadyExists), errors.Is(cause, ErrPermission),
+		errors.Is(cause, ErrCrossDevice):
+		return cause
 	case errors.Is(cause, stdfs.ErrNotExist):
-		return fmt.Errorf("%w: %w", ErrNotFound, cause)
+		return &classifiedError{class: ErrNotFound, cause: cause}
+	case isNotEmptyErrno(cause):
+		return &classifiedError{class: ErrNotEmpty, cause: cause}
 	case errors.Is(cause, stdfs.ErrExist):
-		return fmt.Errorf("%w: %w", ErrAlreadyExists, cause)
+		return &classifiedError{class: ErrAlreadyExists, cause: cause}
 	case errors.Is(cause, stdfs.ErrPermission):
-		return fmt.Errorf("%w: %w", ErrPermission, cause)
-	case errors.Is(cause, syscall.EXDEV):
-		return fmt.Errorf("%w: %w", ErrCrossDevice, cause)
+		return &classifiedError{class: ErrPermission, cause: cause}
+	case isCrossDeviceErrno(cause):
+		return &classifiedError{class: ErrCrossDevice, cause: cause}
 	default:
 		return cause
 	}

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package fs
 
@@ -6,15 +6,16 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestIsFIFO(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "pipe")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("Mkfifo: %v", err)
 	}
 	if !IsFIFO(fifo) {

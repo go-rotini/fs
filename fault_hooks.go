@@ -1,6 +1,9 @@
 package fs
 
-import "os"
+import (
+	"io"
+	"os"
+)
 
 // Package-internal hooks for OS calls whose error returns are
 // defensive guards against rare conditions (disk full, hardware
@@ -43,16 +46,12 @@ var (
 	fileClose   = (*os.File).Close
 	fileWrite   = (*os.File).Write
 	fileWriteAt = (*os.File).WriteAt
-	fileRead    = (*os.File).Read
+
+	// fileReader returns the reader that copy loops read f through.
+	// It returns f itself, so [io.Copy] keeps the kernel copy fast
+	// paths; fault tests swap in a failing reader.
+	fileReader = func(f *os.File) io.Reader { return f }
 )
-
-// hookedReader wraps *os.File so that io.Copy and similar callers
-// route Read calls through the [fileRead] hook. This lets fault
-// tests inject mid-stream read errors without having to swap an
-// entire reader implementation through the codebase.
-type hookedReader struct{ f *os.File }
-
-func (r hookedReader) Read(p []byte) (int, error) { return fileRead(r.f, p) }
 
 // closeQuietly invokes the [fileClose] hook and discards its error.
 // Used on cleanup paths after a write/sync failure has already been

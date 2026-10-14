@@ -1,18 +1,17 @@
 package fs
 
-import "errors"
-
-// watcherBackend is the contract every kernel-API or polling
-// implementation must satisfy. Backends are constructed by
-// [selectWatcherBackend] and owned exclusively by one [*Watcher].
+// watcherBackend is the contract a watch backend satisfies; the
+// polling backend is the only one. A backend is owned exclusively by
+// one [*Watcher].
 type watcherBackend interface {
 	// AddPath registers a directory or file for monitoring. The
 	// backend reports any subsequent change as a [rawWatchEvent] on
 	// Events().
 	AddPath(path string) error
 
-	// RemovePath unregisters a previously-added path. Removing a
-	// path that wasn't registered is a no-op (no error).
+	// RemovePath unregisters a previously-added path and every path
+	// registered beneath it. Removing a path that wasn't registered
+	// is a no-op (no error).
 	RemovePath(path string) error
 
 	// Events returns the channel of raw events the backend emits.
@@ -30,9 +29,3 @@ type rawWatchEvent struct {
 	path string
 	op   WatchOp
 }
-
-// errWatcherUnsupportedBackend is returned by per-platform native
-// constructors when the running OS / arch lacks a usable
-// implementation. The cross-platform shell catches this and falls
-// back to the polling backend.
-var errWatcherUnsupportedBackend = errors.New("watcher: native backend unavailable")

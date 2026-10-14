@@ -2,7 +2,8 @@
 
 package fs
 
-// LongPath is a no-op pass-through on POSIX systems; the kernel
-// imposes per-component but no MAX_PATH-style aggregate limit, so
-// no prefix is needed.
+// LongPath returns path unchanged on non-Windows systems, which have no
+// MAX_PATH-style limit. On Windows it makes a path whose absolute form
+// is 260 characters or more absolute and adds the `\\?\` long-path
+// prefix.
 func LongPath(path string) (string, error) { return path, nil }

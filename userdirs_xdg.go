@@ -1,4 +1,4 @@
-//go:build linux || freebsd
+//go:build linux || freebsd || netbsd || openbsd || dragonfly || solaris || aix || js || wasip1 || plan9
 
 package fs
 

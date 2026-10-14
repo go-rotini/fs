@@ -102,3 +102,24 @@ func filesystemTypeOf(path string) (string, error) {
 	}
 	return t, nil
 }
+
+var procGetDriveTypeW = kernel32.NewProc("GetDriveTypeW")
+
+// winDriveRemote is GetDriveType's DRIVE_REMOTE.
+const winDriveRemote = 4
+
+// isRemoteVolume reports whether path's volume is a network drive or
+// share. GetVolumeInformation reports the server's filesystem (usually
+// NTFS) for an SMB share, so the type alone can't tell.
+func isRemoteVolume(path string) bool {
+	mp, err := mountPointOf(path)
+	if err != nil {
+		return false
+	}
+	mpp, err := syscall.UTF16PtrFromString(mp)
+	if err != nil {
+		return false
+	}
+	r1, _, _ := procGetDriveTypeW.Call(uintptr(unsafe.Pointer(mpp))) //nolint:errcheck // GetDriveType reports failure in its return value
+	return r1 == winDriveRemote
+}

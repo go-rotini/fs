@@ -13,18 +13,13 @@ import (
 //   - Trailing dots and spaces (Windows trims them silently, leading
 //     to surprising path resolution)
 //
-// If the cleaned stem matches a Windows reserved device name (CON,
-// PRN, AUX, NUL, COM1–COM9, LPT1–LPT9), regardless of case or
-// extension, an underscore is inserted IMMEDIATELY AFTER the stem
-// (before any extension): "CON" to "CON_", "CON.txt" to "CON_.txt".
-// This ensures the result no longer parses as a reserved device name
-// on Windows; Windows recognizes the device by stem, so suffixing
-// the whole filename ("CON.txt_") leaves the file still reserved.
+// If the cleaned name is a Windows reserved device name per
+// [IsReservedName], an underscore is inserted before the first dot:
+// "CON" becomes "CON_", "con.tar.gz" becomes "con_.tar.gz". Windows
+// recognizes the device by the part before the first dot, so
+// suffixing anywhere later ("CON.tar_.gz") would leave it reserved.
 //
-// An empty cleaned result falls back to `_`. SanitizeFilename does
-// NOT validate length; Windows MAX_PATH (260) and component-length
-// limits are filesystem-dependent; callers constrain those
-// separately if they matter.
+// An empty cleaned result falls back to `_`. Length is not checked.
 func SanitizeFilename(name string) string {
 	var b strings.Builder
 	b.Grow(len(name))
@@ -45,32 +40,28 @@ func SanitizeFilename(name string) string {
 	if !IsReservedName(out) {
 		return out
 	}
-	// Reserved-stem rewrite: insert "_" before the last dot, or
-	// append if there is no dot. Defends against Windows treating
-	// "CON.txt_" as the CON device.
-	if dot := strings.LastIndex(out, "."); dot > 0 {
+	// Reserved-stem rewrite: insert "_" before the first dot, or
+	// append if there is no dot.
+	if dot := strings.IndexByte(out, '.'); dot > 0 {
 		return out[:dot] + "_" + out[dot:]
 	}
 	return out + "_"
 }
 
-// IsReservedName reports whether name (or its base before the last
-// extension) matches a Windows reserved device name. Comparison is
-// case-insensitive. Reserved names: CON, PRN, AUX, NUL, COM1–COM9,
-// LPT1–LPT9.
-//
-// On any platform that lacks these reservations, the result is still
-// returned; the predicate is portability-safe rather than
-// platform-conditional, so callers writing files for cross-platform
-// consumption (archive extraction, scaffolding) catch reserved
-// names regardless of the host OS.
+// IsReservedName reports whether Windows treats name as a reserved
+// device name: CON, PRN, AUX, NUL, COM1–COM9, LPT1–LPT9, or COM and
+// LPT followed by a superscript ¹, ² or ³, compared
+// case-insensitively. As on Windows, everything from the first dot
+// on is ignored, as are spaces before it, so "CON.tar.gz", "nul.txt"
+// and "AUX .log" are all reserved. The answer is the same on every
+// platform, so files meant for Windows can be checked anywhere.
 func IsReservedName(name string) bool {
-	base := name
-	if dot := strings.LastIndex(base, "."); dot >= 0 {
-		base = base[:dot]
+	stem := name
+	if dot := strings.IndexByte(stem, '.'); dot >= 0 {
+		stem = stem[:dot]
 	}
-	upper := strings.ToUpper(base)
-	_, ok := reservedNames[upper]
+	stem = strings.TrimRight(stem, " ")
+	_, ok := reservedNames[strings.ToUpper(stem)]
 	return ok
 }
 
@@ -78,9 +69,9 @@ var reservedNames = func() map[string]struct{} {
 	set := map[string]struct{}{
 		"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
 	}
-	for i := 1; i <= 9; i++ {
-		set["COM"+string(rune('0'+i))] = struct{}{}
-		set["LPT"+string(rune('0'+i))] = struct{}{}
+	for _, digit := range "123456789¹²³" {
+		set["COM"+string(digit)] = struct{}{}
+		set["LPT"+string(digit)] = struct{}{}
 	}
 	return set
 }()

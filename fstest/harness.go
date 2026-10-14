@@ -34,8 +34,8 @@ func NewTestHarness(t *testing.T) *TestHarness {
 // directory. Unlike [NewTestHarness], this does NOT create the
 // directory or register cleanup; the caller owns the root's
 // lifecycle. Intended for acceptance-style tests that have already
-// allocated a working directory and want the harness's [Snapshot] /
-// [Path] ergonomics over it.
+// allocated a working directory and want the harness's
+// [TestHarness.Snapshot] and [TestHarness.Path] helpers over it.
 func NewHarnessAt(t *testing.T, root string) *TestHarness {
 	t.Helper()
 	return &TestHarness{t: t, root: root}
@@ -46,8 +46,9 @@ func NewHarnessAt(t *testing.T, root string) *TestHarness {
 func (h *TestHarness) Root() string { return h.root }
 
 // Path returns the absolute path to rel within the harness. rel is
-// joined under [Root]; absolute paths are interpreted relative to
-// the harness root (the leading separator is stripped).
+// joined under [TestHarness.Root]; a POSIX absolute path is treated
+// as relative to the root (its leading separator is stripped). rel is
+// not confined: `..` can step outside the root.
 func (h *TestHarness) Path(rel string) string {
 	cleaned := filepath.Clean(rel)
 	if filepath.IsAbs(cleaned) {
@@ -56,9 +57,9 @@ func (h *TestHarness) Path(rel string) string {
 	return filepath.Join(h.root, cleaned)
 }
 
-// Write atomically writes data to rel, creating any intermediate
-// directories. Returns the absolute path. Calls `t.Fatalf` on
-// error.
+// Write atomically writes data to rel (mode 0o644 for a new file),
+// creating any intermediate directories. Returns the absolute path.
+// Calls `t.Fatalf` on error.
 func (h *TestHarness) Write(rel string, data []byte) string {
 	h.t.Helper()
 	p := h.Path(rel)

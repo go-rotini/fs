@@ -13,8 +13,7 @@ type watcherOptions struct {
 	logger          *slog.Logger
 	recursive       bool
 	bufferSize      int
-	pollingInterval time.Duration // 0 = use platform-native backend
-	forcePolling    bool          // explicit WithPolling toggle
+	pollingInterval time.Duration // 0 = default interval
 }
 
 const (
@@ -56,9 +55,11 @@ func WithRecursive(b bool) WatcherOption {
 	return func(o *watcherOptions) { o.recursive = b }
 }
 
-// WithBufferSize sizes each subscription's buffered channel. Default 1.
-// A larger buffer reduces drop frequency on slow subscribers but
-// increases memory per subscription.
+// WithBufferSize sizes each subscription's buffered channel. Default 1;
+// values n <= 0 are ignored. A larger buffer means fewer events are
+// dropped for a slow subscriber; a directory watch, where one poll can
+// report many entries, usually needs one. A subscriber that missed
+// events is sent [WatchOverflow].
 func WithBufferSize(n int) WatcherOption {
 	return func(o *watcherOptions) {
 		if n > 0 {
@@ -67,21 +68,11 @@ func WithBufferSize(n int) WatcherOption {
 	}
 }
 
-// WithPolling overrides the polling interval. In v0.1 every watcher
-// uses polling regardless; this option is the only way to tune the
-// stat-loop cadence (default 1 second).
-//
-// Once the platform-native backends (inotify / kqueue /
-// ReadDirectoryChangesW) land in a follow-up release, WithPolling
-// will force the polling backend in preference to the native one;
-// useful for filesystems where the native APIs are known to be
-// unreliable (NFS, FUSE, exotic mounts) or in tests that want
-// deterministic, syscall-free behavior.
-//
-// interval <= 0 selects the default 1s.
+// WithPolling sets the interval at which the watcher polls its paths.
+// Every watcher polls, so this is how to tune its latency and cost.
+// interval <= 0 selects the default, 1 second.
 func WithPolling(interval time.Duration) WatcherOption {
 	return func(o *watcherOptions) {
-		o.forcePolling = true
 		if interval > 0 {
 			o.pollingInterval = interval
 		} else {

@@ -87,3 +87,27 @@ func TestRemoveAllNoFollow_RemovesNestedTree(t *testing.T) {
 		t.Errorf("tree not removed; stat err=%v", err)
 	}
 }
+
+// A path that is itself a symlink to a directory loses only the link.
+func TestRemoveAllNoFollow_RootSymlink(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(filepath.Join(target, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveAllNoFollow(link); err != nil {
+		t.Fatalf("RemoveAllNoFollow: %v", err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("link still present: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+		t.Errorf("target contents removed: %v", err)
+	}
+}

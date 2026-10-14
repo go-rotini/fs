@@ -5,8 +5,8 @@
 # packages and would copy their dependencies into the tools file.
 TOOL := go tool -modfile=tools.mod
 
-.PHONY: all clean lint test test-acceptance test-bench \
-        test-conformance test-fuzz test-mutation test-race tools-upgrade vuln-tools
+.PHONY: all clean lint lint-platforms test test-acceptance test-bench \
+        test-conformance test-fuzz test-mutation test-race tools-upgrade vuln vuln-tools cross-vet
 
 all: clean lint test test-acceptance test-bench test-fuzz test-mutation test-race
 
@@ -20,8 +20,22 @@ lint:
 	go mod verify
 	go mod verify -modfile=tools.mod
 	$(TOOL) golangci-lint run ./...
+	@$(MAKE) --no-print-directory lint-platforms
 	$(TOOL) go-licenses check ./...
-	$(TOOL) govulncheck ./...
+	@$(MAKE) --no-print-directory vuln
+	@$(MAKE) --no-print-directory vuln-tools
+
+# golangci-lint sees only the files that build for the GOOS it runs under, so lint-platforms runs
+# it again for each platform with files of its own. The linter binary is built for this machine
+# (go tool -n), and only the linted platform changes.
+LINT_GOOS := windows darwin freebsd netbsd openbsd
+
+lint-platforms:
+	@lint=$$($(TOOL) -n golangci-lint) || exit 1; \
+	for os in $(LINT_GOOS); do \
+		echo "golangci-lint GOOS=$$os"; \
+		GOOS=$$os $$lint run ./... || exit 1; \
+	done
 
 test:
 	@go test -v -count=1 -coverprofile=test.out ./...
@@ -38,13 +52,30 @@ test-conformance:
 	@go test -v -count=1 -run TestConformance -coverprofile=test_conformance.out ./...
 	@go tool cover -func=test_conformance.out
 
+# Every FuzzXxx target, one at a time (go test -fuzz takes a single target), for FUZZTIME each.
+# The targets are listed from the test files, so a new or renamed one runs without editing this
+# file, and a package that fails to build fails the run. When -fuzztime runs out, go test can lose
+# a race with its own deadline and fail with a bare "context deadline exceeded" and no failing
+# input; that outcome counts as a pass.
+FUZZTIME ?= 60s
+
 test-fuzz:
-	@go test -fuzz=FuzzExpand -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzIsSubpath -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzMatch -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzParseBytes -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzSanitizeFilename -fuzztime=60s -run=^$$ .
-	@go test -fuzz=FuzzMagic -fuzztime=60s -run=^$$ .
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; \
+	for pkg in $$(go list ./...); do \
+		list=$$(go test -list '^Fuzz' "$$pkg") || { echo "$$list"; exit 1; }; \
+		for name in $$(echo "$$list" | grep '^Fuzz'); do \
+			echo "→ $$pkg $$name"; \
+			go test -fuzz="^$$name$$" -fuzztime=$(FUZZTIME) -run=^$$ "$$pkg" >"$$log" 2>&1; status=$$?; \
+			cat "$$log"; \
+			if [ $$status -ne 0 ]; then \
+				if grep -q '^    context deadline exceeded$$' "$$log" && ! grep -q 'Failing input written' "$$log"; then \
+					echo "→ $$name: fuzz time elapsed; deadline race in go test, no failing input"; \
+				else \
+					exit 1; \
+				fi; \
+			fi; \
+		done; \
+	done
 
 test-mutation:
 	@$(TOOL) github.com/go-gremlins/gremlins/cmd/gremlins unleash --config .gremlins.yaml
@@ -53,7 +84,12 @@ test-race:
 	@go test -race -count=1 -coverprofile=test_race.out ./...
 	@go tool cover -func=test_race.out
 
-# Scans each tool in tools.mod as a built binary: that is exactly the code that runs.
+# govulncheck, one target per dependency graph; lint runs both. vuln scans go.mod from source,
+# test files included, which reports only vulnerable code this module can reach. vuln-tools scans
+# each tool in tools.mod as a built binary: that is exactly the code that runs.
+vuln:
+	@$(TOOL) govulncheck -test ./...
+
 vuln-tools:
 	@bin=$$(mktemp -d); trap 'rm -rf "$$bin"' EXIT; \
 	for pkg in $$(go list -modfile=tools.mod tool); do \
@@ -78,3 +114,14 @@ tools-upgrade:
 	rm -rf "$$backup"
 	@$(MAKE) --no-print-directory vuln-tools
 	@echo "tools upgraded; review: git diff tools.mod"
+
+# Vets the package for every platform it builds on, tests included.
+CROSS_TARGETS := linux/amd64 linux/arm64 linux/386 darwin/arm64 windows/amd64 freebsd/amd64 \
+	netbsd/amd64 netbsd/386 netbsd/arm openbsd/amd64 openbsd/386 dragonfly/amd64 solaris/amd64 illumos/amd64 aix/ppc64 \
+	android/arm64 js/wasm wasip1/wasm plan9/amd64
+
+cross-vet:
+	@for t in $(CROSS_TARGETS); do \
+		echo "go vet $$t"; \
+		GOOS=$${t%/*} GOARCH=$${t#*/} go vet ./... || exit 1; \
+	done

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build unix
 
 package fs
 
@@ -7,13 +7,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // mkfifoForTest creates a FIFO at path; t.TempDir handles cleanup.
 func mkfifoForTest(_ *testing.T, path string) error {
-	return syscall.Mkfifo(path, 0o600)
+	return unix.Mkfifo(path, 0o600)
 }
 
 // TestReadFile_FIFOEnforced exercises the LimitReader-at-cap path:

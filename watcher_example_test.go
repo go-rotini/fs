@@ -10,10 +10,10 @@ import (
 	"github.com/go-rotini/fs"
 )
 
-// NewWatcher monitors a file for changes via the platform's
-// notification mechanism. The watcher follows the file's parent
-// directory and filters by basename, so editor atomic-save patterns
-// (write-temp + rename) are observed correctly.
+// NewWatcher monitors a file for changes by polling. The watcher
+// follows the file's parent directory and filters by basename, so
+// editor atomic-save patterns (write-temp + rename) are observed
+// correctly.
 //
 // This example has no Output block because event delivery is
 // asynchronous; pkg.go.dev still renders the body as runnable
@@ -27,9 +27,8 @@ func ExampleNewWatcher() {
 		log.Fatal(err)
 	}
 
-	// In v0.1 the polling backend is used regardless of platform;
-	// pass WithPolling(d) to tune the cadence. Disable debouncing
-	// for prompt visibility in tests.
+	// Every watcher polls; pass WithPolling(d) to tune the cadence.
+	// Disable debouncing for prompt visibility in tests.
 	w, err := fs.NewWatcher(path,
 		fs.WithPolling(50*time.Millisecond),
 		fs.WithDebounce(0))

@@ -2,23 +2,36 @@ package fs
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
-	"syscall"
+	"slices"
 	"time"
 )
 
-// CopyOption configures [CopyFile], [CopyDir], [Move], and [Rename].
+// CopyOption configures [CopyFile], [CopyDir] and [Move]. [Rename]
+// accepts but ignores them.
 type CopyOption func(*copyOptions)
 
 type copyOptions struct {
 	overwrite      bool
 	followSymlinks bool
 	preserveMtime  bool
+	sync           bool
 	filter         func(path string, e stdfs.DirEntry) bool
+
+	// deferDirSync leaves the destination directory's sync to the
+	// caller ([CopyDir] syncs each directory once).
+	deferDirSync bool
+}
+
+// WithCopySync controls whether [CopyFile], [CopyDir] and the copy
+// fallback of [Move] fsync each copied file and its directory before
+// returning. Default true. Turning it off makes large tree copies much
+// faster, but after a power loss copied files may be empty or missing.
+func WithCopySync(b bool) CopyOption {
+	return func(o *copyOptions) { o.sync = b }
 }
 
 // WithOverwrite controls whether an existing destination is replaced.
@@ -43,8 +56,8 @@ func WithPreserveMtime(b bool) CopyOption {
 
 // WithFilter installs a per-entry predicate for [CopyDir]. Returning
 // false skips the entry; for directories, the entire subtree is
-// skipped. The path passed to fn is the absolute walk path under the
-// source root.
+// skipped. fn receives the walk path (src joined with the entry, so
+// absolute only when src is).
 func WithFilter(fn func(path string, e stdfs.DirEntry) bool) CopyOption {
 	return func(o *copyOptions) { o.filter = fn }
 }
@@ -53,6 +66,7 @@ func newCopyOptions(opts []CopyOption) copyOptions {
 	cfg := copyOptions{
 		overwrite:     true,
 		preserveMtime: true,
+		sync:          true,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -74,8 +88,12 @@ const (
 // the symlink itself is recreated at dst; the link target is not
 // dereferenced.
 //
-// Non-regular, non-symlink sources (devices, FIFOs, sockets) error
-// with [ErrNotSupported].
+// Non-regular, non-symlink sources (directories, devices, FIFOs,
+// sockets) error with [ErrNotSupported]. With [WithOverwrite](false)
+// an existing dst returns [ErrAlreadyExists]. dst's parent must
+// exist. The copy and its directory are fsynced unless
+// [WithCopySync](false). Like [WriteFile], replacing dst replaces a
+// symlink at dst rather than writing through it.
 func CopyFile(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 	return copyFileInternal(src, dst, cfg)
@@ -98,7 +116,7 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	}
 
 	if !srcInfo.Mode().IsRegular() {
-		return wrapPathError(opCopyFile, src, fmt.Errorf("%w: source is %s", ErrNotSupported, srcInfo.Mode().Type()))
+		return wrapPathError(opCopyFile, src, unsupportedTypeError{srcInfo.Mode()})
 	}
 
 	if !cfg.overwrite {
@@ -114,23 +132,25 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 	defer sf.Close()
 
 	dstDir := filepath.Dir(dst)
-	tmp, err := osCreateTemp(dstDir, filepath.Base(dst)+".tmp.*")
+	tmp, err := osCreateTemp(dstDir, tempPatternFor(dst))
 	if err != nil {
 		return wrapPathError(opCopyFile, dst, err)
 	}
 	tmpPath := tmp.Name()
 	cleanupTmp := func() { _ = osRemove(tmpPath) } //nolint:errcheck // best-effort cleanup of an already-failed write
 
-	if _, cerr := io.Copy(tmp, hookedReader{sf}); cerr != nil {
+	if _, cerr := io.Copy(tmp, fileReader(sf)); cerr != nil {
 		closeQuietly(tmp)
 		cleanupTmp()
 		return wrapPathError(opCopyFile, src, cerr)
 	}
 
-	if cerr := fileSync(tmp); cerr != nil {
-		closeQuietly(tmp)
-		cleanupTmp()
-		return wrapPathError(opCopyFile, dst, cerr)
+	if cfg.sync {
+		if cerr := fileSync(tmp); cerr != nil {
+			closeQuietly(tmp)
+			cleanupTmp()
+			return wrapPathError(opCopyFile, dst, cerr)
+		}
 	}
 
 	if cerr := fileClose(tmp); cerr != nil {
@@ -155,8 +175,10 @@ func copyFileInternal(src, dst string, cfg copyOptions) error {
 		return wrapPathError(opCopyFile, dst, cerr)
 	}
 
-	if serr := syncDir(dstDir); serr != nil {
-		return wrapPathError(opCopyFile, dst, serr)
+	if cfg.sync && !cfg.deferDirSync {
+		if serr := syncDir(dstDir); serr != nil {
+			return wrapPathError(opCopyFile, dst, serr)
+		}
 	}
 	return nil
 }
@@ -182,11 +204,18 @@ func copySymlink(src, dst string, cfg copyOptions) error {
 	return nil
 }
 
-// CopyDir recursively copies src to dst. dst is created if missing
-// (mode mirrors src). Symlinks are recreated as symlinks unless
-// [WithFollowSymlinks]. Per-entry errors aggregate into a
-// [*MultiError]; the walk continues so a partial copy surfaces every
-// problem entry.
+// CopyDir recursively copies src to dst. dst is created if missing.
+// Directories get their source's permission bits; a read-only source
+// directory is filled first and made read-only afterwards. Symlinks
+// are recreated as symlinks unless [WithFollowSymlinks]; when
+// following, a symlink to a directory is reported as
+// [ErrNotSupported] rather than copied. src must be a directory
+// ([ErrNotDir] otherwise). When dst lies inside src, it is left out
+// of the copy. Per-entry errors aggregate into a [*MultiError]; the
+// walk continues so a partial copy surfaces every problem entry.
+//
+// Every copied file is fsynced, and each destination directory once
+// after its entries are written, unless [WithCopySync](false).
 //
 // [WithFilter] skips entries (and their subtrees, for directories)
 // when the predicate returns false.
@@ -201,10 +230,19 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 		return wrapPathError(opCopyDir, src, ErrNotDir)
 	}
 
-	if merr := osMkdirAll(dst, srcInfo.Mode().Perm()); merr != nil {
+	dirs := &copyDirState{}
+	if merr := dirs.mkdir(dst, srcInfo.Mode().Perm()); merr != nil {
 		return wrapPathError(opCopyDir, dst, merr)
 	}
+	dstInfo, err := osStat(dst)
+	if err != nil {
+		return wrapPathError(opCopyDir, dst, err)
+	}
 
+	// Each file's directory is synced once below instead of after
+	// every file.
+	fileCfg := cfg
+	fileCfg.deferDirSync = true
 	multi := &MultiError{}
 	walkErr := filepath.WalkDir(src, func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
@@ -234,7 +272,10 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 				multi.Append(wrapPathError(opCopyDir, path, ierr))
 				return nil
 			}
-			if merr := osMkdirAll(target, info.Mode().Perm()); merr != nil {
+			if os.SameFile(info, dstInfo) {
+				return filepath.SkipDir
+			}
+			if merr := dirs.mkdir(target, info.Mode().Perm()); merr != nil {
 				multi.Append(wrapPathError(opCopyDir, target, merr))
 			}
 		case d.Type()&os.ModeSymlink != 0 && !cfg.followSymlinks:
@@ -242,7 +283,7 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 				multi.Append(cerr)
 			}
 		default:
-			if cerr := copyFileInternal(path, target, cfg); cerr != nil {
+			if cerr := copyFileInternal(path, target, fileCfg); cerr != nil {
 				multi.Append(cerr)
 			}
 		}
@@ -252,6 +293,9 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 	if walkErr != nil {
 		multi.Append(wrapPathError(opCopyDir, src, walkErr))
 	}
+	for _, e := range dirs.finish(cfg.sync, filepath.Dir(filepath.Clean(dst))) {
+		multi.Append(wrapPathError(opCopyDir, dst, e))
+	}
 
 	if len(multi.Errors) > 0 {
 		return multi
@@ -259,11 +303,61 @@ func CopyDir(src, dst string, opts ...CopyOption) error {
 	return nil
 }
 
+// copyDirState tracks the directories [CopyDir] creates, so it can
+// apply their final modes and sync them after their entries exist.
+type copyDirState struct {
+	created []createdDir
+}
+
+type createdDir struct {
+	path string
+	perm os.FileMode
+}
+
+// mkdir creates path owner-writable, so entries can be copied into it
+// even when its source is read-only. Directories that already exist
+// are left as they are.
+func (s *copyDirState) mkdir(path string, perm os.FileMode) error {
+	if _, err := osLstat(path); err == nil {
+		s.created = append(s.created, createdDir{path: path})
+		return osMkdirAll(path, perm)
+	}
+	if err := osMkdirAll(path, perm|0o700); err != nil {
+		return err
+	}
+	s.created = append(s.created, createdDir{path: path, perm: perm})
+	return nil
+}
+
+// finish restores the source modes of directories that had to be
+// created owner-writable, deepest first, and syncs every directory
+// written to (and parent, which holds dst) when sync is set.
+func (s *copyDirState) finish(sync bool, parent string) []error {
+	var errs []error
+	if sync {
+		if err := syncDir(parent); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, d := range slices.Backward(s.created) {
+		if sync {
+			if err := syncDir(d.path); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if d.perm != 0 && d.perm&0o700 != 0o700 {
+			if err := osChmod(d.path, d.perm); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errs
+}
+
 // Rename renames src to dst via [os.Rename]. Strict: a cross-device
-// rename returns the underlying error (typically [ErrCrossDevice] /
-// EXDEV) without falling back. Use [Move] when you want the
-// copy+remove fallback. opts is accepted for signature symmetry but
-// unused; rename is atomic only within a single filesystem.
+// rename returns an error wrapping [ErrCrossDevice] without falling
+// back; use [Move] for the copy-and-remove fallback. opts is accepted
+// for symmetry with [Move] and ignored.
 func Rename(src, dst string, opts ...CopyOption) error {
 	_ = opts
 	if err := osRename(src, dst); err != nil {
@@ -274,13 +368,12 @@ func Rename(src, dst string, opts ...CopyOption) error {
 
 // Move renames src to dst, falling back to copy+remove when the
 // rename fails because src and dst live on different filesystems
-// (EXDEV on POSIX, ERROR_NOT_SAME_DEVICE on Windows). The fallback is
-// NOT atomic from the caller's perspective: the destination appears
-// after the copy succeeds, the source is removed last.
+// (EXDEV, or ERROR_NOT_SAME_DEVICE on Windows). The fallback uses
+// [CopyDir] or [CopyFile] with opts and is not atomic: the destination
+// appears after the copy succeeds, and the source is removed last.
 //
-// Honors [WithOverwrite]. The atomic-rename path overwrites
-// unconditionally on POSIX; a Lstat pre-check enforces
-// [WithOverwrite(false)] before the rename attempt.
+// With [WithOverwrite](false), an existing dst returns
+// [ErrAlreadyExists] before anything is moved.
 func Move(src, dst string, opts ...CopyOption) error {
 	cfg := newCopyOptions(opts)
 
@@ -323,9 +416,32 @@ func Move(src, dst string, opts ...CopyOption) error {
 }
 
 // isCrossDevice reports whether err is a cross-filesystem rename
-// error. syscall.EXDEV is defined on every supported platform with
-// the platform-appropriate value (POSIX EXDEV / Windows
-// ERROR_NOT_SAME_DEVICE).
+// error: EXDEV, or ERROR_NOT_SAME_DEVICE on Windows.
 func isCrossDevice(err error) bool {
-	return errors.Is(err, syscall.EXDEV) || errors.Is(err, ErrCrossDevice)
+	return isCrossDeviceErrno(err) || errors.Is(err, ErrCrossDevice)
 }
+
+// unsupportedTypeError reports a file of a type an operation can't handle, such as a FIFO
+// given to [CopyFile]. It matches [ErrNotSupported].
+type unsupportedTypeError struct{ mode os.FileMode }
+
+func (e unsupportedTypeError) Error() string {
+	var name string
+	switch m := e.mode; {
+	case m.IsDir():
+		name = "directory"
+	case m&os.ModeNamedPipe != 0:
+		name = "named pipe"
+	case m&os.ModeSocket != 0:
+		name = "socket"
+	case m&os.ModeCharDevice != 0:
+		name = "character device"
+	case m&os.ModeDevice != 0:
+		name = "device"
+	default:
+		name = "irregular file"
+	}
+	return "fs: unsupported file type: " + name
+}
+
+func (unsupportedTypeError) Unwrap() error { return ErrNotSupported }

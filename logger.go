@@ -28,7 +28,7 @@ func discardLogger() *slog.Logger {
 // Cache, Rotator, and other subsystems. Pass nil to restore the
 // default discard logger. Safe to call from any goroutine.
 //
-// Note: package debug records include caller-supplied paths (log
+// Debug records include caller-supplied paths (log
 // filenames, plan op paths including ones that may name secret
 // files). Install a logger only after deciding whether the handler
 // is allowed to see those paths; redact via a custom [slog.Handler]

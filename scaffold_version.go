@@ -7,33 +7,41 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
-// ScaffoldExtract is a non-templated copy of src into dst. Used for
-// "extract default resources on first run" workflows where templates
-// aren't needed; the source files are written verbatim.
+// ScaffoldExtract copies src into dst verbatim, without templating.
+// Used for "extract default resources on first run" workflows.
 //
-// On every call, the package computes a content-hash of src (a
-// stable SHA-256 over sorted-name + content concatenation) and
-// compares it to the marker file at `<dst>/<versionMarker>` (default
-// `.scaffold-version`; override via [WithScaffoldVersionMarker]):
+// On every call it computes a SHA-256 over src's names and contents
+// and compares it with the marker file `<dst>/<versionMarker>`
+// (default `.scaffold-version`; see [WithScaffoldVersionMarker]):
 //
-//   - Same hash to no-op.
-//   - Different hash to re-extract and update the marker.
-//   - Marker missing to first extract, write marker.
+//   - Same hash: nothing is done.
+//   - Different hash, or no marker: src is extracted and the marker
+//     is written.
 //
-// Conflict policy still applies: by default existing destinations
-// are kept. Use [ScaffoldOverwriteAll] to force re-extracts to
-// replace user edits when the source version changes.
+// The conflict policy still applies: by default existing files are
+// kept, even when the source has changed. Use [ScaffoldOverwriteAll]
+// to replace them.
+//
+// A path that resolves outside dst through a link already on disk (a
+// symlink or a Windows directory junction) fails with an error
+// wrapping [ErrEscapesRoot]; entries before it stay written.
 func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	cfg := newScaffoldOptions(opts)
+
+	marker := cfg.versionMarker
+	if marker == "." || marker == ".." || strings.ContainsAny(marker, `/\`) || filepath.Base(marker) != marker {
+		return wrapPathError(opScaffoldExtract, marker, ErrInvalidPath)
+	}
 
 	hash, err := scaffoldHashFS(src)
 	if err != nil {
 		return wrapPathError(opScaffoldExtract, dst, err)
 	}
 
-	markerPath := filepath.Join(dst, cfg.versionMarker)
+	markerPath := filepath.Join(dst, marker)
 	if existing, rerr := os.ReadFile(markerPath); rerr == nil && string(existing) == hash {
 		return nil // version unchanged
 	}
@@ -43,7 +51,8 @@ func ScaffoldExtract(src stdfs.FS, dst string, opts ...ScaffoldOption) error {
 	}
 
 	// Write the marker. Use 0o644 + atomic write so an interrupted
-	// extract doesn't leave a half-written marker.
+	// extract doesn't leave a half-written marker; the rename also
+	// replaces a symlink at the marker path rather than following it.
 	if err := WriteFile(markerPath, []byte(hash)); err != nil {
 		return wrapPathError(opScaffoldExtract, markerPath, err)
 	}
@@ -94,6 +103,10 @@ func scaffoldHashFS(src stdfs.FS) (string, error) {
 // conflict policy. No template rendering; identical contents to the
 // embedded FS.
 func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
+	root, err := newExtractRoot(opScaffoldExtract, dst)
+	if err != nil {
+		return err
+	}
 	//nolint:wrapcheck // per-entry errors are already wrapped via wrapPathError below
 	return stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
@@ -103,6 +116,9 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 			return nil
 		}
 		dstPath := filepath.Join(dst, filepath.FromSlash(path))
+		if err := root.confine(filepath.Join(root.dir, filepath.FromSlash(path))); err != nil {
+			return err
+		}
 
 		if d.IsDir() {
 			if err := osMkdirAll(dstPath, Mode0755); err != nil {
@@ -138,7 +154,7 @@ func scaffoldCopy(src stdfs.FS, dst string, cfg scaffoldOptions) error {
 		if err != nil {
 			return wrapPathError(opScaffoldExtract, path, err)
 		}
-		if err := WriteFile(dstPath, data); err != nil {
+		if err := WriteFile(dstPath, data, scaffoldFileMode(src, path)...); err != nil {
 			return err
 		}
 		return nil

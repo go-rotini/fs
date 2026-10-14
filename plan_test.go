@@ -4,8 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPlan_DiffEmpty(t *testing.T) {
@@ -477,27 +479,15 @@ func TestApply_RenameOverExistingDestination(t *testing.T) {
 	}
 }
 
-func TestBackupBeforeWrite_DirectoryRejected(t *testing.T) {
+func TestTakeSnapshot_DirectoryRejected(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "subdir")
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := backupBeforeWrite(dir, subdir, 0); !errors.Is(err, ErrIsDir) {
+	if err := takeSnapshot(dir, subdir, 0); !errors.Is(err, ErrIsDir) {
 		t.Errorf("err = %v; want ErrIsDir", err)
-	}
-}
-
-func TestBackupBeforeWrite_EmptyJournalDirIsNoop(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	target := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := backupBeforeWrite("", target, 0); err != nil {
-		t.Errorf("backupBeforeWrite('') = %v; want nil", err)
 	}
 }
 
@@ -609,6 +599,104 @@ func TestPlanAction_String(t *testing.T) {
 	for a, want := range cases {
 		if got := a.String(); got != want {
 			t.Errorf("PlanAction(%d).String() = %q; want %q", a, got, want)
+		}
+	}
+}
+
+// Rollback puts back a symlink that a step deleted or replaced, dangling or not, as a symlink
+// with its original text.
+func TestRollback_RestoresSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevation on Windows")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "target"), []byte("T"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{"link": "target", "dangling": "missing", "upd": "target"}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewPlan().
+		Delete(filepath.Join(dir, "link")).
+		Delete(filepath.Join(dir, "dangling")).
+		Update(filepath.Join(dir, "upd"), []byte("NEW"), 0)
+	journal := filepath.Join(dir, "journal")
+	if err := Apply(p, journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rollback(journal); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range links {
+		if got, err := os.Readlink(filepath.Join(dir, name)); err != nil || got != want {
+			t.Errorf("%s after Rollback: link to %q, %v; want a link to %q", name, got, err, want)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "target")); string(got) != "T" {
+		t.Errorf("target = %q, want it untouched", got)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != len(links)+2 {
+		t.Errorf("directory holds %d entries after Rollback, want %d: %v", len(ents), len(links)+2, ents)
+	}
+}
+
+// Rollback restores an overwritten file's modification time with its bytes and mode.
+func TestRollback_RestoresMtime(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	mtime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(dir, "journal")
+	if err := Apply(NewPlan().Update(path, []byte("new"), 0o600), journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := Rollback(journal); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "old" {
+		t.Errorf("content = %q, want old", got)
+	}
+	if !info.ModTime().Equal(mtime) {
+		t.Errorf("mtime = %v, want %v", info.ModTime(), mtime)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640", info.Mode().Perm())
+	}
+}
+
+// Create treats a dangling symlink as an existing path in both run modes, and keeps the link.
+func TestApply_CreateOverDanglingSymlinkAgrees(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	dir := t.TempDir()
+	for name, apply := range map[string]func(*Plan) error{
+		"transient": func(p *Plan) error { return ApplyTransient(p) },
+		"journaled": func(p *Plan) error { return Apply(p, filepath.Join(dir, "journal")) },
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.Symlink("nowhere", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := apply(NewPlan().Create(path, []byte("x"), 0o644)); !errors.Is(err, ErrAlreadyExists) {
+			t.Errorf("%s: got %v, want ErrAlreadyExists", name, err)
+		}
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s: the symlink was replaced", name)
 		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGitignore_LiteralMatch(t *testing.T) {
@@ -197,6 +198,27 @@ func TestLoadGitignore(t *testing.T) {
 	}
 }
 
+// A leading byte order mark is skipped and long lines are read whole, as git does.
+func TestLoadGitignore_BOMAndLongLine(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".gitignore")
+	body := "\xef\xbb\xbf*.log\n# " + strings.Repeat("x", 70000) + "\r\nbuild/\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := LoadGitignore(path)
+	if err != nil {
+		t.Fatalf("LoadGitignore: %v", err)
+	}
+	if !g.Match("a.log", false) {
+		t.Error("a.log not ignored: the BOM became part of the first pattern")
+	}
+	if !g.Match("build", true) {
+		t.Error("build/ not ignored")
+	}
+}
+
 func TestLoadGitignore_MissingFile(t *testing.T) {
 	t.Parallel()
 	if _, err := LoadGitignore(filepath.Join(t.TempDir(), "nope")); err == nil {
@@ -254,5 +276,54 @@ func mustWrite(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func TestGitignore_ManyDoubleStarsStayFast(t *testing.T) {
+	t.Parallel()
+	deep := strings.TrimSuffix(strings.Repeat("d/", 30), "/")
+	as := strings.TrimSuffix(strings.Repeat("a/", 30), "/")
+	g := NewGitignore([]string{
+		strings.Repeat("**/*/", 8) + "nomatch",
+		strings.Repeat("**/a/", 6) + "nomatch",
+		strings.Repeat("**/", 16) + "nomatch",
+	})
+	start := time.Now()
+	for range 100 {
+		if g.Match(deep, false) || g.Match(as, false) {
+			t.Fatal("unexpected match")
+		}
+	}
+	// The exponential matcher took close to a second per Match for the
+	// first pattern alone; 200 calls finish in milliseconds.
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("200 Match calls took %v", d)
+	}
+}
+
+func TestGitignore_DirOnlyAndTrailingDoubleStar(t *testing.T) {
+	t.Parallel()
+	g := NewGitignore([]string{"build/"})
+	for _, c := range []struct {
+		path  string
+		isDir bool
+		want  bool
+	}{
+		{"build", true, true},
+		{"build", false, false},
+		{"build/x.go", false, true},
+		{"src/build/x.go", false, true},
+		{"build/sub", true, true},
+	} {
+		if got := g.Match(c.path, c.isDir); got != c.want {
+			t.Errorf("build/: Match(%q, %v) = %v; want %v", c.path, c.isDir, got, c.want)
+		}
+	}
+	g2 := NewGitignore([]string{"foo/**"})
+	if g2.Match("foo", true) {
+		t.Error("foo/** matched foo itself")
+	}
+	if !g2.Match("foo/a", false) || !g2.Match("foo/a/b", true) {
+		t.Error("foo/** did not match below foo")
 	}
 }

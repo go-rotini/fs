@@ -5,13 +5,13 @@ import (
 	"testing/fstest"
 )
 
-// MockFS returns a read-only [io/fs.FS] over a path to contents map.
-// Useful for testing read paths ([fs.Walk], [fs.Glob], [fs.Find],
-// [fs.ReadFile] against the io/fs.FS surface) without touching
-// disk.
+// MockFS returns a read-only [io/fs.FS] built from a map of
+// slash-separated paths to file contents; parent directories are
+// implied. Use it to feed functions that take an [io/fs.FS], such as
+// [fs.ScaffoldApply] and [fs.ScaffoldExtract], without touching disk.
+// The functions that take OS paths, such as [fs.Walk], cannot read it.
 //
-// Wraps stdlib's [testing/fstest.MapFS]; entries are accessible via
-// the same path-based methods as any other io/fs.FS.
+// It is a [testing/fstest.MapFS].
 func MockFS(layout map[string]string) stdfs.FS {
 	files := make(fstest.MapFS, len(layout))
 	for path, content := range layout {

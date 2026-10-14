@@ -31,10 +31,9 @@ const (
 	opWarnInsecurePerm = "warninsecureperm"
 )
 
-// Chmod wraps [os.Chmod] with the package's error envelope. The mode
-// argument is interpreted by the OS; only the permission bits
-// (`os.ModePerm`) are honored on POSIX, and on Windows only the
-// read-only bit changes meaningfully.
+// Chmod wraps [os.Chmod], returning errors as a [*PathError]. On
+// POSIX the permission bits plus setuid, setgid and sticky apply; on
+// Windows only the owner-write bit matters (it toggles read-only).
 func Chmod(path string, mode os.FileMode) error {
 	if err := os.Chmod(path, mode); err != nil {
 		return wrapPathError(opChmod, path, err)
@@ -43,12 +42,12 @@ func Chmod(path string, mode os.FileMode) error {
 }
 
 // EnsurePerm chmods path to mode if the current permission bits
-// don't already match. A path that already has the desired mode is
-// a no-op (no syscall, no error). Useful in idempotent setup
-// routines.
+// don't already match; otherwise it does nothing. Useful in idempotent
+// setup routines. Symlinks are followed.
 //
-// Only the permission bits (`os.ModePerm`) are compared; type bits
-// (directory, symlink, etc.) on the existing inode are ignored.
+// Only the permission bits (`os.ModePerm`) of mode are used. When a
+// chmod is needed, any setuid, setgid or sticky bit on path is
+// cleared.
 func EnsurePerm(path string, mode os.FileMode) error {
 	info, err := os.Stat(path)
 	if err != nil {

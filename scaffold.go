@@ -15,15 +15,15 @@ type ScaffoldAction struct {
 	// DstPath is the resolved on-disk destination path.
 	DstPath string
 	// Reason is a short human-readable explanation suitable for
-	// dry-run output. Examples: "would create", "skipped: exists",
+	// dry-run output, such as "would create", "exists; skipped" or
 	// "would overwrite".
 	Reason string
 	// IsDir is true for directory entries.
 	IsDir bool
 }
 
-// ScaffoldActionOp classifies a [ScaffoldAction]. Apply uses this to
-// decide whether to touch the filesystem.
+// ScaffoldActionOp classifies a [ScaffoldAction]. [ScaffoldApply] uses
+// it to decide whether to touch the filesystem.
 type ScaffoldActionOp int
 
 const (
@@ -33,9 +33,9 @@ const (
 	ScaffoldActionSkip
 	// ScaffoldActionOverwrite replaces DstPath with rendered content.
 	ScaffoldActionOverwrite
-	// ScaffoldActionConflict means the conflict resolution failed
-	// (typically a prompt callback returned an unsupported value);
-	// apply aborts.
+	// ScaffoldActionConflict marks an existing file under
+	// [ScaffoldPromptInteractive]; [ScaffoldApply] asks the prompt
+	// function how to resolve it.
 	ScaffoldActionConflict
 )
 
@@ -55,8 +55,9 @@ func (o ScaffoldActionOp) String() string {
 	}
 }
 
-// ScaffoldOnConflict configures how [ScaffoldApply] handles an
-// existing destination path.
+// ScaffoldOnConflict configures how [ScaffoldApply] and
+// [ScaffoldExtract] handle an existing destination file. Existing
+// directories are always reused.
 type ScaffoldOnConflict int
 
 const (
@@ -77,27 +78,35 @@ const (
 
 // ErrScaffoldPromptRequired is returned when [ScaffoldPromptInteractive]
 // is selected without a prompt function provided via
-// [WithScaffoldPromptFunc].
+// [WithScaffoldPromptFunc]. [ScaffoldPlan] and [ScaffoldApply] check
+// up front; [ScaffoldExtract] fails at the first existing file.
 var ErrScaffoldPromptRequired = errors.New("fs: scaffold: prompt function required for PromptInteractive")
 
-// ErrScaffoldPromptUnsupported is returned when [WithScaffoldPromptFunc]
-// returns an action that isn't [ScaffoldActionSkip] /
-// [ScaffoldActionOverwrite] / [ScaffoldActionCreate].
+// ErrScaffoldPromptUnsupported is returned by [ScaffoldApply] when the
+// [WithScaffoldPromptFunc] callback returns an action other than
+// [ScaffoldActionSkip], [ScaffoldActionOverwrite] or
+// [ScaffoldActionCreate].
 var ErrScaffoldPromptUnsupported = errors.New("fs: scaffold: prompt returned unsupported action")
 
-// ErrScaffoldUnresolvedConflict is returned when a conflict makes
-// it through to the apply phase without being resolved (typically
-// only happens when the prompt callback is misconfigured).
+// ErrScaffoldUnresolvedConflict is returned by [ScaffoldApply] if a
+// planned conflict reaches the write phase without being resolved.
 var ErrScaffoldUnresolvedConflict = errors.New("fs: scaffold: unresolved conflict")
 
 // ScaffoldPlan walks src, renders every path through [text/template]
 // with vars (so a source named `{{.AppName}}.go` becomes
 // `myapp.go`), and returns the actions [ScaffoldApply] would
-// perform; without any filesystem writes. Useful for `--dry-run`
+// perform, without any filesystem writes. Useful for `--dry-run`
 // flags.
 //
-// Template syntax errors in source paths or contents abort the
-// plan.
+// Templates run with missingkey=error and no functions beyond the
+// text/template builtins. A path template error aborts the plan; file
+// contents are not rendered until [ScaffoldApply].
+//
+// Every rendered path must stay inside dst, both as written and as it
+// resolves through the links already on disk (symlinks and Windows
+// directory junctions); one that does not, such as a variable
+// rendering to `../../x`, aborts the plan with an error wrapping
+// [ErrEscapesRoot].
 func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([]ScaffoldAction, error) {
 	cfg := newScaffoldOptions(opts)
 	if cfg.onConflict == ScaffoldPromptInteractive && cfg.promptFunc == nil {
@@ -108,9 +117,17 @@ func ScaffoldPlan(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) ([
 
 // ScaffoldApply walks src, renders templates with vars, and writes
 // the rendered tree under dst. Conflict policy is configured via
-// [WithScaffoldOnConflict]. By default existing destinations are
-// kept (ScaffoldSkipExisting); a re-run on a previously-applied
-// scaffold is therefore a no-op.
+// [WithScaffoldOnConflict]. By default existing files are kept
+// ([ScaffoldSkipExisting]), so re-running over an applied scaffold is
+// a no-op.
+//
+// Paths are confined to dst as in [ScaffoldPlan]; an escaping path
+// fails before anything is written. Every source file's contents are
+// rendered as a template with vars, except files matching
+// [WithScaffoldVerbatim], and written atomically: mode 0o644, plus the
+// source's execute bits (so scripts stay executable); directories
+// 0o755. A content template error stops the apply, leaving files
+// already written in place.
 func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) error {
 	plan, err := ScaffoldPlan(src, dst, vars, opts...)
 	if err != nil {
@@ -122,8 +139,12 @@ func ScaffoldApply(src stdfs.FS, dst string, vars any, opts ...ScaffoldOption) e
 
 // scaffoldWalk traverses src and produces the action list.
 func scaffoldWalk(src stdfs.FS, dst string, vars any, cfg scaffoldOptions) ([]ScaffoldAction, error) {
+	root, err := newExtractRoot(opScaffoldPlan, dst)
+	if err != nil {
+		return nil, err
+	}
 	var plan []ScaffoldAction
-	err := stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
+	err = stdfs.WalkDir(src, ".", func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
@@ -135,6 +156,9 @@ func scaffoldWalk(src stdfs.FS, dst string, vars any, cfg scaffoldOptions) ([]Sc
 			return wrapPathError(opScaffoldPlan, path, terr)
 		}
 		dstPath := filepath.Join(dst, filepath.FromSlash(renderedPath))
+		if err := root.confine(filepath.Join(root.dir, filepath.FromSlash(renderedPath))); err != nil {
+			return err
+		}
 
 		action := ScaffoldAction{
 			SrcPath: path,
@@ -208,7 +232,7 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 				}
 				continue
 			}
-			if err := scaffoldWriteFile(src, action, vars); err != nil {
+			if err := scaffoldWriteFile(src, action, vars, cfg); err != nil {
 				return err
 			}
 		}
@@ -217,9 +241,10 @@ func scaffoldExecute(src stdfs.FS, vars any, plan []ScaffoldAction, cfg scaffold
 }
 
 // scaffoldWriteFile reads src/srcPath, renders its contents through
-// text/template with vars, and writes to dstPath atomically. Parent
-// directories are created with mode 0o755.
-func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any) error {
+// text/template with vars unless it is verbatim, and writes to dstPath
+// atomically with the source's execute bits. Parent directories are
+// created with mode 0o755.
+func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any, cfg scaffoldOptions) error {
 	if err := osMkdirAll(filepath.Dir(action.DstPath), Mode0755); err != nil {
 		return wrapPathError(opScaffoldApply, action.DstPath, err)
 	}
@@ -227,12 +252,25 @@ func scaffoldWriteFile(src stdfs.FS, action ScaffoldAction, vars any) error {
 	if err != nil {
 		return wrapPathError(opScaffoldApply, action.SrcPath, err)
 	}
-	rendered, terr := renderTemplate(string(data), vars)
-	if terr != nil {
-		return wrapPathError(opScaffoldApply, action.SrcPath, terr)
+	if !cfg.isVerbatim(action.SrcPath) {
+		rendered, terr := renderTemplate(string(data), vars)
+		if terr != nil {
+			return wrapPathError(opScaffoldApply, action.SrcPath, terr)
+		}
+		data = []byte(rendered)
 	}
-	if err := WriteFile(action.DstPath, []byte(rendered)); err != nil {
-		return err
+	return WriteFile(action.DstPath, data, scaffoldFileMode(src, action.SrcPath)...)
+}
+
+// scaffoldFileMode returns the write options that give a scaffolded
+// file its source's execute bits: mode 0o644 plus those bits. Without
+// execute bits it returns none, so new files get 0o644 and replaced
+// files keep their mode. Other source bits are ignored: an
+// [embed.FS] reports every file read-only.
+func scaffoldFileMode(src stdfs.FS, name string) []WriteOption {
+	info, err := stdfs.Stat(src, name)
+	if err != nil || info.Mode().Perm()&0o111 == 0 {
+		return nil
 	}
-	return nil
+	return []WriteOption{WithPerm(Mode0644 | info.Mode().Perm()&0o111)}
 }

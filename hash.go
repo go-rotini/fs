@@ -22,7 +22,7 @@ import (
 
 // HashAlgo selects the hash function used by [Hash], [HashCompare],
 // and [HashWriter]. The zero value is [HashSHA256], the package
-// default.
+// default; an unrecognized value also hashes with SHA-256.
 type HashAlgo int
 
 const (
@@ -90,10 +90,9 @@ func Hash(path string, algo HashAlgo) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// HashCompare returns nil if path's hash matches expected (hex).
-// Comparison is constant-time via [crypto/subtle.ConstantTimeCompare]
-// ; protects integrity-check call sites against timing oracles.
-// Returns [ErrHashMismatch] on mismatch.
+// HashCompare returns nil if path's hash matches expected (hex). The
+// comparison is constant-time ([crypto/subtle.ConstantTimeCompare]).
+// On mismatch the error wraps [ErrHashMismatch].
 //
 // expected may be upper or lower case; case is normalized by the
 // hex-decoding step. A malformed expected string returns a wrapped
@@ -124,11 +123,6 @@ func HashCompare(path, expected string, algo HashAlgo) error {
 // every byte written through it. [HashingWriter.Hex] returns the
 // hex digest of what's been written so far; [HashingWriter.Reset]
 // clears the running state.
-//
-// The type is concrete rather than an interface because there is
-// exactly one implementation; callers who want abstraction can
-// declare a one-method interface at their use site (the Go-idiomatic
-// "accept interfaces, return concrete types" pattern).
 type HashingWriter struct {
 	h hash.Hash
 }
@@ -150,9 +144,8 @@ func (w *HashingWriter) Write(p []byte) (int, error) {
 }
 
 // Hex returns the hex-encoded digest of every byte written since
-// the last [HashingWriter.Reset] (or since construction). Named Hex
-// rather than Sum so it doesn't shadow [hash.Hash.Sum], which has a
-// different signature and returns bytes rather than a hex string.
+// the last [HashingWriter.Reset] (or since construction). It does not
+// change the running state.
 func (w *HashingWriter) Hex() string { return hex.EncodeToString(w.h.Sum(nil)) }
 
 // Reset clears the running state.

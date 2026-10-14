@@ -11,8 +11,7 @@ const (
 )
 
 // Match reports whether name matches the [filepath.Match] glob
-// pattern. Wraps the stdlib function with the package's error
-// envelope for consistency.
+// pattern. The only possible error wraps [filepath.ErrBadPattern].
 func Match(pattern, name string) (bool, error) {
 	ok, err := filepath.Match(pattern, name)
 	if err != nil {
@@ -25,8 +24,7 @@ func Match(pattern, name string) (bool, error) {
 // (`~`/`$VAR` resolution) to the pattern. Pattern syntax is
 // [filepath.Match]. A pattern with no matches returns (nil, nil);
 // no-match is not an error, mirroring stdlib's [filepath.Glob].
-//
-// Honors [WithStrictExpansion] via [PathOption].
+// opts are passed to [Expand].
 func Glob(pattern string, opts ...PathOption) ([]string, error) {
 	expanded, err := Expand(pattern, opts...)
 	if err != nil {

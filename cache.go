@@ -32,7 +32,6 @@ const (
 	// filesystem.
 	cacheShardLen = 2
 
-	cacheDirPerm  os.FileMode = 0o755
 	cacheFilePerm os.FileMode = 0o644
 )
 
@@ -48,36 +47,64 @@ var ErrCacheClosed = errors.New("fs: cache: closed")
 // temp+rename; eviction sweeps may briefly over- or under-evict if
 // two processes evict simultaneously.
 //
-// Storage layout (relative to dir, with WithCacheVersion(v) applied):
+// Storage layout (the version segment is present only with
+// [WithCacheVersion]):
 //
-//	<dir>/<version-or-empty>/<hash[0:2]>/<hash[2:]>.bin
+//	<dir>/[<version>/]<hash[0:2]>/<hash[2:]>.bin
 //
 // where hash = sha256(key). Each entry file holds only the value
-// bytes; the file's modification time encodes the entry's creation
-// time and drives TTL accounting.
+// bytes; the file's modification time records when the entry was
+// last written and drives TTL and eviction. Reads do not refresh it.
 //
-// Eviction is mtime-based LRU when [WithCacheMaxBytes] is set: after
-// every Set whose cumulative size pushes total bytes above the cap,
-// the oldest entries are removed until total bytes is below the cap.
+// When [WithCacheMaxBytes] is set, every Set that leaves the total
+// above the cap removes the least recently written entries until the
+// total is at or below it. The Cache keeps a running total of its own
+// writes, so a Set under the cap doesn't rescan the directory; entries
+// written by other processes sharing the directory are counted at the
+// next sweep.
 type Cache struct {
 	dir string
 	cfg cacheConfig
 
 	mu     sync.Mutex
 	closed bool
+
+	// bytes is a running total of the entry sizes, kept when
+	// [WithCacheMaxBytes] is set so a Set under the cap needn't walk
+	// the directory. sized reports whether a walk has seeded it.
+	bytes int64
+	sized bool
 }
 
 // CacheStats is a point-in-time snapshot of the cache state.
 type CacheStats struct {
+	// Entries is the number of stored entries.
 	Entries int
-	Bytes   int64
+	// Bytes is the total size of the stored values.
+	Bytes int64
 }
 
 type cacheConfig struct {
 	ttl      time.Duration
 	maxBytes int64
 	version  string
+	perm     os.FileMode
 	nowFn    func() time.Time
+}
+
+// dirPerm is perm with the search bit added wherever it grants read.
+func (c cacheConfig) dirPerm() os.FileMode {
+	return c.perm | (c.perm&0o444)>>2
+}
+
+// WithCachePerm sets the mode of entry files. Default 0o644. The cache
+// directories get the same mode plus search permission wherever it
+// grants read (0o600 gives 0o700 directories). Use 0o600 for caches
+// that may hold secrets.
+func WithCachePerm(mode os.FileMode) CacheOption {
+	return func(c *cacheConfig) {
+		c.perm = mode.Perm()
+	}
 }
 
 // CacheOption configures [NewCache].
@@ -92,8 +119,8 @@ func WithCacheTTL(d time.Duration) CacheOption {
 }
 
 // WithCacheMaxBytes sets a soft cap on total bytes across all entries.
-// After each Set, the cache evicts oldest-by-mtime entries until the
-// total is at or below n. Zero disables the cap.
+// After each Set, the cache evicts the least recently written entries
+// until the total is at or below n. Zero or negative disables the cap.
 func WithCacheMaxBytes(n int64) CacheOption {
 	return func(c *cacheConfig) {
 		c.maxBytes = n
@@ -102,11 +129,11 @@ func WithCacheMaxBytes(n int64) CacheOption {
 
 // WithCacheVersion namespaces all entries under a version segment in
 // the cache directory. Bumping the version is equivalent to a full
-// purge. On Cache open, sibling version directories under dir are
-// removed.
+// purge: [NewCache] removes every other subdirectory of dir, so dir
+// must be dedicated to this cache.
 //
-// Allowed characters: [A-Za-z0-9._-]. Other inputs are rejected by
-// [NewCache] with [ErrInvalidPath].
+// Allowed characters: [A-Za-z0-9._-] (not "." or ".."). [NewCache]
+// rejects anything else with an error wrapping [ErrInvalidPath].
 func WithCacheVersion(v string) CacheOption {
 	return func(c *cacheConfig) {
 		c.version = v
@@ -122,14 +149,15 @@ func WithCacheClock(now func() time.Time) CacheOption {
 }
 
 // NewCache opens (or creates) a [Cache] rooted at dir. The directory
-// is created with mode 0o755 if missing. Returns a non-nil error if
-// dir is empty, malformed, or cannot be created.
+// is created with mode 0o755 (see [WithCachePerm]) if missing. Returns an error if dir is
+// empty, the [WithCacheVersion] value is invalid, or the directory
+// cannot be created or swept.
 func NewCache(dir string, opts ...CacheOption) (*Cache, error) {
 	if dir == "" {
 		return nil, wrapPathError(opNewCache, dir, ErrInvalidPath)
 	}
 
-	cfg := cacheConfig{nowFn: time.Now}
+	cfg := cacheConfig{nowFn: time.Now, perm: cacheFilePerm}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -146,7 +174,7 @@ func NewCache(dir string, opts ...CacheOption) (*Cache, error) {
 		effective = filepath.Join(dir, cfg.version)
 	}
 
-	if err := MkdirAll(effective, cacheDirPerm); err != nil {
+	if err := MkdirAll(effective, cfg.dirPerm()); err != nil {
 		return nil, err
 	}
 
@@ -175,10 +203,9 @@ func (c *Cache) Close() error {
 // Get returns the cached value for key. ok is true on a hit; false
 // when the entry is missing, expired, or unreadable.
 //
-// Get never returns an error; read failures are treated as misses
-// so callers can write the compute-on-miss form without error
-// plumbing. Expired entries are deleted from disk before the miss
-// is reported.
+// Read failures, and calls after [Cache.Close], are reported as
+// misses; use [Cache.GetWithError] to see them. Expired entries are
+// deleted from disk before the miss is reported.
 func (c *Cache) Get(key string) (value []byte, ok bool) {
 	value, ok, _ = c.getInternal(key) //nolint:errcheck // Get is the miss-as-bool variant; use GetWithError to see the error
 	return value, ok
@@ -186,7 +213,8 @@ func (c *Cache) Get(key string) (value []byte, ok bool) {
 
 // GetWithError is the error-surfacing variant of [Cache.Get]. ok is
 // true on a hit; ok is false either because the entry was missing
-// or expired (err nil) or because reading it failed (err non-nil).
+// or expired (err nil) or because reading it failed or the cache is
+// closed (err non-nil).
 func (c *Cache) GetWithError(key string) (value []byte, ok bool, err error) {
 	return c.getInternal(key)
 }
@@ -209,7 +237,9 @@ func (c *Cache) getInternal(key string) ([]byte, bool, error) {
 	}
 	if c.cfg.ttl > 0 {
 		if c.cfg.nowFn().Sub(info.ModTime()) >= c.cfg.ttl {
-			_ = os.Remove(path)
+			if os.Remove(path) == nil {
+				c.addBytes(-info.Size())
+			}
 			return nil, false, nil
 		}
 	}
@@ -236,18 +266,39 @@ func (c *Cache) Set(key string, value []byte) error {
 	}
 
 	path := c.entryPath(key)
-	if err := MkdirAll(filepath.Dir(path), cacheDirPerm); err != nil {
+	if err := MkdirAll(filepath.Dir(path), c.cfg.dirPerm()); err != nil {
 		return err
 	}
-	if err := WriteFile(path, value, WithPerm(cacheFilePerm)); err != nil {
-		return err
-	}
+	var oldSize int64
 	if c.cfg.maxBytes > 0 {
+		if info, err := os.Stat(path); err == nil {
+			oldSize = info.Size()
+		}
+	}
+	if err := WriteFile(path, value, WithPerm(c.cfg.perm)); err != nil {
+		return err
+	}
+	if c.cfg.maxBytes > 0 && c.addBytes(int64(len(value))-oldSize) {
 		if err := c.evictIfOverBudget(path); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// addBytes adjusts the running total and reports whether an eviction
+// sweep is due: the total is over the cap, or not yet known.
+func (c *Cache) addBytes(delta int64) bool {
+	if c.cfg.maxBytes <= 0 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.sized {
+		return true
+	}
+	c.bytes += delta
+	return c.bytes > c.cfg.maxBytes
 }
 
 // Delete removes the entry for key. Returns nil if the entry was
@@ -261,12 +312,19 @@ func (c *Cache) Delete(key string) error {
 	}
 
 	path := c.entryPath(key)
+	var size int64
+	if c.cfg.maxBytes > 0 {
+		if info, err := os.Stat(path); err == nil {
+			size = info.Size()
+		}
+	}
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return wrapPathError(opCacheDelete, path, err)
 	}
+	c.addBytes(-size)
 	return nil
 }
 
@@ -284,9 +342,12 @@ func (c *Cache) Purge() error {
 	if err := RemoveAll(c.dir); err != nil {
 		return err
 	}
-	if err := MkdirAll(c.dir, cacheDirPerm); err != nil {
+	if err := MkdirAll(c.dir, c.cfg.dirPerm()); err != nil {
 		return err
 	}
+	c.mu.Lock()
+	c.bytes, c.sized = 0, true
+	c.mu.Unlock()
 	return nil
 }
 
@@ -331,7 +392,8 @@ type CacheEntry struct {
 // Iteration walks the cache directory once up-front to build a
 // snapshot. Entries added after iteration begins are not visible;
 // entries deleted during iteration are still yielded with their
-// pre-deletion metadata. Returns nil after Close.
+// pre-deletion metadata. After [Cache.Close], or if the walk fails,
+// the iterator yields nothing.
 func (c *Cache) Entries() iter.Seq[CacheEntry] {
 	return func(yield func(CacheEntry) bool) {
 		c.mu.Lock()
@@ -421,18 +483,24 @@ func (c *Cache) walkEntries() ([]cacheEntryFile, int64, error) {
 	return entries, total, nil
 }
 
-// evictIfOverBudget removes oldest-by-mtime entries until total bytes
-// is at or below cfg.maxBytes. The entry at newest, which the caller
-// just wrote, goes last: file mtimes can tie or run behind the wall
-// clock (Linux stamps them at tick granularity), so mtime alone may
-// not rank it newest. Concurrent callers may both run a
-// sweep; at worst the cache is briefly more aggressively trimmed
-// than configured.
+// evictIfOverBudget walks the cache and removes oldest-by-mtime
+// entries until total bytes is at or below cfg.maxBytes, then reseeds
+// the running total from what is left. The entry at newest, which the
+// caller just wrote, goes last: file mtimes can tie or run behind the
+// wall clock (Linux stamps them at tick granularity), so mtime alone
+// may not rank it newest. Concurrent callers may both run a sweep; at
+// worst the cache is briefly more aggressively trimmed than
+// configured.
 func (c *Cache) evictIfOverBudget(newest string) error {
 	entries, total, err := c.walkEntries()
 	if err != nil {
 		return err
 	}
+	defer func() {
+		c.mu.Lock()
+		c.bytes, c.sized = total, true
+		c.mu.Unlock()
+	}()
 	if total <= c.cfg.maxBytes {
 		return nil
 	}

@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,5 +131,42 @@ func TestWorkspaceRoots_None(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got = %+v; want empty", got)
+	}
+}
+
+func TestWorkspaceRoots_ManifestEdgeCases(t *testing.T) {
+	t.Setenv("FS_WS_TEST", "elsewhere")
+	root := t.TempDir()
+	for _, d := range []string{"a", "packages/x", "packages/y/z", "packages/skip", "packages/node_modules/dep", "$FS_WS_TEST"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gowork := "go 1.26\n\nuse ./a // the main module\nuse (\n\t./packages/x // tools\n)\n"
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte(gowork), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := `{"workspaces": ["packages/**", "!packages/skip", "$FS_WS_TEST"]}`
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := WorkspaceRoots(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range roots {
+		rel, _ := filepath.Rel(root, r.Path)
+		got = append(got, r.Kind+":"+filepath.ToSlash(rel))
+	}
+	want := []string{
+		"go.work:a",
+		"go.work:packages/x",
+		"package.json:packages/y",
+		"package.json:packages/y/z",
+		"package.json:$FS_WS_TEST",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("roots = %v\nwant    %v", got, want)
 	}
 }

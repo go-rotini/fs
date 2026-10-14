@@ -6,37 +6,41 @@ import (
 )
 
 // WatchEvent describes a single filesystem change reported by a
-// [*Watcher] subscription. Path is the absolute path of the affected
-// entry; Op is a bitmask of operations that occurred (a single
-// kernel notification can carry multiple flags); Time is the
-// wall-clock instant the cross-platform shell observed the event.
+// [*Watcher] subscription.
 type WatchEvent struct {
+	// Path is the absolute path of the affected entry.
 	Path string
-	Op   WatchOp
+	// Op holds every operation seen for Path since its last event;
+	// several bits may be set.
+	Op WatchOp
+	// Time is when the event was delivered, after debouncing.
 	Time time.Time
 }
 
-// WatchOp is a bitmask of filesystem operations. Multiple bits may
-// be set when a single kernel event reports compound activity (e.g.,
+// WatchOp is a bitmask of filesystem operations. Multiple bits may be
+// set when the debouncer merges several changes to one path (e.g.,
 // `WatchCreate|WatchWrite` for a freshly-written file).
-//
-// The constants are prefixed Watch* because the unprefixed names
-// (Create, Write, Remove, Rename, Chmod) collide with existing fs
-// package functions.
 type WatchOp uint32
 
 const (
 	// WatchCreate fires when a path appears (was missing, now present).
 	WatchCreate WatchOp = 1 << iota
-	// WatchWrite fires when a path's contents are modified.
+	// WatchWrite fires when a path's size or modification time
+	// changes.
 	WatchWrite
 	// WatchRemove fires when a path is unlinked.
 	WatchRemove
-	// WatchRename fires when a path is moved (the path that vanished
-	// gets WatchRename; the destination, if observed, gets WatchCreate).
+	// WatchRename is reserved for a moved path. The polling watcher
+	// never sets it: a rename shows up as [WatchRemove] on the old
+	// path and [WatchCreate] on the new one.
 	WatchRename
-	// WatchChmod fires when a path's mode bits change.
+	// WatchChmod fires when a path's permission bits change.
 	WatchChmod
+	// WatchOverflow reports that events were dropped because a buffer
+	// was full, most often a subscriber's (see [WithBufferSize]). It is
+	// sent alone, with Path set to the watched path, once there is
+	// room; the subscriber should rescan what it watches.
+	WatchOverflow
 )
 
 // String renders the set bits in canonical order, joined by '+'.
@@ -60,6 +64,9 @@ func (o WatchOp) String() string {
 	}
 	if o&WatchChmod != 0 {
 		parts = append(parts, "chmod")
+	}
+	if o&WatchOverflow != 0 {
+		parts = append(parts, "overflow")
 	}
 	return strings.Join(parts, "+")
 }

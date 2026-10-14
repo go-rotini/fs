@@ -786,3 +786,27 @@ func TestReadAt_ExpandError(t *testing.T) {
 		t.Fatal("expected error from expansion of NUL-bearing path")
 	}
 }
+
+// A first line longer than the WithMaxSize cap stops the read instead of loading the whole file.
+func TestReadFirstLine_MaxSize(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	long := filepath.Join(dir, "long")
+	if err := os.WriteFile(long, bytes.Repeat([]byte("x"), 10_000), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := ReadFirstLine(long, WithMaxSize(100)); !errors.Is(err, ErrFileTooLarge) {
+		t.Errorf("got %v, want ErrFileTooLarge", err)
+	}
+	if got, err := ReadFirstLine(long, WithMaxSize(0)); err != nil || len(got) != 10_000 {
+		t.Errorf("cap disabled: got (%d bytes, %v)", len(got), err)
+	}
+
+	fits := filepath.Join(dir, "fits")
+	if err := os.WriteFile(fits, []byte("\xEF\xBB\xBF12345\r\nrest of the file is longer than the cap\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got, err := ReadFirstLine(fits, WithMaxSize(5)); err != nil || got != "12345" {
+		t.Errorf("line at the cap: got (%q, %v)", got, err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	stdfs "io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"testing/fstest"
 )
@@ -481,5 +482,138 @@ func TestScaffoldActionOp_String_Unknown(t *testing.T) {
 	got := ScaffoldActionOp(99).String()
 	if got == "" {
 		t.Error("expected unknown label, got empty string")
+	}
+}
+
+// --- confinement ---
+
+// A path variable that renders outside dst fails before anything is written.
+func TestScaffoldApply_RenderedPathEscapes(t *testing.T) {
+	t.Parallel()
+	parent, dst := sandbox(t)
+	src := fstest.MapFS{
+		"a.txt":         {Data: []byte("a")},
+		"{{.Name}}.txt": {Data: []byte("x")},
+	}
+	for _, name := range []string{"../../x", "../x", "sub/../../x"} {
+		if err := ScaffoldApply(src, dst, scaffoldVars{Name: name}); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("Name=%q: got %v, want ErrEscapesRoot", name, err)
+		}
+		if _, err := ScaffoldPlan(src, dst, scaffoldVars{Name: name}); !errors.Is(err, ErrEscapesRoot) {
+			t.Errorf("Plan Name=%q: got %v, want ErrEscapesRoot", name, err)
+		}
+	}
+	assertAbsent(t, filepath.Join(parent, "x.txt"))
+	assertAbsent(t, filepath.Join(filepath.Dir(parent), "x.txt"))
+	assertAbsent(t, filepath.Join(dst, "a.txt"))
+}
+
+// A rendered path that stays inside dst after cleaning is allowed.
+func TestScaffoldApply_RenderedPathInside(t *testing.T) {
+	t.Parallel()
+	dst := t.TempDir()
+	src := fstest.MapFS{"{{.Name}}.txt": {Data: []byte("x")}}
+	if err := ScaffoldApply(src, dst, scaffoldVars{Name: "sub/../ok"}); err != nil {
+		t.Fatalf("ScaffoldApply: %v", err)
+	}
+	if !Exists(filepath.Join(dst, "ok.txt")) {
+		t.Error("ok.txt not written")
+	}
+}
+
+// A symlink already in dst that leads outside is not written through.
+func TestScaffold_ExistingSymlinkEscapes(t *testing.T) {
+	skipWithoutSymlinks(t)
+	t.Parallel()
+	parent, dst := sandbox(t)
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dst, "out")); err != nil {
+		t.Fatal(err)
+	}
+	src := fstest.MapFS{"out/file.txt": {Data: []byte("x")}}
+	if err := ScaffoldApply(src, dst, nil); !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("ScaffoldApply: got %v, want ErrEscapesRoot", err)
+	}
+	if err := ScaffoldExtract(src, dst); !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("ScaffoldExtract: got %v, want ErrEscapesRoot", err)
+	}
+	if names, _ := os.ReadDir(outside); len(names) != 0 {
+		t.Errorf("wrote %v outside the destination", names)
+	}
+}
+
+func TestScaffoldApply_VerbatimFiles(t *testing.T) {
+	t.Parallel()
+	workflow := "on: push\njobs:\n  x:\n    if: ${{ github.ref == 'refs/heads/main' }}\n"
+	src := fstest.MapFS{
+		".github/workflows/ci.yml": {Data: []byte(workflow)},
+		"{{.Name}}/README.md":      {Data: []byte("# {{.Name}}\n")},
+	}
+	dst := t.TempDir()
+	vars := map[string]string{"Name": "app"}
+	if err := ScaffoldApply(src, dst, vars); err == nil {
+		t.Fatal("a workflow file rendered as a template should fail without WithScaffoldVerbatim")
+	}
+	dst = t.TempDir()
+	if err := ScaffoldApply(src, dst, vars, WithScaffoldVerbatim(".github/workflows/*")); err != nil {
+		t.Fatalf("ScaffoldApply: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, ".github", "workflows", "ci.yml")); string(got) != workflow {
+		t.Errorf("workflow = %q; want it copied verbatim", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "app", "README.md")); string(got) != "# app\n" {
+		t.Errorf("README = %q; want it rendered", got)
+	}
+}
+
+func TestScaffold_KeepsExecuteBits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	t.Parallel()
+	src := fstest.MapFS{
+		"run.sh":   {Data: []byte("#!/bin/sh\n"), Mode: 0o755},
+		"data.txt": {Data: []byte("x"), Mode: 0o444}, // like embed.FS
+	}
+	check := func(dst string) {
+		t.Helper()
+		for name, want := range map[string]os.FileMode{"run.sh": 0o755, "data.txt": 0o644} {
+			info, err := os.Stat(filepath.Join(dst, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != want {
+				t.Errorf("%s mode = %v; want %v", name, got, want)
+			}
+		}
+	}
+	dst := t.TempDir()
+	if err := ScaffoldExtract(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	check(dst)
+	dst = t.TempDir()
+	if err := ScaffoldApply(src, dst, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(dst)
+}
+
+func TestScaffoldExtract_MarkerMustBeAFileName(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	dst := filepath.Join(root, "dst")
+	src := fstest.MapFS{"a": {Data: []byte("x")}}
+	for _, marker := range []string{"../outside-marker", "sub/marker", "..", "."} {
+		err := ScaffoldExtract(src, dst, WithScaffoldVersionMarker(marker))
+		if !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("marker %q: err = %v; want ErrInvalidPath", marker, err)
+		}
+	}
+	if Exists(filepath.Join(root, "outside-marker")) {
+		t.Error("the marker was written outside dst")
 	}
 }

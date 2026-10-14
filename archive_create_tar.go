@@ -62,6 +62,9 @@ func tarWalkHandler(root, path string, d stdfs.DirEntry, werr error, tw *tar.Wri
 		}
 		return nil
 	}
+	if cfg.exclude != nil && os.SameFile(info, cfg.exclude) {
+		return nil
+	}
 
 	rel, rerr := filepath.Rel(root, path)
 	if rerr != nil {
@@ -95,18 +98,19 @@ func tarWalkHandler(root, path string, d stdfs.DirEntry, werr error, tw *tar.Wri
 	if !info.Mode().IsRegular() {
 		return nil
 	}
-	return copyFileIntoTar(path, tw)
+	return copyFileIntoTar(path, hdr.Size, tw)
 }
 
-// copyFileIntoTar opens path and streams its bytes to the tar
-// writer's current entry.
-func copyFileIntoTar(path string, tw *tar.Writer) error {
+// copyFileIntoTar opens path and streams size bytes, the size its
+// header records, to the tar writer's current entry; bytes appended
+// since the header was written are left out.
+func copyFileIntoTar(path string, size int64, tw *tar.Writer) error {
 	f, oerr := osOpen(path)
 	if oerr != nil {
 		return oerr
 	}
 	defer f.Close()
-	if _, cerr := io.Copy(tw, hookedReader{f}); cerr != nil {
+	if _, cerr := io.CopyN(tw, fileReader(f), size); cerr != nil {
 		return cerr //nolint:wrapcheck // outer caller wraps
 	}
 	return nil

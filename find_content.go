@@ -2,11 +2,11 @@ package fs
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	stdfs "io/fs"
 	"os"
 	"regexp"
-	"strings"
 )
 
 const opFindByContent = "findbycontent"
@@ -17,7 +17,8 @@ const findContentDefaultMaxFileSize = 100 * 1024 * 1024
 
 // ContentMatch is a single line that matched a [FindByContent] search.
 type ContentMatch struct {
-	// Path is the absolute path of the file that contained the match.
+	// Path is the walk path of the file that contained the match
+	// (absolute only when the search root is).
 	Path string
 
 	// Line is the 1-indexed line number where the match was found.
@@ -29,11 +30,9 @@ type ContentMatch struct {
 }
 
 // WithFindByContentMaxSize caps the size of files [FindByContent]
-// will scan. Files larger than n are skipped. Pass 0 or negative to
-// use the default cap (100 MiB).
-//
-// Returned as a [WalkOption] so callers pass it alongside other walk
-// filters. Setting it on a plain [Walk] is a no-op.
+// and [FindByContentRegex] will scan. Files larger than n are
+// skipped. Pass 0 or negative to use the default cap (100 MiB).
+// Other functions that take a [WalkOption] ignore it.
 func WithFindByContentMaxSize(n int64) WalkOption {
 	return func(o *walkOptions) {
 		if n > 0 {
@@ -42,35 +41,38 @@ func WithFindByContentMaxSize(n int64) WalkOption {
 	}
 }
 
-// FindByContent walks root looking for files whose contents contain
-// substr. Returns one [ContentMatch] per matching line.
+// FindByContent walks root looking for regular files whose contents
+// contain substr. Returns one [ContentMatch] per matching line. An
+// empty substr is rejected with an error wrapping [ErrInvalidPath].
 //
 // Pass any [WalkOption] to scope the walk or tune content-search
 // behavior (e.g., [WalkSkipPatterns], [WithWalkGitignore],
 // [WithFindByContentMaxSize]).
 //
-// Lines containing a NUL byte are skipped (matching grep's
-// --binary-files=without-match behavior). Files larger than the
-// configured cap (default 100 MiB) are skipped.
+// Scanning a file stops at the first line containing a NUL byte
+// (treated as binary) or longer than 1 MiB; matches from earlier
+// lines are kept. Files larger than the configured cap (default
+// 100 MiB) are skipped. On error no matches are returned.
 func FindByContent(root, substr string, opts ...WalkOption) ([]ContentMatch, error) {
 	if substr == "" {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	return findByContentImpl(root, opts, func(line string) bool {
-		return strings.Contains(line, substr)
+	needle := []byte(substr)
+	return findByContentImpl(root, opts, func(line []byte) bool {
+		return bytes.Contains(line, needle)
 	})
 }
 
-// FindByContentRegex is the regex variant of [FindByContent].
-// re.MatchString is used per line.
+// FindByContentRegex is [FindByContent] matching each line against
+// re. A nil re is rejected with an error wrapping [ErrInvalidPath].
 func FindByContentRegex(root string, re *regexp.Regexp, opts ...WalkOption) ([]ContentMatch, error) {
 	if re == nil {
 		return nil, wrapPathError(opFindByContent, root, ErrInvalidPath)
 	}
-	return findByContentImpl(root, opts, re.MatchString)
+	return findByContentImpl(root, opts, re.Match)
 }
 
-func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) ([]ContentMatch, error) {
+func findByContentImpl(root string, opts []WalkOption, pred func([]byte) bool) ([]ContentMatch, error) {
 	cfg := newWalkOptions(opts)
 	maxFileSize := cfg.findContentMaxSize
 	if maxFileSize <= 0 {
@@ -78,6 +80,9 @@ func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) (
 	}
 
 	var matches []ContentMatch
+	// One scan buffer serves every file; a line becomes a string only
+	// when it matches.
+	buf := make([]byte, 0, 64*1024)
 	err := Walk(root, func(path string, d stdfs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -103,19 +108,19 @@ func findByContentImpl(root string, opts []WalkOption, pred func(string) bool) (
 		defer func() { _ = f.Close() }()
 
 		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		sc.Buffer(buf, 1024*1024)
 		lineNo := 0
 		for sc.Scan() {
 			lineNo++
-			line := sc.Text()
-			if strings.IndexByte(line, 0) >= 0 {
+			line := sc.Bytes()
+			if bytes.IndexByte(line, 0) >= 0 {
 				return nil // binary file
 			}
 			if pred(line) {
 				matches = append(matches, ContentMatch{
 					Path: path,
 					Line: lineNo,
-					Text: strings.TrimRight(line, "\r"),
+					Text: string(bytes.TrimRight(line, "\r")),
 				})
 			}
 		}

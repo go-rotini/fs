@@ -9,14 +9,17 @@ import (
 	"strings"
 )
 
-// WalkFunc is the per-entry callback invoked by [Walk]. Return
-// [filepath.SkipDir] to skip the parent directory; return
-// [filepath.SkipAll] to terminate the walk early. Any other non-nil
-// error aborts the walk and is returned by [Walk].
+// WalkFunc is the per-entry callback invoked by [Walk]. [Walk] always
+// passes a nil err: entry errors go to [WalkErrorHandler] instead.
+// Return [filepath.SkipDir] from a directory to skip its contents, or
+// [filepath.SkipAll] to end the walk early; neither is reported as an
+// error. Any other non-nil error aborts the walk and is returned by
+// [Walk].
 type WalkFunc func(path string, e stdfs.DirEntry, err error) error
 
 // WalkOption configures [Walk] and the walk-backed search functions
-// ([Find], [FindByRegex], [FindFunc]).
+// ([Find], [FindByRegex], [FindFunc], [FindByContent],
+// [FindByContentRegex]).
 type WalkOption func(*walkOptions)
 
 type walkOptions struct {
@@ -47,10 +50,6 @@ func newWalkOptions(opts []WalkOption) walkOptions {
 // WalkSkipHidden skips hidden entries during the walk. Hidden is
 // dot-prefix on POSIX and (additionally) the FILE_ATTRIBUTE_HIDDEN
 // bit on Windows. Skipping a directory prunes its subtree.
-//
-// Named "WalkSkipHidden" rather than "WithSkipHidden" because the
-// latter is already taken by [WithSkipHidden] on [ListOption]; Go
-// doesn't allow function-name overloading across return types.
 func WalkSkipHidden(b bool) WalkOption {
 	return func(o *walkOptions) { o.skipHidden = b }
 }
@@ -74,38 +73,36 @@ func WalkMaxDepth(n int) WalkOption {
 	return func(o *walkOptions) { o.maxDepth = n }
 }
 
-// WalkFollowSymlinks dereferences symlinks during the walk. Symlink
-// loops are detected by tracking resolved real paths via
-// [filepath.EvalSymlinks]; an already-visited target is silently
-// skipped.
-//
-// Named "WalkFollowSymlinks" to disambiguate from
-// [WithFollowSymlinks] on [CopyOption].
+// WalkFollowSymlinks dereferences symlinks during the walk, so the
+// [WalkFunc] sees each link's target. Symlink loops are detected by
+// tracking resolved real paths; an already-visited target is
+// silently skipped. A dangling symlink is reported as the link
+// itself.
 func WalkFollowSymlinks(b bool) WalkOption {
 	return func(o *walkOptions) { o.followSymlinks = b }
 }
 
-// WalkErrorHandler intercepts per-entry errors during the walk.
-// Return nil to continue, [filepath.SkipDir] to skip the parent, or
-// any non-nil error to abort.
+// WalkErrorHandler intercepts per-entry errors (an unreadable or
+// vanished entry) during the walk. Return nil to continue past the
+// failing entry, or a non-nil error to abort the walk.
 func WalkErrorHandler(fn func(path string, err error) error) WalkOption {
 	return func(o *walkOptions) { o.errorHandler = fn }
 }
 
 const opWalk = "walk"
 
-// Walk visits every entry under root, invoking fn for each. It wraps
-// [filepath.WalkDir] when [WalkFollowSymlinks] is false (default)
-// and uses a custom recursive walker that tracks resolved real paths
-// when symlinks are followed.
+// Walk visits root and every entry under it, invoking fn for each in
+// lexical order. Symlinks are not followed unless
+// [WalkFollowSymlinks] is set.
 //
 // Filter options ([WalkSkipHidden], [WalkSkipNames],
-// [WalkSkipPatterns]) prune subtrees: when a directory matches a
-// skip rule, the entire subtree is omitted.
+// [WalkSkipPatterns], [WithWalkGitignore]) never filter root itself;
+// when a directory matches a skip rule, its entire subtree is
+// omitted.
 //
 // [WalkMaxDepth] bounds recursion. [WalkErrorHandler] intercepts
 // per-entry errors so a single unreadable directory doesn't abort
-// the walk.
+// the walk. Any other error is returned wrapped in a [*PathError].
 func Walk(root string, fn WalkFunc, opts ...WalkOption) error {
 	cfg := newWalkOptions(opts)
 
@@ -127,8 +124,10 @@ func Walk(root string, fn WalkFunc, opts ...WalkOption) error {
 
 func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 	cleanRoot := filepath.Clean(root)
-	rootDepth := pathSeparatorCount(cleanRoot)
 
+	// filepath.WalkDir reports root exactly as given and every entry
+	// beneath it cleaned, so root is recognized by its spelling as
+	// given: "./.hidden" must not be filtered as a hidden entry.
 	//nolint:wrapcheck // outer Walk wraps via *PathError
 	return filepath.WalkDir(root, func(path string, d stdfs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -138,9 +137,9 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 			return walkErr
 		}
 
-		if cfg.maxDepth > 0 {
-			depth := pathSeparatorCount(filepath.Clean(path)) - rootDepth
-			if depth > cfg.maxDepth {
+		isRoot := path == root
+		if cfg.maxDepth > 0 && !isRoot {
+			if walkDepth(cleanRoot, path) > cfg.maxDepth {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -148,14 +147,14 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 			}
 		}
 
-		if path != cleanRoot && shouldSkip(path, d, cfg) {
+		if !isRoot && shouldSkip(path, d, cfg) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		if path != cleanRoot && cfg.gitignore != nil {
+		if !isRoot && cfg.gitignore != nil {
 			if skip, prune := gitignoreSkip(cfg.gitignore, toRelPosix(cleanRoot, path), d.IsDir()); skip {
 				if prune {
 					return filepath.SkipDir
@@ -171,21 +170,37 @@ func walkNoSymlinks(root string, fn WalkFunc, cfg walkOptions) error {
 func walkSymlinkAware(root string, fn WalkFunc, cfg walkOptions) error {
 	visited := map[string]struct{}{}
 	cleanRoot := filepath.Clean(root)
-	return walkSymlinkRec(cleanRoot, cleanRoot, 0, fn, cfg, visited)
+	return walkSymlinkRec(cleanRoot, cleanRoot, "", 0, fn, cfg, visited)
 }
 
-func walkSymlinkRec(root, path string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
+// walkSymlinkRec visits path and, for a directory, its entries.
+// realHint is path with every symlink resolved, or "" when it isn't known yet.
+// An entry that isn't itself a symlink resolves to its directory's
+// real path joined with its name, which is what [filepath.EvalSymlinks]
+// would return, so only symlinks need resolving.
+func walkSymlinkRec(root, path, realHint string, depth int, fn WalkFunc, cfg walkOptions, visited map[string]struct{}) error {
 	info, err := os.Stat(path)
+	if errors.Is(err, stdfs.ErrNotExist) {
+		// A dangling symlink: report the link itself.
+		if li, lerr := os.Lstat(path); lerr == nil && li.Mode()&os.ModeSymlink != 0 {
+			info, err = li, nil
+		}
+	}
 	if err != nil {
 		if cfg.errorHandler != nil {
 			return cfg.errorHandler(path, err)
 		}
-		return err //nolint:wrapcheck // outer Walk wraps via *PathError
+		return err
 	}
 
-	resolved, rerr := filepath.EvalSymlinks(path)
-	if rerr != nil {
-		resolved = path
+	resolved, realKnown := realHint, realHint != ""
+	if !realKnown {
+		var rerr error
+		if resolved, rerr = filepath.EvalSymlinks(path); rerr != nil {
+			resolved = path
+		} else {
+			realKnown = true
+		}
 	}
 	if _, seen := visited[resolved]; seen {
 		return nil
@@ -228,7 +243,11 @@ func walkSymlinkRec(root, path string, depth int, fn WalkFunc, cfg walkOptions, 
 				continue
 			}
 		}
-		if rerr := walkSymlinkRec(root, child, depth+1, fn, cfg, visited); rerr != nil {
+		childReal := ""
+		if realKnown && e.Type()&os.ModeSymlink == 0 {
+			childReal = filepath.Join(resolved, e.Name())
+		}
+		if rerr := walkSymlinkRec(root, child, childReal, depth+1, fn, cfg, visited); rerr != nil {
 			if errors.Is(rerr, filepath.SkipAll) {
 				return rerr
 			}
@@ -258,8 +277,13 @@ func shouldSkip(path string, e stdfs.DirEntry, cfg walkOptions) bool {
 	return false
 }
 
-// pathSeparatorCount counts os-separator characters in the cleaned
-// path, providing a stable depth metric.
-func pathSeparatorCount(path string) int {
-	return strings.Count(path, string(filepath.Separator))
+// walkDepth returns how many levels path lies below cleanRoot: 1 for
+// a direct child. Counting from the relative path keeps roots such as
+// "." and "/" right, where a separator count of the whole path is not.
+func walkDepth(cleanRoot, path string) int {
+	rel, err := filepath.Rel(cleanRoot, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return strings.Count(rel, string(filepath.Separator)) + 1
 }

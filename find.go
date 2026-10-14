@@ -28,10 +28,9 @@ func defaultProjectMarkers() []string {
 	return []string{".git", "go.mod", "package.json", "Cargo.toml"}
 }
 
-// WithMaxAncestors bounds how many directories the find-up walk
-// traverses before giving up. Default 32; enough for any realistic
-// project tree, while defending against pathological symlink loops
-// or deeply-nested mounts.
+// WithMaxAncestors bounds how many directories, starting with the
+// start directory, the find-up walk inspects before giving up.
+// Default 32. Values n <= 0 are ignored.
 func WithMaxAncestors(n int) FindOption {
 	return func(o *findOptions) {
 		if n > 0 {
@@ -51,9 +50,10 @@ func WithProjectMarkers(markers []string) FindOption {
 	}
 }
 
-// WithStopAt sets an absolute boundary the walk will not cross. The
-// boundary is checked AFTER inspecting the directory, so a marker
-// living directly inside stopAt is still found.
+// WithStopAt sets a directory the walk will not climb above; a
+// relative path is made absolute first. The boundary is checked after
+// inspecting each directory, so a match directly inside it is still
+// found.
 func WithStopAt(path string) FindOption {
 	return func(o *findOptions) {
 		if abs, err := filepath.Abs(path); err == nil {
@@ -82,11 +82,11 @@ const (
 	opFindFunc    = "findfunc"
 )
 
-// FindUp walks parent-by-parent from startDir looking for a basename
-// matching name. name is matched as a glob pattern via
-// [filepath.Match]. Returns the absolute path and ok=true on the
-// first match; ok=false (and no error) when the walk exhausts without
-// finding a match.
+// FindUp walks parent-by-parent from startDir looking for an entry
+// whose basename matches name, a [filepath.Match] glob. It returns the
+// absolute path and ok=true on the first match; ok=false (and no
+// error) when the walk ends without one. Unreadable directories count
+// as no match; an error means an invalid pattern or start directory.
 //
 // The walk is bounded by [WithMaxAncestors] (default 32) and
 // optionally by [WithStopAt].
@@ -118,8 +118,9 @@ func FindUp(name, startDir string, opts ...FindOption) (string, bool, error) {
 	return "", false, nil
 }
 
-// FindUpAll returns every match from startDir up to filesystem root.
-// Order is leaf-to-root: the closest match comes first.
+// FindUpAll is [FindUp] but returns every match (at most one per
+// directory) instead of the first. Order is leaf-to-root: the
+// closest match comes first.
 func FindUpAll(name, startDir string, opts ...FindOption) ([]string, error) {
 	cfg := newFindOptions(opts)
 	abs, err := filepath.Abs(startDir)
@@ -174,15 +175,10 @@ func matchInDir(dir, pattern string) (string, error) {
 // ProjectRoot returns the first ancestor of startDir that contains
 // any of the project markers (default `.git`, `go.mod`,
 // `package.json`, `Cargo.toml`; override with [WithProjectMarkers]).
-// Errors with [ErrNotFound] when the walk exhausts without a match.
+// The walk is bounded like [FindUp]; when it ends without a match the
+// error wraps [ErrNotFound].
 //
-// Every call walks the filesystem; no caching is performed. The
-// per-call cost is bounded by [WithMaxAncestors] (default 32 stat
-// calls in the worst case). Callers that hit this hot in a loop;
-// typically long-running daemons that resolve thousands of paths;
-// should cache the result themselves with whatever invalidation
-// policy fits the embedding application; a process-global cache
-// here cannot know when a project layout changes underneath it.
+// Every call walks the filesystem; results are not cached.
 func ProjectRoot(startDir string, opts ...FindOption) (string, error) {
 	cfg := newFindOptions(opts)
 	abs, err := filepath.Abs(startDir)
@@ -210,11 +206,11 @@ func ProjectRoot(startDir string, opts ...FindOption) (string, error) {
 	return "", wrapPathError(opProjectRoot, startDir, ErrNotFound)
 }
 
-// FirstExisting returns the first path in paths that exists. Useful
-// for fallback chains like
-// `["./config.yaml", "~/.myapp/config.yaml", "/etc/myapp/config.yaml"]`.
-// Permission errors on a candidate are folded into "doesn't exist"
-// (see [Exists]), so the walk continues to the next candidate.
+// FirstExisting returns the first path in paths that exists, for
+// fallback chains such as a local, per-user and system-wide config
+// file. Paths are used as given (no ~ or $VAR expansion; see
+// [Expand]). A candidate that cannot be statted, for example because
+// of a permission error, counts as missing (see [Exists]).
 func FirstExisting(paths []string) (string, bool) {
 	for _, p := range paths {
 		if Exists(p) {
@@ -238,13 +234,13 @@ func FindWithExtensions(dir, stem string, exts []string) (string, bool) {
 }
 
 // Find returns paths under root whose basename matches pattern (a
-// [filepath.Match] glob). Paths are returned as absolute paths when
-// root is absolute; relative-to-cwd otherwise. The root entry itself
-// is included if its basename matches.
+// [filepath.Match] glob). Returned paths are root joined with the
+// entry, so they are absolute only when root is. The root entry
+// itself is included if its basename matches.
 //
-// Honors all [WalkOption]s ([WalkSkipHidden], [WalkSkipNames],
-// [WalkSkipPatterns], [WalkMaxDepth], [WalkFollowSymlinks],
-// [WalkErrorHandler]).
+// Honors every [WalkOption]. If root does not exist the result is
+// nil; on any other error the matches found so far are returned with
+// it.
 func Find(root, pattern string, opts ...WalkOption) ([]string, error) {
 	return findInternal(root, opFind, opts, func(d stdfs.DirEntry, _ string) (bool, error) {
 		ok, err := filepath.Match(pattern, d.Name())
@@ -265,7 +261,7 @@ func FindByRegex(root string, re *regexp.Regexp, opts ...WalkOption) ([]string, 
 
 // FindFunc returns paths under root for which pred returns true. pred
 // receives the walk path (absolute when root is absolute) and the
-// entry's [os.FileInfo].
+// entry's [os.FileInfo]. Results and errors are as for [Find].
 func FindFunc(root string, pred func(path string, info os.FileInfo) bool, opts ...WalkOption) ([]string, error) {
 	return findInternal(root, opFindFunc, opts, func(d stdfs.DirEntry, path string) (bool, error) {
 		info, err := d.Info()

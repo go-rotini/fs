@@ -21,6 +21,11 @@ import (
 // &addr -> *unsafe.Pointer -> deref so go vet's unsafeptr analyzer
 // doesn't flag it. The address is OS-reserved memory-mapped pages,
 // which don't move, so the conversion is safe.
+var (
+	errMapNull  = errors.New("fs: mmap: CreateFileMapping returned NULL")
+	errViewNull = errors.New("fs: mmap: MapViewOfFile returned NULL")
+)
+
 func platformMmap(f *os.File, size int64) ([]byte, error) {
 	h, err := windows.CreateFileMapping(
 		windows.Handle(f.Fd()),
@@ -34,19 +39,18 @@ func platformMmap(f *os.File, size int64) ([]byte, error) {
 		return nil, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
 	if h == 0 {
-		return nil, errors.New("CreateFileMapping returned NULL")
+		return nil, errMapNull
 	}
-	defer func() { _ = windows.CloseHandle(h) }()
+	defer func() { _ = windows.CloseHandle(h) }() //nolint:errcheck // the view holds the mapping; a failed close only leaks the handle
 
 	addr, err := windows.MapViewOfFile(h, windows.FILE_MAP_READ, 0, 0, uintptr(size))
 	if err != nil {
 		return nil, err //nolint:wrapcheck // wrapped by caller via *PathError
 	}
 	if addr == 0 {
-		return nil, errors.New("MapViewOfFile returned NULL")
+		return nil, errViewNull
 	}
 
-	//nolint:gosec // OS-returned address; see comment above
 	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&addr))
 	return unsafe.Slice((*byte)(ptr), int(size)), nil
 }

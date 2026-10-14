@@ -3,7 +3,6 @@ package fs
 import (
 	"errors"
 	"os"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -27,7 +26,7 @@ var errInjected = errors.New("fault injected")
 // exdevError returns the platform's EXDEV (cross-device link) error.
 // Used by tests to provoke the EXDEV branch in [Move] without
 // needing a real cross-mount setup.
-func exdevError() error { return syscall.EXDEV }
+func exdevError() error { return errTestEXDEV }
 
 // faultyHooks captures the current values of every fault-prone hook
 // and restores them via t.Cleanup.

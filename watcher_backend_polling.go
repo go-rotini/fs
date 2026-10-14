@@ -17,12 +17,19 @@ type pollingBackend struct {
 	interval time.Duration
 
 	mu       sync.Mutex
-	paths    map[string]*pollSnapshot       // absolute path -> last stat
-	dirChild map[string]map[string]struct{} // for watched directories: tracked child names
-	out      chan rawWatchEvent
-	stop     chan struct{}
-	done     chan struct{}
-	closed   bool
+	paths    map[string]*pollSnapshot            // absolute path -> last stat
+	dirChild map[string]map[string]*pollSnapshot // for watched directories: child name -> last stat
+	// statChildren makes each tick stat the children of watched directories, so writes to
+	// files inside them are reported. Without it children are only listed, which reports
+	// them appearing and disappearing.
+	statChildren bool
+	// onDrop, when set, is called for every event dropped because out
+	// is full.
+	onDrop func()
+	out    chan rawWatchEvent
+	stop   chan struct{}
+	done   chan struct{}
+	closed bool
 }
 
 type pollSnapshot struct {
@@ -31,6 +38,21 @@ type pollSnapshot struct {
 	size    int64
 	modTime time.Time
 	mode    os.FileMode
+	id      fileID
+	hasID   bool
+}
+
+func newPollSnapshot(info os.FileInfo) *pollSnapshot {
+	id, hasID := fileIdentity(info)
+	return &pollSnapshot{
+		exists:  true,
+		isDir:   info.IsDir(),
+		size:    info.Size(),
+		modTime: info.ModTime(),
+		mode:    info.Mode(),
+		id:      id,
+		hasID:   hasID,
+	}
 }
 
 func newPollingBackend(interval time.Duration) *pollingBackend {
@@ -40,7 +62,7 @@ func newPollingBackend(interval time.Duration) *pollingBackend {
 	b := &pollingBackend{
 		interval: interval,
 		paths:    make(map[string]*pollSnapshot),
-		dirChild: make(map[string]map[string]struct{}),
+		dirChild: make(map[string]map[string]*pollSnapshot),
 		out:      make(chan rawWatchEvent, 64),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -67,9 +89,18 @@ func (b *pollingBackend) AddPath(path string) error {
 	snap := snapshotPath(abs)
 	b.paths[abs] = snap
 	if snap.exists && snap.isDir {
-		b.dirChild[abs] = listDirNames(abs)
+		b.dirChild[abs] = listDirChildren(abs, b.statChildren)
 	}
 	return nil
+}
+
+// reportChildWrites makes the backend report writes and permission changes to the files
+// inside every watched directory, at the cost of one stat per child per tick. Call it before
+// the first AddPath.
+func (b *pollingBackend) reportChildWrites() {
+	b.mu.Lock()
+	b.statChildren = true
+	b.mu.Unlock()
 }
 
 func (b *pollingBackend) RemovePath(path string) error {
@@ -81,8 +112,12 @@ func (b *pollingBackend) RemovePath(path string) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.paths, abs)
-	delete(b.dirChild, abs)
+	for p := range b.paths {
+		if p == abs || hasParentDir(p, abs) {
+			delete(b.paths, p)
+			delete(b.dirChild, p)
+		}
+	}
 	return nil
 }
 
@@ -122,14 +157,15 @@ func (b *pollingBackend) loop() {
 func (b *pollingBackend) tick() {
 	b.mu.Lock()
 	// Snapshot the watch set so we don't hold the lock during emits.
+	// Child snapshots are replaced, never mutated, so a shallow copy
+	// of each child map is enough.
 	pathSnap := make(map[string]*pollSnapshot, len(b.paths))
 	maps.Copy(pathSnap, b.paths)
-	dirSnap := make(map[string]map[string]struct{}, len(b.dirChild))
+	dirSnap := make(map[string]map[string]*pollSnapshot, len(b.dirChild))
 	for p, children := range b.dirChild {
-		clone := make(map[string]struct{}, len(children))
-		maps.Copy(clone, children)
-		dirSnap[p] = clone
+		dirSnap[p] = maps.Clone(children)
 	}
+	statChildren := b.statChildren
 	b.mu.Unlock()
 
 	for path, prev := range pathSnap {
@@ -139,42 +175,62 @@ func (b *pollingBackend) tick() {
 			b.emit(rawWatchEvent{path: path, op: op})
 		}
 
-		// Track child appearance/disappearance for watched directories.
-		if prevChildren, isDir := dirSnap[path]; isDir {
-			currChildren := map[string]struct{}{}
+		// Track child appearance, disappearance and (with
+		// statChildren) writes for watched directories.
+		prevChildren, isDir := dirSnap[path]
+		var currChildren map[string]*pollSnapshot
+		if isDir {
+			currChildren = map[string]*pollSnapshot{}
 			if curr.exists && curr.isDir {
-				currChildren = listDirNames(path)
+				currChildren = listDirChildren(path, statChildren)
 			}
-			for name := range currChildren {
-				if _, had := prevChildren[name]; !had {
-					b.emit(rawWatchEvent{path: filepath.Join(path, name), op: WatchCreate})
-				}
-			}
-			for name := range prevChildren {
-				if _, still := currChildren[name]; !still {
-					b.emit(rawWatchEvent{path: filepath.Join(path, name), op: WatchRemove})
-				}
-			}
-			b.mu.Lock()
-			if !b.closed {
-				if curr.exists && curr.isDir {
-					b.dirChild[path] = currChildren
-				}
-			}
-			b.mu.Unlock()
+			b.diffChildren(path, prevChildren, currChildren, pathSnap)
 		}
 
 		b.mu.Lock()
-		if !b.closed {
+		// Update only paths still registered: RemovePath may have run
+		// since the watch set was copied.
+		if _, still := b.paths[path]; still && !b.closed {
 			b.paths[path] = curr
+			if isDir {
+				b.dirChild[path] = currChildren
+			}
 		}
 		b.mu.Unlock()
 	}
 }
 
+// diffChildren emits create and remove events for dir's children, and write or chmod events
+// for child files when both snapshots carry stat data. Children registered as paths of their
+// own report their changes themselves and are skipped here.
+func (b *pollingBackend) diffChildren(dir string, prev, curr, registered map[string]*pollSnapshot) {
+	for name, cs := range curr {
+		child := filepath.Join(dir, name)
+		ps, had := prev[name]
+		if !had {
+			b.emit(rawWatchEvent{path: child, op: WatchCreate})
+			continue
+		}
+		if ps == nil || cs == nil || ps.isDir || cs.isDir {
+			continue
+		}
+		if _, own := registered[child]; own {
+			continue
+		}
+		if op := diffSnapshots(ps, cs); op != 0 {
+			b.emit(rawWatchEvent{path: child, op: op})
+		}
+	}
+	for name := range prev {
+		if _, still := curr[name]; !still {
+			b.emit(rawWatchEvent{path: filepath.Join(dir, name), op: WatchRemove})
+		}
+	}
+}
+
 func (b *pollingBackend) emit(ev rawWatchEvent) {
 	b.mu.Lock()
-	closed := b.closed
+	closed, onDrop := b.closed, b.onDrop
 	b.mu.Unlock()
 	if closed {
 		return
@@ -183,6 +239,9 @@ func (b *pollingBackend) emit(ev rawWatchEvent) {
 	case b.out <- ev:
 	default:
 		// Drop on overflow; consumer is too slow.
+		if onDrop != nil {
+			onDrop()
+		}
 	}
 }
 
@@ -193,13 +252,7 @@ func snapshotPath(path string) *pollSnapshot {
 	if err != nil {
 		return &pollSnapshot{exists: false}
 	}
-	return &pollSnapshot{
-		exists:  true,
-		isDir:   info.IsDir(),
-		size:    info.Size(),
-		modTime: info.ModTime(),
-		mode:    info.Mode(),
-	}
+	return newPollSnapshot(info)
 }
 
 // diffSnapshots returns a WatchOp bitmask describing how curr differs
@@ -217,22 +270,36 @@ func diffSnapshots(prev, curr *pollSnapshot) WatchOp {
 	if prev.modTime != curr.modTime || prev.size != curr.size {
 		op |= WatchWrite
 	}
+	// A different file renamed over the path with the same size and
+	// modification time (cp -p, rsync -t, tar x) is still a write.
+	if prev.hasID && curr.hasID && prev.id != curr.id {
+		op |= WatchWrite
+	}
 	if prev.mode.Perm() != curr.mode.Perm() {
 		op |= WatchChmod
 	}
 	return op
 }
 
-// listDirNames returns the set of basenames in dir. On error returns
-// an empty map (the caller treats this as "no children visible").
-func listDirNames(dir string) map[string]struct{} {
-	out := map[string]struct{}{}
+// listDirChildren returns dir's children by basename. With stat, each
+// maps to its snapshot; without, to nil. On error it returns an empty
+// map (the caller treats this as "no children visible").
+func listDirChildren(dir string, stat bool) map[string]*pollSnapshot {
+	out := map[string]*pollSnapshot{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return out
 	}
 	for _, e := range entries {
-		out[e.Name()] = struct{}{}
+		if !stat {
+			out[e.Name()] = nil
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue // removed since the listing; the next tick reports it
+		}
+		out[e.Name()] = newPollSnapshot(info)
 	}
 	return out
 }

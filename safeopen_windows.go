@@ -18,7 +18,8 @@ import (
 //
 // On a match, the handle is closed and [ErrSymlinkLoop] is
 // returned, matching the POSIX O_NOFOLLOW semantics documented on
-// [OpenNoFollow]. The Go flag bits are translated to Win32 access /
+// [OpenNoFollow]. A path of MAX_PATH or more gets the `\\?\` prefix,
+// as [os.OpenFile] adds it. The Go flag bits are translated to Win32 access /
 // disposition via the same mapping the stdlib uses. perm is
 // accepted for cross-platform signature symmetry but Win32
 // CreateFile uses NTFS ACLs rather than POSIX mode bits; perm has
@@ -33,7 +34,11 @@ import (
 // query", in which case we'd refuse a now-real file; that's a false
 // positive, not a security hole.
 func openNoFollow(path string, flag int, _ os.FileMode) (*os.File, error) {
-	pathp, err := syscall.UTF16PtrFromString(path)
+	long, err := LongPath(path)
+	if err != nil {
+		return nil, withOp(opOpenNoFollow, err)
+	}
+	pathp, err := syscall.UTF16PtrFromString(long)
 	if err != nil {
 		return nil, wrapPathError(opOpenNoFollow, path, err)
 	}
@@ -77,11 +82,11 @@ func openNoFollow(path string, flag int, _ os.FileMode) (*os.File, error) {
 	// Refuse reparse points (symlinks, junctions, mount points).
 	var info syscall.ByHandleFileInformation
 	if ierr := syscall.GetFileInformationByHandle(handle, &info); ierr != nil {
-		_ = syscall.CloseHandle(handle)
+		_ = syscall.CloseHandle(handle) //nolint:errcheck // the query error is what matters
 		return nil, wrapPathError(opOpenNoFollow, path, ierr)
 	}
 	if info.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		_ = syscall.CloseHandle(handle)
+		_ = syscall.CloseHandle(handle) //nolint:errcheck // the refusal is what matters
 		return nil, wrapPathError(opOpenNoFollow, path, ErrSymlinkLoop)
 	}
 

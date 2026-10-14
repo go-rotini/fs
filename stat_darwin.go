@@ -45,7 +45,7 @@ func Owner(path string) (uid, gid int, err error) {
 }
 
 // SameDevice reports whether a and b live on the same filesystem
-// (same st_dev). Used as a preflight for cross-device move detection.
+// (same st_dev).
 func SameDevice(a, b string) (bool, error) {
 	stA, err := rawStat(a, opSameDev)
 	if err != nil {

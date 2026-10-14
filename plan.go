@@ -28,8 +28,8 @@ const (
 	// the finalized flag. Rewritten after every successful op.
 	journalProgressFilename = "progress.json"
 
-	// journalLegacyFilename is the pre-split combined file. Apply
-	// rejects journals containing it as already-claimed.
+	// journalLegacyFilename is the single-file journal format. Apply
+	// treats a directory containing it as an existing journal.
 	journalLegacyFilename = "journal.json"
 
 	// journalSchemaVersion guards against resuming journals written
@@ -38,25 +38,32 @@ const (
 
 	// journalBackupsDir holds pre-apply snapshots indexed by step.
 	journalBackupsDir = "backups"
+
+	// The journal copies plan data and overwritten files, so it is
+	// owner-only.
+	journalDirPerm  os.FileMode = 0o700
+	journalFilePerm os.FileMode = 0o600
 )
 
 // PlanAction enumerates the operation kinds a [Plan] can hold.
 type PlanAction int
 
 const (
-	// PlanActionCreate writes a new file. Errors if the path already
-	// exists at apply time.
+	// PlanActionCreate writes a new file. It fails with an error
+	// wrapping [ErrAlreadyExists] if the path exists at apply time; a
+	// symlink there counts, even one whose target is missing.
 	PlanActionCreate PlanAction = iota + 1
 
-	// PlanActionUpdate overwrites an existing file's contents. The
-	// prior contents are backed up so the op is reversible.
+	// PlanActionUpdate writes a file, creating it if missing. Existing
+	// contents are backed up so the op is reversible.
 	PlanActionUpdate
 
-	// PlanActionDelete removes a file. The file is backed up before
-	// removal so Rollback can restore it.
+	// PlanActionDelete removes a file; a missing file is not an error.
+	// The file is backed up before removal so Rollback can restore it.
 	PlanActionDelete
 
-	// PlanActionRename moves Source to Path. Reversible.
+	// PlanActionRename moves Source to Path, backing up and replacing
+	// any existing file at Path. Reversible.
 	PlanActionRename
 )
 
@@ -85,18 +92,27 @@ func (a PlanAction) String() string {
 
 // PlanOp is a single operation inside a [Plan].
 type PlanOp struct {
-	Action PlanAction  `json:"action"`
-	Path   string      `json:"path"`
-	Source string      `json:"source,omitempty"` // PlanActionRename only
-	Data   []byte      `json:"data,omitempty"`   // PlanActionCreate / PlanActionUpdate
-	Perm   os.FileMode `json:"perm,omitempty"`   // PlanActionCreate / PlanActionUpdate
+	// Action is the operation kind.
+	Action PlanAction `json:"action"`
+	// Path is the file the op writes or deletes, or the rename
+	// destination.
+	Path string `json:"path"`
+	// Source is the rename source ([PlanActionRename] only).
+	Source string `json:"source,omitempty"`
+	// Data is the file content ([PlanActionCreate] and
+	// [PlanActionUpdate]).
+	Data []byte `json:"data,omitempty"`
+	// Perm is the file mode ([PlanActionCreate] and
+	// [PlanActionUpdate]).
+	Perm os.FileMode `json:"perm,omitempty"`
 }
 
 // Plan is a sequence of [PlanOp] executed in order by [Apply]. Build
-// it with the fluent helpers ([*Plan.Create], [*Plan.Update],
-// [*Plan.Delete], [*Plan.Rename]) or by appending to Ops directly.
+// it with the fluent helpers ([Plan.Create], [Plan.Update],
+// [Plan.Delete], [Plan.Rename]) or by appending to Ops directly.
 // Plans are JSON-serializable.
 type Plan struct {
+	// Ops are the operations, in execution order.
 	Ops []PlanOp `json:"ops"`
 }
 
@@ -105,7 +121,8 @@ func NewPlan() *Plan {
 	return &Plan{}
 }
 
-// Create appends a [PlanActionCreate] op. Returns p for chaining.
+// Create appends a [PlanActionCreate] op; a zero perm means 0o644.
+// Returns p for chaining.
 func (p *Plan) Create(path string, data []byte, perm os.FileMode) *Plan {
 	if perm == 0 {
 		perm = 0o644
@@ -114,7 +131,8 @@ func (p *Plan) Create(path string, data []byte, perm os.FileMode) *Plan {
 	return p
 }
 
-// Update appends a [PlanActionUpdate] op. Returns p for chaining.
+// Update appends a [PlanActionUpdate] op; a zero perm means 0o644.
+// Returns p for chaining.
 func (p *Plan) Update(path string, data []byte, perm os.FileMode) *Plan {
 	if perm == 0 {
 		perm = 0o644
@@ -160,16 +178,19 @@ func (p *Plan) Diff() string {
 	return b.String()
 }
 
-// ApplyOption configures [Apply], [Resume], and [Rollback].
+// ApplyOption configures [Apply], [Resume] and [ApplyTransient].
+// [Rollback] accepts but ignores them.
 type ApplyOption func(*applyConfig)
 
 type applyConfig struct {
 	mkdirParents bool
 }
 
-// WithApplyNoMkdir disables automatic creation of missing parent
-// directories for both the journal and target paths. Default behavior
-// creates them with mode 0o755.
+// WithApplyNoMkdir disables automatic creation of missing directories:
+// the journal directory must then exist, and so must the parent of
+// every created, updated or renamed-to path. By default they are
+// created, the journal directory with mode 0o700 and the others with
+// mode 0o755.
 func WithApplyNoMkdir() ApplyOption {
 	return func(c *applyConfig) {
 		c.mkdirParents = false
@@ -180,11 +201,16 @@ func WithApplyNoMkdir() ApplyOption {
 // Persisted across two files under journalDir: plan.json (immutable,
 // written once on Apply) and progress.json (rewritten per step).
 //
+// Started records that the op at index Completed may have begun. It
+// is saved before the op touches anything, so after a crash Resume
+// and Rollback know which step to finish or undo.
+//
 // PlanOp.Data is JSON-serialized as base64, inflating binary payloads
 // by ~33% on disk.
 type journal struct {
 	Plan      Plan `json:"-"`
 	Completed int  `json:"completed"`
+	Started   bool `json:"started,omitempty"`
 	Finalized bool `json:"finalized"`
 	Schema    int  `json:"schema"`
 }
@@ -200,18 +226,30 @@ type planFile struct {
 var errSchemaMismatch = errors.New("fs: plan: journal schema mismatch")
 
 // Apply runs the plan, writing a journal under journalDir so an
-// interrupted apply can be resumed. journalDir must be an empty or
-// nonexistent directory; Apply refuses to overwrite an existing
-// journal.
+// interrupted apply can be resumed. If journalDir already holds a
+// journal, Apply fails with an error wrapping [ErrAlreadyExists]. A
+// nil p returns an error wrapping [ErrInvalidPath]. An op with a zero
+// Perm writes mode 0o644.
 //
 // On any per-op failure, Apply returns the error without rolling
 // back. The journal records progress so the caller can decide
-// whether to [Rollback] or [Resume].
+// whether to [Rollback] or [Resume]. Each step is recorded before it
+// runs and the original file is snapshotted first, with every journal
+// write, snapshot and op flushed to disk, so a crash at any point
+// leaves a journal that Resume can finish and Rollback can undo.
+//
+// The journal holds a copy of every op's data and of every file the
+// plan overwrites or deletes. It is created owner-only (directories
+// 0o700, journal files 0o600; snapshots keep their file's mode), but
+// it is never removed automatically: delete journalDir once the
+// result is no longer needed.
 //
 // Apply, [Resume], and [Rollback] acquire an advisory [Lock] on
 // <journalDir>/.lock for the duration of their work, so concurrent
 // same-journal callers serialize automatically. Independent
-// journals are independent.
+// journals are independent. Where [Lock] returns [ErrNotSupported]
+// (js/wasm, wasip1, Plan 9), so do they; on AIX the lock does not
+// serialize callers within one process (see [Lock]).
 func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, journalDir, ErrInvalidPath)
@@ -219,8 +257,14 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	cfg := newApplyConfig(opts)
 
 	if cfg.mkdirParents {
-		if err := MkdirAll(filepath.Join(journalDir, journalBackupsDir), 0o755); err != nil {
+		existed := IsDir(journalDir)
+		if err := MkdirAll(filepath.Join(journalDir, journalBackupsDir), journalDirPerm); err != nil {
 			return err
+		}
+		if !existed {
+			if err := syncDir(filepath.Dir(filepath.Clean(journalDir))); err != nil {
+				return wrapPathError(opPlanJournal, journalDir, err)
+			}
 		}
 	} else if !IsDir(journalDir) {
 		return wrapPathError(opPlanApply, journalDir, ErrNotDir)
@@ -239,10 +283,10 @@ func Apply(p *Plan, journalDir string, opts ...ApplyOption) error {
 	}
 
 	j := journal{Plan: *p}
-	if err := savePlanFile(journalDir, &j); err != nil {
+	if err := saveProgress(journalDir, &j); err != nil {
 		return err
 	}
-	if err := saveProgress(journalDir, &j); err != nil {
+	if err := savePlanFile(journalDir, &j); err != nil {
 		return err
 	}
 	return resumeJournal(journalDir, &j, cfg)
@@ -257,9 +301,11 @@ func acquireJournalLock(journalDir string) (func(), error) {
 	return func() { _ = h.Release() }, nil //nolint:errcheck // probe-only; release errors are not actionable here
 }
 
-// Resume continues a previously-interrupted apply from its journal.
-// If the apply already completed, Resume is a no-op and returns nil.
-// See [Apply] for the concurrency contract.
+// Resume continues a previously-interrupted apply from its journal,
+// finishing the step that was running when it stopped. If the apply
+// already completed, Resume is a no-op and returns nil. After a
+// [Rollback], Resume applies the plan again from the start. See
+// [Apply] for the concurrency contract.
 func Resume(journalDir string, opts ...ApplyOption) error {
 	cfg := newApplyConfig(opts)
 
@@ -280,9 +326,11 @@ func Resume(journalDir string, opts ...ApplyOption) error {
 }
 
 // Rollback reverts the operations recorded in the journal in reverse
-// order. Each op's stored backup is used to restore the original
-// state. After successful rollback, the journal directory is left in
-// place. See [Apply] for the concurrency contract.
+// order, including a step that was interrupted part-way. Each op's
+// snapshot is used to restore the original state. Rollback can itself
+// be interrupted and run again. After successful rollback, the
+// journal directory is left in place. See [Apply] for the concurrency
+// contract.
 func Rollback(journalDir string, opts ...ApplyOption) error {
 	_ = newApplyConfig(opts)
 
@@ -296,29 +344,68 @@ func Rollback(journalDir string, opts ...ApplyOption) error {
 	if err != nil {
 		return err
 	}
+	if j.Finalized {
+		j.Finalized = false
+		if err := saveProgress(journalDir, j); err != nil {
+			return err
+		}
+	}
 
+	if j.Started && j.Completed < len(j.Plan.Ops) {
+		if err := rollbackOp(journalDir, j.Plan.Ops[j.Completed], j.Completed, false); err != nil {
+			return err
+		}
+		j.Started = false
+		if err := saveProgress(journalDir, j); err != nil {
+			return err
+		}
+		if err := removeSnapshot(journalDir, j.Completed); err != nil {
+			return err
+		}
+	}
 	for i := j.Completed - 1; i >= 0; i-- {
-		if rerr := rollbackOp(journalDir, j.Plan.Ops[i], i); rerr != nil {
-			return rerr
+		if err := rollbackOp(journalDir, j.Plan.Ops[i], i, true); err != nil {
+			return err
 		}
 		j.Completed = i
-		if serr := saveProgress(journalDir, j); serr != nil {
-			return serr
+		if err := saveProgress(journalDir, j); err != nil {
+			return err
+		}
+		if err := removeSnapshot(journalDir, i); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// resumeJournal runs the ops from j.Completed on. Every step follows
+// the same order, so each crash point is recoverable:
+//
+//  1. progress records the step as started (a step not yet started
+//     first drops any snapshot left over from an earlier rollback);
+//  2. the target's prior state is snapshotted, once per step;
+//  3. the op runs, idempotently, and is flushed to disk;
+//  4. progress records the step as completed.
 func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 	log := logger()
 	for i := j.Completed; i < len(j.Plan.Ops); i++ {
 		op := j.Plan.Ops[i]
 		log.Debug("fs.plan: applying op", "step", i, "action", op.Action.String(), "path", op.Path)
-		if err := applyOp(journalDir, op, i, cfg); err != nil {
+		if !j.Started {
+			if err := removeSnapshot(journalDir, i); err != nil {
+				return err
+			}
+			j.Started = true
+			if err := saveProgress(journalDir, j); err != nil {
+				return err
+			}
+		}
+		if err := applyJournaledOp(journalDir, op, i, cfg); err != nil {
 			log.Debug("fs.plan: op failed", "step", i, "error", err)
 			return err
 		}
 		j.Completed = i + 1
+		j.Started = false
 		if err := saveProgress(journalDir, j); err != nil {
 			return err
 		}
@@ -328,161 +415,311 @@ func resumeJournal(journalDir string, j *journal, cfg applyConfig) error {
 	return saveProgress(journalDir, j)
 }
 
-// ApplyTransient runs the plan in-memory, with no on-disk journal,
-// no backup snapshots, and no resume/rollback support. The first
-// op's failure surfaces as the return; subsequent ops are skipped.
+// ApplyTransient runs the plan with no journal, no backups and no
+// resume or rollback support. It stops at the first failing op and
+// returns its error. Use [Apply] when the run must be resumable or
+// reversible.
 //
-// Use this when sequenced execution is wanted without the journal
-// overhead. For executions that must be resumable or reversible, use
-// [Apply] against a journal directory.
-//
-// ApplyTransient has no internal locking. Concurrent calls touching
-// the same on-disk files race exactly as the underlying [WriteFile]
-// / [os.Remove] / [os.Rename] would.
+// ApplyTransient takes no lock; concurrent runs touching the same
+// files race.
 func ApplyTransient(p *Plan, opts ...ApplyOption) error {
 	if p == nil {
 		return wrapPathError(opPlanApply, "", ErrInvalidPath)
 	}
 	cfg := newApplyConfig(opts)
-	for i, op := range p.Ops {
-		if err := applyOp("", op, i, cfg); err != nil {
+	for _, op := range p.Ops {
+		if err := applyTransientOp(op, cfg); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// applyOp executes a single PlanOp and records any backup data the
-// inverse will need. When journalDir is empty (the [ApplyTransient]
-// path), backup recording is skipped.
-func applyOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
-	if cfg.mkdirParents && (op.Action == PlanActionCreate || op.Action == PlanActionUpdate || op.Action == PlanActionRename) {
-		if err := MkdirAll(filepath.Dir(op.Path), 0o755); err != nil {
-			return err
-		}
+// opPerm is the mode an op writes with: Perm, or 0o644 when it is zero.
+func opPerm(op PlanOp) os.FileMode {
+	if op.Perm.Perm() == 0 {
+		return 0o644
 	}
+	return op.Perm.Perm()
+}
 
+func mkdirOpParent(op PlanOp, cfg applyConfig) error {
+	if cfg.mkdirParents && (op.Action == PlanActionCreate || op.Action == PlanActionUpdate || op.Action == PlanActionRename) {
+		return MkdirAll(filepath.Dir(op.Path), 0o755)
+	}
+	return nil
+}
+
+// applyTransientOp executes a single PlanOp without a journal.
+func applyTransientOp(op PlanOp, cfg applyConfig) error {
+	if err := mkdirOpParent(op, cfg); err != nil {
+		return err
+	}
 	switch op.Action {
 	case PlanActionCreate:
-		if Exists(op.Path) {
+		if _, serr := osLstat(op.Path); serr == nil {
 			return wrapPathError(opPlanApply, op.Path, ErrAlreadyExists)
 		}
-		return WriteFile(op.Path, op.Data, WithPerm(op.Perm))
-
+		return WriteFile(op.Path, op.Data, WithPerm(opPerm(op)))
 	case PlanActionUpdate:
-		if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
-			return err
-		}
-		return WriteFile(op.Path, op.Data, WithPerm(op.Perm))
-
+		return WriteFile(op.Path, op.Data, WithPerm(opPerm(op)))
 	case PlanActionDelete:
-		if !Exists(op.Path) {
-			return nil
-		}
-		if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
-			return err
-		}
-		if rerr := os.Remove(op.Path); rerr != nil {
+		if rerr := osRemove(op.Path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
 			return wrapPathError(opPlanApply, op.Path, rerr)
 		}
 		return nil
-
 	case PlanActionRename:
-		if Exists(op.Path) {
-			if err := backupBeforeWrite(journalDir, op.Path, step); err != nil {
-				return err
-			}
-		}
-		if rerr := os.Rename(op.Source, op.Path); rerr != nil {
+		if rerr := osRename(op.Source, op.Path); rerr != nil {
 			return wrapPathError(opPlanApply, op.Source, rerr)
 		}
 		return nil
-
 	default:
 		return wrapPathError(opPlanApply, op.Path, ErrInvalidPath)
 	}
 }
 
-func rollbackOp(journalDir string, op PlanOp, step int) error {
+// applyJournaledOp snapshots the op's target (once per step) and then
+// runs the op. It is safe to call again after a crash at any point:
+// a write is simply repeated, a delete of a missing file succeeds, and
+// a rename whose source is gone and whose destination exists has
+// already happened. Everything it changes is flushed before it
+// returns.
+func applyJournaledOp(journalDir string, op PlanOp, step int, cfg applyConfig) error {
+	if err := mkdirOpParent(op, cfg); err != nil {
+		return err
+	}
 	switch op.Action {
-	case PlanActionCreate:
-		if rerr := os.Remove(op.Path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
-			return wrapPathError(opPlanRollback, op.Path, rerr)
-		}
-		return nil
+	case PlanActionCreate, PlanActionUpdate, PlanActionDelete, PlanActionRename:
+	default:
+		return wrapPathError(opPlanApply, op.Path, ErrInvalidPath)
+	}
 
-	case PlanActionUpdate:
-		return restoreFromBackup(journalDir, op.Path, step)
+	taken, err := hasSnapshot(journalDir, step)
+	if err != nil {
+		return err
+	}
+	if !taken {
+		switch op.Action {
+		case PlanActionCreate:
+			if _, serr := osLstat(op.Path); serr == nil {
+				return wrapPathError(opPlanApply, op.Path, ErrAlreadyExists)
+			}
+		case PlanActionRename:
+			if _, serr := osLstat(op.Source); serr != nil {
+				return wrapPathError(opPlanApply, op.Source, serr)
+			}
+		}
+		if err := takeSnapshot(journalDir, op.Path, step); err != nil {
+			return err
+		}
+	}
+
+	switch op.Action {
+	case PlanActionCreate, PlanActionUpdate:
+		return WriteFile(op.Path, op.Data, WithPerm(opPerm(op)), WithSync(true))
 
 	case PlanActionDelete:
-		return restoreFromBackup(journalDir, op.Path, step)
-
-	case PlanActionRename:
-		if rerr := os.Rename(op.Path, op.Source); rerr != nil {
-			return wrapPathError(opPlanRollback, op.Path, rerr)
+		if rerr := osRemove(op.Path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
+			return wrapPathError(opPlanApply, op.Path, rerr)
 		}
-		return restoreFromBackup(journalDir, op.Path, step)
+		return syncParent(opPlanApply, op.Path)
 
-	default:
-		return wrapPathError(opPlanRollback, op.Path, ErrInvalidPath)
+	default: // PlanActionRename
+		_, srcErr := osLstat(op.Source)
+		_, dstErr := osLstat(op.Path)
+		if errors.Is(srcErr, stdfs.ErrNotExist) && dstErr == nil {
+			return nil // renamed before an interruption
+		}
+		if rerr := osRename(op.Source, op.Path); rerr != nil {
+			return wrapPathError(opPlanApply, op.Source, rerr)
+		}
+		if err := syncParent(opPlanApply, op.Path); err != nil {
+			return err
+		}
+		if filepath.Dir(op.Source) != filepath.Dir(op.Path) {
+			return syncParent(opPlanApply, op.Source)
+		}
+		return nil
 	}
 }
 
-// backupBeforeWrite copies the existing file at path into the
-// journal's backups/<step> dir. No-op when path doesn't exist or
-// when journalDir is empty.
-func backupBeforeWrite(journalDir, path string, step int) error {
-	if journalDir == "" {
-		return nil
+// rollbackOp undoes one step. completed reports whether progress
+// recorded the step as finished; for a step that was only started, a
+// missing snapshot means the op never ran, so there is nothing to
+// undo. Every branch is safe to repeat.
+func rollbackOp(journalDir string, op PlanOp, step int, completed bool) error {
+	switch op.Action {
+	case PlanActionCreate, PlanActionUpdate, PlanActionDelete, PlanActionRename:
+	default:
+		return wrapPathError(opPlanRollback, op.Path, ErrInvalidPath)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, stdfs.ErrNotExist) {
-			return nil
+	if !completed {
+		taken, err := hasSnapshot(journalDir, step)
+		if err != nil || !taken {
+			return err
 		}
+	}
+
+	switch op.Action {
+	case PlanActionCreate:
+		if rerr := osRemove(op.Path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
+			return wrapPathError(opPlanRollback, op.Path, rerr)
+		}
+		return syncParent(opPlanRollback, op.Path)
+
+	case PlanActionUpdate, PlanActionDelete:
+		return restoreFromBackup(journalDir, op.Path, step)
+
+	default: // PlanActionRename
+		if _, serr := osLstat(op.Source); errors.Is(serr, stdfs.ErrNotExist) {
+			if rerr := osRename(op.Path, op.Source); rerr != nil {
+				return wrapPathError(opPlanRollback, op.Path, rerr)
+			}
+			if err := syncParent(opPlanRollback, op.Source); err != nil {
+				return err
+			}
+		}
+		return restoreFromBackup(journalDir, op.Path, step)
+	}
+}
+
+// snapshotDir is where step's snapshot of its target lives.
+func snapshotDir(journalDir string, step int) string {
+	return filepath.Join(journalDir, journalBackupsDir, fmt.Sprintf("step-%d", step))
+}
+
+func hasSnapshot(journalDir string, step int) (bool, error) {
+	_, err := osLstat(snapshotDir(journalDir, step))
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, stdfs.ErrNotExist):
+		return false, nil
+	default:
+		return false, wrapPathError(opPlanJournal, snapshotDir(journalDir, step), err)
+	}
+}
+
+// takeSnapshot records path's current state for step: a copy of the
+// file (mode and modification time kept), the target text of a
+// symlink, or an empty snapshot directory when path does not exist.
+// The snapshot is built in a temporary directory and renamed into
+// place, so it either exists complete and flushed or not at all.
+func takeSnapshot(journalDir, path string, step int) error {
+	dst := snapshotDir(journalDir, step)
+	tmp := dst + ".tmp"
+	if err := osRemoveAll(tmp); err != nil {
+		return wrapPathError(opPlanJournal, tmp, err)
+	}
+	if err := osMkdirAll(tmp, journalDirPerm); err != nil {
+		return wrapPathError(opPlanJournal, tmp, err)
+	}
+
+	info, err := osLstat(path)
+	switch {
+	case err == nil:
+		if err := snapshotEntry(tmp, path, info); err != nil {
+			return err
+		}
+	case errors.Is(err, stdfs.ErrNotExist):
+	default:
 		return wrapPathError(opPlanJournal, path, err)
 	}
-	if info.IsDir() {
+
+	if err := osRename(tmp, dst); err != nil {
+		return wrapPathError(opPlanJournal, dst, err)
+	}
+	return syncParent(opPlanJournal, dst)
+}
+
+// snapshotEntry copies the existing entry at path, described by info,
+// into the snapshot directory dir.
+func snapshotEntry(dir, path string, info os.FileInfo) error {
+	base := filepath.Base(path)
+	switch {
+	case info.IsDir():
 		return wrapPathError(opPlanJournal, path, ErrIsDir)
+	case info.Mode()&os.ModeSymlink != 0:
+		target, err := osReadlink(path)
+		if err != nil {
+			return wrapPathError(opPlanJournal, path, err)
+		}
+		return WriteFile(filepath.Join(dir, base+snapshotLinkExt), []byte(target), WithPerm(journalFilePerm), WithSync(true))
+	default:
+		return withOp(opPlanJournal, copyFileInternal(path, filepath.Join(dir, base), snapshotCopyOptions))
 	}
+}
 
-	bdir := filepath.Join(journalDir, journalBackupsDir, fmt.Sprintf("step-%d", step))
-	if err := MkdirAll(bdir, 0o755); err != nil {
-		return err
-	}
-	dst := filepath.Join(bdir, filepath.Base(path))
+// snapshotLinkExt marks a snapshot of a symlink: the file
+// "<base>.symlink" holds the link's target text. A snapshot of a
+// regular file is named "<base>", so the two never collide.
+const snapshotLinkExt = ".symlink"
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return wrapPathError(opPlanJournal, path, err)
-	}
-	if err := WriteFile(dst, data, WithPerm(info.Mode().Perm())); err != nil {
-		return err
+// snapshotCopyOptions copies a file into or out of a snapshot: the
+// same bytes, mode and modification time, flushed to disk.
+var snapshotCopyOptions = copyOptions{overwrite: true, sync: true, preserveMtime: true}
+
+// removeSnapshot deletes step's snapshot, if any.
+func removeSnapshot(journalDir string, step int) error {
+	dir := snapshotDir(journalDir, step)
+	for _, p := range []string{dir, dir + ".tmp"} {
+		if err := osRemoveAll(p); err != nil {
+			return wrapPathError(opPlanJournal, p, err)
+		}
 	}
 	return nil
 }
 
-// restoreFromBackup writes the journal snapshot back to path. If no
-// snapshot exists, the path is removed instead.
+// restoreFromBackup puts the step's snapshot back at path: the file,
+// or the symlink, that was there. If the snapshot holds neither (path
+// did not exist before the step, or a journal written without per-step
+// snapshots has none), path is removed instead.
 func restoreFromBackup(journalDir, path string, step int) error {
-	src := filepath.Join(journalDir, journalBackupsDir, fmt.Sprintf("step-%d", step), filepath.Base(path))
-	data, err := os.ReadFile(src)
-	if err != nil {
+	dir := snapshotDir(journalDir, step)
+	base := filepath.Base(path)
+	target, err := os.ReadFile(filepath.Join(dir, base+snapshotLinkExt))
+	switch {
+	case err == nil:
+		return restoreSymlink(path, string(target))
+	case !errors.Is(err, stdfs.ErrNotExist):
+		return wrapPathError(opPlanRollback, filepath.Join(dir, base+snapshotLinkExt), err)
+	}
+
+	src := filepath.Join(dir, base)
+	if _, err := osLstat(src); err != nil {
 		if errors.Is(err, stdfs.ErrNotExist) {
-			if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
+			if rerr := osRemove(path); rerr != nil && !errors.Is(rerr, stdfs.ErrNotExist) {
 				return wrapPathError(opPlanRollback, path, rerr)
 			}
-			return nil
+			return syncParent(opPlanRollback, path)
 		}
 		return wrapPathError(opPlanRollback, src, err)
 	}
-	info, statErr := os.Stat(src)
-	perm := os.FileMode(0o644)
-	if statErr == nil {
-		perm = info.Mode().Perm()
+	return withOp(opPlanRollback, copyFileInternal(src, path, snapshotCopyOptions))
+}
+
+// restoreSymlink makes path a symlink to target, replacing whatever is
+// there in one rename.
+func restoreSymlink(path, target string) error {
+	tmp := filepath.Join(filepath.Dir(path), strings.TrimSuffix(tempPatternFor(path), "*")+"link")
+	if err := osRemove(tmp); err != nil && !errors.Is(err, stdfs.ErrNotExist) {
+		return wrapPathError(opPlanRollback, tmp, err)
 	}
-	if err := WriteFile(path, data, WithPerm(perm)); err != nil {
-		return err
+	if err := os.Symlink(target, tmp); err != nil {
+		return wrapPathError(opPlanRollback, path, err)
+	}
+	if err := osRename(tmp, path); err != nil {
+		_ = osRemove(tmp) //nolint:errcheck // best-effort cleanup; the rename error is what matters
+		return wrapPathError(opPlanRollback, path, err)
+	}
+	return syncParent(opPlanRollback, path)
+}
+
+// syncParent flushes the directory holding path, so a create, rename
+// or removal of path survives a power loss.
+func syncParent(op, path string) error {
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return wrapPathError(op, path, err)
 	}
 	return nil
 }
@@ -494,7 +731,7 @@ func savePlanFile(journalDir string, j *journal) error {
 		return wrapPathError(opPlanJournal, journalDir, err)
 	}
 	target := filepath.Join(journalDir, journalPlanFilename)
-	return WriteFile(target, data, WithPerm(0o644))
+	return WriteFile(target, data, WithPerm(journalFilePerm), WithSync(true))
 }
 
 func saveProgress(journalDir string, j *journal) error {
@@ -504,7 +741,7 @@ func saveProgress(journalDir string, j *journal) error {
 		return wrapPathError(opPlanJournal, journalDir, err)
 	}
 	target := filepath.Join(journalDir, journalProgressFilename)
-	return WriteFile(target, data, WithPerm(0o644))
+	return WriteFile(target, data, WithPerm(journalFilePerm), WithSync(true))
 }
 
 func loadJournal(journalDir string) (*journal, error) {
@@ -532,6 +769,9 @@ func loadJournal(journalDir string) (*journal, error) {
 	}
 	if j.Schema != journalSchemaVersion {
 		return nil, wrapPathError(opPlanJournal, progressPath, fmt.Errorf("%w: file=%d package=%d", errSchemaMismatch, j.Schema, journalSchemaVersion))
+	}
+	if j.Completed < 0 || j.Completed > len(pf.Plan.Ops) {
+		return nil, wrapPathError(opPlanJournal, progressPath, ErrInvalidPath)
 	}
 	j.Plan = pf.Plan
 	return &j, nil

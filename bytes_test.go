@@ -1,6 +1,8 @@
 package fs
 
 import (
+	"errors"
+	"math"
 	"strings"
 	"testing"
 )
@@ -164,6 +166,34 @@ func TestParseBytes_ExtremeValues(t *testing.T) {
 		}
 		if got <= 0 {
 			t.Errorf("ParseBytes(%q) = %d", in, got)
+		}
+	}
+}
+
+// The magnitude of math.MinInt64 doesn't fit in an int64; formatting it must not recurse.
+func TestFormatBytes_MinInt64(t *testing.T) {
+	t.Parallel()
+	if got := FormatBytes(math.MinInt64); got != "-8 EiB" {
+		t.Errorf("FormatBytes(MinInt64) = %q, want %q", got, "-8 EiB")
+	}
+}
+
+// A size beyond the int64 range is an error, not a wrapped-around value.
+func TestParseBytes_Overflow(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"10EB", "8EiB", "-9EiB", "9223372036854775808", "99999999999999999999", "9.3EB"} {
+		if got, err := ParseBytes(in); !errors.Is(err, ErrInvalidByteSize) {
+			t.Errorf("ParseBytes(%q) = %d, %v; want ErrInvalidByteSize", in, got, err)
+		}
+	}
+	for in, want := range map[string]int64{
+		"9223372036854775807":  math.MaxInt64,
+		"-9223372036854775808": math.MinInt64,
+		"-8EiB":                math.MinInt64,
+		"7EiB":                 7 << 60,
+	} {
+		if got, err := ParseBytes(in); err != nil || got != want {
+			t.Errorf("ParseBytes(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
 }

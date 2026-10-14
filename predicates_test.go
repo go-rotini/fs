@@ -133,14 +133,14 @@ func TestIsWritable(t *testing.T) {
 		t.Errorf("IsWritable(0o644 file) = false")
 	}
 
-	if runtime.GOOS != goosWindows {
-		// 0o400 file: readable but not writable for owner.
+	if runtime.GOOS != goosWindows && os.Geteuid() != 0 {
+		// 0o400 file: readable but not writable for owner (root ignores the bits).
 		ro := filepath.Join(dir, "ro")
 		if err := os.WriteFile(ro, []byte("x"), 0o400); err != nil {
 			t.Fatalf("WriteFile ro: %v", err)
 		}
 		if IsWritable(ro) {
-			t.Errorf("IsWritable(0o400 file) = true (running as root?)")
+			t.Errorf("IsWritable(0o400 file) = true")
 		}
 	}
 }

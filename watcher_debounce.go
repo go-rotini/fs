@@ -19,6 +19,22 @@ type debouncer struct {
 	timers map[string]*timerState
 	out    chan rawWatchEvent
 	closed bool
+
+	// onDrop, when set, is called for every event dropped because out
+	// is full. Set it before the first In.
+	onDrop func()
+}
+
+// send pushes ev to out without blocking, reporting a drop. d.mu must
+// be held.
+func (d *debouncer) send(ev rawWatchEvent) {
+	select {
+	case d.out <- ev:
+	default:
+		if d.onDrop != nil {
+			d.onDrop()
+		}
+	}
 }
 
 type timerState struct {
@@ -42,11 +58,7 @@ func (d *debouncer) In(ev rawWatchEvent) {
 		if d.closed {
 			return
 		}
-		select {
-		case d.out <- ev:
-		default:
-			// Drop on overflow; out has 64-slot headroom.
-		}
+		d.send(ev)
 		return
 	}
 
@@ -72,12 +84,8 @@ func (d *debouncer) In(ev rawWatchEvent) {
 		if d.closed {
 			return
 		}
-		out := rawWatchEvent{path: path, op: st.op}
 		delete(d.timers, path)
-		select {
-		case d.out <- out:
-		default:
-		}
+		d.send(rawWatchEvent{path: path, op: st.op})
 	})
 	d.timers[path] = st
 }

@@ -191,3 +191,17 @@ func TestPreflightSpace_MissingPath(t *testing.T) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }
+
+func TestIsNetworkFSType_MoreTypes(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []string{"smb3", "9p", "ceph", "glusterfs", "lustre", "afs", "nfs4", "fuse.sshfs"} {
+		if !isNetworkFSType(typ) {
+			t.Errorf("isNetworkFSType(%q) = false", typ)
+		}
+	}
+	for _, typ := range []string{"ext4", "apfs", "NTFS", "tmpfs"} {
+		if isNetworkFSType(typ) {
+			t.Errorf("isNetworkFSType(%q) = true", typ)
+		}
+	}
+}

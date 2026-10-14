@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 )
 
@@ -125,13 +124,13 @@ func TestIsSymlinkLoop_AllBranches(t *testing.T) {
 	if isSymlinkLoop(nil) {
 		t.Error("nil should not be a loop")
 	}
-	if !isSymlinkLoop(syscall.ELOOP) {
-		t.Error("syscall.ELOOP should be a loop")
+	if !isSymlinkLoop(errTestELOOP) {
+		t.Error("errTestELOOP should be a loop")
 	}
 	if !isSymlinkLoop(errors.New("foo: too many links")) {
 		t.Error("string-match sentinel should fire")
 	}
-	if !isSymlinkLoop(&os.PathError{Op: "x", Path: "/y", Err: syscall.ELOOP}) {
+	if !isSymlinkLoop(&os.PathError{Op: "x", Path: "/y", Err: errTestELOOP}) {
 		t.Error("wrapped ELOOP should be a loop")
 	}
 	if isSymlinkLoop(errors.New("unrelated error")) {

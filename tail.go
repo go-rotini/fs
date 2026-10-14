@@ -18,8 +18,7 @@ import (
 // [WithTailNotifyRotation]. By default rotation is transparent.
 //
 // The yield is ("", ErrTailRotated); the iterator continues
-// afterwards. Callers who pattern-match on this can log a rotation
-// event or flush partial state. errors.Is recognizes it.
+// afterwards, so callers can log the rotation or flush partial state.
 var ErrTailRotated = errors.New("fs: tail: file rotated")
 
 const (
@@ -29,8 +28,7 @@ const (
 	// follow against CPU cost.
 	tailDefaultPollInterval = 200 * time.Millisecond
 
-	// tailDefaultBufferSize matches the default page size on every
-	// supported platform.
+	// tailDefaultBufferSize is the default read buffer size (4 KiB).
 	tailDefaultBufferSize = 4096
 
 	// tailMaxLineBytes caps a single line's length. Lines longer than
@@ -53,7 +51,7 @@ func WithTailFromStart() TailOption {
 }
 
 // WithTailPollInterval sets the cadence at which [Tail] checks for
-// new content after hitting EOF. Default is 200ms. Values below 10ms
+// new content and rotation after hitting EOF. Default is 200ms. Values below 10ms
 // are clamped to 10ms.
 func WithTailPollInterval(d time.Duration) TailOption {
 	return func(c *tailConfig) {
@@ -88,15 +86,17 @@ type tailConfig struct {
 // Tail returns an iterator over lines appended to path. The iterator
 // starts at EOF (or at offset 0 if [WithTailFromStart] is set) and
 // blocks until new content is written, the file is rotated, or ctx
-// is canceled.
+// is canceled. If path cannot be opened, the iterator yields that
+// error and stops.
 //
 // ctx must not be nil. Pass [context.Background] for an indefinite
-// tail. Following stdlib convention, a nil ctx panics on first poll.
+// tail.
 //
 // Rotation handling: between reads, [Tail] stats path and compares
 // against the held file descriptor via [os.SameFile]. A different
 // inode (logrotate-style rename-and-create) or a held file truncated
-// below the read offset causes a reopen from offset 0.
+// below the read offset causes a reopen from offset 0. If path is
+// briefly missing during a rotation, Tail waits for it to reappear.
 //
 // On ctx.Done(), the iterator terminates without yielding an error.
 // On an unrecoverable IO error (path becomes permanently unreadable
@@ -104,8 +104,9 @@ type tailConfig struct {
 // and terminates.
 //
 // Lines are yielded without their trailing newline; both LF and CRLF
-// are stripped. Line length is capped at 1 MiB; longer lines are
-// truncated and yielded as separate chunks.
+// are stripped. A line is yielded only once its newline is written,
+// and an unfinished line is dropped on rotation. Lines longer than
+// 1 MiB are yielded in 1 MiB chunks.
 //
 // Usage:
 //
@@ -181,6 +182,18 @@ func runTail(ctx context.Context, path string, cfg tailConfig, yield func(string
 			return
 		}
 		if rotated {
+			// The old descriptor still reads the rotated-away file:
+			// finish the lines written to it since the last poll.
+			stop, derr := drainLines(reader, &partial, yield)
+			if stop {
+				_ = newF.Close()
+				return
+			}
+			if derr != nil {
+				_ = newF.Close()
+				yield("", wrapPathError(opTail, path, derr))
+				return
+			}
 			_ = f.Close()
 			f = newF
 			info = newInfo

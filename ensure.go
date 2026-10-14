@@ -14,8 +14,8 @@ import (
 // rest observe `created=false`. The first caller's content wins;
 // later callers do not overwrite.
 //
-// All [WriteOption]s are honored; set [WithMkdirAll] to create
-// parents, [WithPerm] to override the file mode, etc.
+// opts are passed to [WriteFileExclusive]: for example [WithMkdirAll]
+// creates parents and [WithPerm] sets the file mode.
 func EnsureFile(path string, defaults []byte, opts ...WriteOption) (created bool, err error) {
 	werr := WriteFileExclusive(path, defaults, opts...)
 	if werr == nil {
@@ -32,12 +32,9 @@ func EnsureFile(path string, defaults []byte, opts ...WriteOption) (created bool
 // components; pass [WithEnforcePerm] to chmod the chain. Returns
 // created=true when the directory did not exist at call time.
 //
-// Under concurrent calls on a missing path, multiple callers may
-// each see created=true since the existence check and creation
-// aren't atomic; [os.MkdirAll] itself is idempotent so no caller
-// errors, but the created flag's accuracy degrades under races.
-// For strict "exactly one creator wins" semantics, use [Mkdir] +
-// detect [ErrAlreadyExists].
+// Concurrent calls on a missing path all succeed, but more than one
+// may report created=true. For "exactly one creator wins", use
+// [Mkdir] and check for [ErrAlreadyExists].
 func EnsureDir(path string, perm os.FileMode, opts ...MkdirOption) (created bool, err error) {
 	if IsDir(path) {
 		return false, nil

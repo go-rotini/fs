@@ -3,8 +3,10 @@ package fs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,8 +14,7 @@ import (
 )
 
 // All watcher tests use WithPolling with a short interval to keep
-// the runtime deterministic across platforms; the platform-native
-// backends are placeholders that fall through to polling anyway.
+// the runtime short and deterministic across platforms.
 
 const (
 	pollInterval = 20 * time.Millisecond
@@ -364,6 +365,7 @@ func TestWatchOp_String(t *testing.T) {
 		{WatchRemove, "remove"},
 		{WatchRename, "rename"},
 		{WatchChmod, "chmod"},
+		{WatchOverflow, "overflow"},
 		{WatchCreate | WatchWrite, "create+write"},
 		{WatchCreate | WatchWrite | WatchRemove | WatchRename | WatchChmod, "create+write+remove+rename+chmod"},
 	}
@@ -407,22 +409,17 @@ func TestWatcher_OptionsDoNotPanic(t *testing.T) {
 	t.Cleanup(func() { _ = w.Close() })
 }
 
-// --- Backend selection: native-fallback-to-polling ---
+// --- Backend selection ---
 
-// TestWatcher_NativeBackendFallsBackToPolling exercises the
-// non-WithPolling path through selectBackend. The native backend
-// constructors on every platform are placeholders that return
-// errWatcherUnsupportedBackend; selectBackend catches that and
-// returns a polling backend instead. The watcher must construct
-// successfully and basic event flow must still work.
-func TestWatcher_NativeBackendFallsBackToPolling(t *testing.T) {
+// TestWatcher_DefaultInterval constructs a watcher without
+// WithPolling, which polls at the default interval.
+func TestWatcher_DefaultInterval(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f")
 	if err := os.WriteFile(path, []byte("v"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	// No WithPolling; forces native-backend attempt + fallback.
 	w, err := NewWatcher(path, WithDebounce(0))
 	if err != nil {
 		t.Fatalf("NewWatcher: %v", err)
@@ -792,11 +789,258 @@ func TestDiffSnapshots_AllBranches(t *testing.T) {
 	}
 }
 
-func TestListDirNames_Missing(t *testing.T) {
+func TestListDirChildren_Missing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	got := listDirNames(filepath.Join(dir, "missing"))
+	got := listDirChildren(filepath.Join(dir, "missing"), true)
 	if len(got) != 0 {
 		t.Errorf("got %v, want empty", got)
+	}
+}
+
+// awaitOp drains ch until an event for path with op arrives, failing after 2s.
+func awaitOp(t *testing.T, ch <-chan WatchEvent, path string, op WatchOp) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed before %v on %s", op, path)
+			}
+			if ev.Path == path && ev.Op.Has(op) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("no %v event for %s within 2s", op, path)
+		}
+	}
+}
+
+// A directory watcher reports writes to files inside it, at the top level and in subdirectories.
+func TestWatcher_DirWatchSeesFileWrite(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	top := filepath.Join(dir, "top.txt")
+	nested := filepath.Join(dir, "sub", "nested.txt")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{top, nested} {
+		if err := os.WriteFile(p, []byte("a"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := newTestWatcher(t, dir, true, false)
+	ch, err := w.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	for _, p := range []string{top, nested} {
+		if err := os.WriteFile(p, []byte("longer contents"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		awaitOp(t, ch, p, WatchWrite)
+	}
+}
+
+// A recursive directory watcher follows subdirectories created after it starts: what is
+// already in them is reported as created, and later changes inside them are reported.
+func TestWatcher_DirWatchFollowsNewSubdirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	w := newTestWatcher(t, dir, true, false)
+	ch, err := w.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	sub := filepath.Join(dir, "a", "b")
+	early := filepath.Join(sub, "early.txt")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(early, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, early, WatchCreate)
+
+	late := filepath.Join(sub, "late.txt")
+	if err := os.WriteFile(late, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, late, WatchCreate)
+	if err := os.WriteFile(late, []byte("more data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, late, WatchWrite)
+
+	// Removed and recreated, the subdirectory is followed again.
+	if err := os.RemoveAll(filepath.Join(dir, "a")); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, late, WatchRemove)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	again := filepath.Join(sub, "again.txt")
+	if err := os.WriteFile(again, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, again, WatchCreate)
+}
+
+// Without recursion, a new subdirectory is reported but not followed.
+func TestWatcher_DirWatchNonRecursiveIgnoresNewSubdirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	w, err := NewDirWatcher(dir, WithPolling(pollInterval), WithDebounce(0), WithBufferSize(64), WithRecursive(false))
+	if err != nil {
+		t.Fatalf("NewDirWatcher: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	ch, err := w.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	awaitOp(t, ch, sub, WatchCreate)
+	if err := os.WriteFile(filepath.Join(sub, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * pollInterval)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Path == filepath.Join(sub, "f") {
+				t.Fatalf("non-recursive watcher reported %v", ev)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// A watched directory that disappears reports each child removed once, not on every poll.
+func TestPollingBackend_RemovedDirReportsChildrenOnce(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "d")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := newPollingBackend(time.Millisecond)
+	defer b.Close()
+	if err := b.AddPath(dir); err != nil {
+		t.Fatalf("AddPath: %v", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	removes := 0
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		select {
+		case ev := <-b.Events():
+			if ev.path == filepath.Join(dir, "f") && ev.op == WatchRemove {
+				removes++
+			}
+		case <-deadline:
+			if removes != 1 {
+				t.Errorf("child removal reported %d times, want 1", removes)
+			}
+			return
+		}
+	}
+}
+
+func TestWatcher_OverflowSignalsDroppedEvents(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	w, err := NewDirWatcher(dir, WithPolling(20*time.Millisecond), WithDebounce(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := w.Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Stay busy while the poll reports 20 creates into a 1-slot buffer.
+	time.Sleep(300 * time.Millisecond)
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Op.Has(WatchOverflow) {
+				if ev.Path != w.target {
+					t.Errorf("overflow path = %q; want the watched path %q", ev.Path, w.target)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("events were dropped but no WatchOverflow arrived")
+		}
+	}
+}
+
+func TestWatcher_ReplacedWithSameSizeAndMtime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the poller has no cheap file identity on Windows")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(p, []byte("AAAA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWatcher(p, WithPolling(20*time.Millisecond), WithDebounce(0), WithBufferSize(16))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	ch, err := w.Subscribe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Prepare the replacement elsewhere so only the rename lands in
+	// the watched directory.
+	tmp := filepath.Join(t.TempDir(), "new")
+	if err := os.WriteFile(tmp, []byte("BBBB"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmp, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if err := os.Rename(tmp, p); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-ch:
+		if ev.Path != p || !ev.Op.Has(WatchWrite) {
+			t.Errorf("event = %v %v; want a write to %s", ev.Path, ev.Op, p)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("replacing the file (same size and mtime, new inode) produced no event")
 	}
 }

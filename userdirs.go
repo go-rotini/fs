@@ -39,9 +39,9 @@ func Home() (string, error) {
 
 // ConfigDir returns the user's per-user config directory.
 //
-//	Linux/BSD: $XDG_CONFIG_HOME (if absolute) or ~/.config
-//	macOS:     ~/Library/Application Support
-//	Windows:   %APPDATA%
+//	Linux/BSD:     $XDG_CONFIG_HOME (if absolute) or ~/.config
+//	macOS:         ~/Library/Application Support
+//	Windows:       %APPDATA%
 func ConfigDir() (string, error) {
 	p, err := configDir()
 	if err != nil {
@@ -52,9 +52,9 @@ func ConfigDir() (string, error) {
 
 // CacheDir returns the user's per-user cache directory.
 //
-//	Linux/BSD: $XDG_CACHE_HOME (if absolute) or ~/.cache
-//	macOS:     ~/Library/Caches
-//	Windows:   %LOCALAPPDATA%
+//	Linux/BSD:     $XDG_CACHE_HOME (if absolute) or ~/.cache
+//	macOS:         ~/Library/Caches
+//	Windows:       %LOCALAPPDATA%
 func CacheDir() (string, error) {
 	p, err := cacheDir()
 	if err != nil {
@@ -65,9 +65,9 @@ func CacheDir() (string, error) {
 
 // DataDir returns the user's per-user data directory.
 //
-//	Linux/BSD: $XDG_DATA_HOME (if absolute) or ~/.local/share
-//	macOS:     ~/Library/Application Support
-//	Windows:   %APPDATA%
+//	Linux/BSD:     $XDG_DATA_HOME (if absolute) or ~/.local/share
+//	macOS:         ~/Library/Application Support
+//	Windows:       %APPDATA%
 func DataDir() (string, error) {
 	p, err := dataDir()
 	if err != nil {
@@ -78,9 +78,9 @@ func DataDir() (string, error) {
 
 // StateDir returns the user's per-user state directory.
 //
-//	Linux/BSD: $XDG_STATE_HOME (if absolute) or ~/.local/state
-//	macOS:     ~/Library/Application Support
-//	Windows:   %LOCALAPPDATA%
+//	Linux/BSD:     $XDG_STATE_HOME (if absolute) or ~/.local/state
+//	macOS:         ~/Library/Application Support
+//	Windows:       %LOCALAPPDATA%
 func StateDir() (string, error) {
 	p, err := stateDir()
 	if err != nil {
@@ -91,10 +91,13 @@ func StateDir() (string, error) {
 
 // RuntimeDir returns the user's runtime directory.
 //
-//	Linux/BSD: $XDG_RUNTIME_DIR (no fallback per XDG spec; errors with
-//	           [ErrNotSupported] when unset or relative).
-//	macOS:     ~/Library/Caches/TemporaryItems
-//	Windows:   %LOCALAPPDATA%\Temp
+//	Linux/BSD:     $XDG_RUNTIME_DIR
+//	macOS:         ~/Library/Caches/TemporaryItems
+//	Windows:       %LOCALAPPDATA%\Temp
+//
+// On Linux and the BSDs there is no fallback, per the XDG spec: an
+// unset or relative $XDG_RUNTIME_DIR is an error wrapping
+// [ErrNotSupported].
 func RuntimeDir() (string, error) {
 	p, err := runtimeDir()
 	if err != nil {
@@ -107,8 +110,9 @@ func RuntimeDir() (string, error) {
 func SystemTempDir() string { return os.TempDir() }
 
 // ExecutableDir returns the directory containing the running
-// executable. Symlinks in the path are NOT resolved; use
-// [BinaryPath] for the symlink-resolved binary path.
+// executable, as reported by [os.Executable]; whether a symlink used
+// to start the process is resolved depends on the OS. Use
+// [BinaryPath] for the symlink-resolved path.
 func ExecutableDir() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -135,9 +139,9 @@ func BinaryPath() (string, error) {
 	return abs, nil
 }
 
-// AppConfigDir returns [ConfigDir]/<appName>. appName must not
-// contain a path separator (`/` or `\`), be empty, or be `.` / `..`.
-// Invalid appName errors with [ErrInvalidPath].
+// AppConfigDir returns [ConfigDir]/<appName>. An appName that is
+// empty, `.` or `..`, or contains `/`, `\` or a NUL byte, returns an
+// error wrapping [ErrInvalidPath]. The directory is not created.
 func AppConfigDir(appName string) (string, error) {
 	return appDir(opAppConfigDir, appName, ConfigDir)
 }
@@ -148,17 +152,20 @@ func AppCacheDir(appName string) (string, error) {
 	return appDir(opAppCacheDir, appName, CacheDir)
 }
 
-// AppDataDir returns [DataDir]/<appName>.
+// AppDataDir returns [DataDir]/<appName>. See [AppConfigDir] for
+// appName validation.
 func AppDataDir(appName string) (string, error) {
 	return appDir(opAppDataDir, appName, DataDir)
 }
 
-// AppStateDir returns [StateDir]/<appName>.
+// AppStateDir returns [StateDir]/<appName>. See [AppConfigDir] for
+// appName validation.
 func AppStateDir(appName string) (string, error) {
 	return appDir(opAppStateDir, appName, StateDir)
 }
 
-// AppRuntimeDir returns [RuntimeDir]/<appName>.
+// AppRuntimeDir returns [RuntimeDir]/<appName>. See [AppConfigDir]
+// for appName validation.
 func AppRuntimeDir(appName string) (string, error) {
 	return appDir(opAppRuntimeDir, appName, RuntimeDir)
 }
@@ -200,11 +207,12 @@ func XDGConfigDir(appName string) (string, error) {
 	return appDir(opXDGConfigDir, appName, XDGConfigHome)
 }
 
-// SystemConfigDir returns the system-wide config directory for app:
+// SystemConfigDir returns the system-wide config directory for
+// appName (validated as in [AppConfigDir]):
 //
-//	Linux/BSD: /etc/<appName>
-//	macOS:     /Library/Application Support/<appName>
-//	Windows:   %PROGRAMDATA%\<appName>
+//	Linux/BSD:     /etc/<appName>
+//	macOS:         /Library/Application Support/<appName>
+//	Windows:       %PROGRAMDATA%\<appName>
 //
 // The calling tool is responsible for creating the directory with
 // appropriate permissions and for handling the access-denied case
@@ -222,9 +230,9 @@ func SystemConfigDir(appName string) (string, error) {
 
 // SystemDataDir is the system-wide analog of [DataDir].
 //
-//	Linux/BSD: /var/lib/<appName>
-//	macOS:     /Library/Application Support/<appName>
-//	Windows:   %PROGRAMDATA%\<appName>
+//	Linux/BSD:     /var/lib/<appName>
+//	macOS:         /Library/Application Support/<appName>
+//	Windows:       %PROGRAMDATA%\<appName>
 func SystemDataDir(appName string) (string, error) {
 	if err := validateAppName(appName); err != nil {
 		return "", wrapPathError(opSystemDataDir, appName, err)
@@ -238,9 +246,9 @@ func SystemDataDir(appName string) (string, error) {
 
 // SystemStateDir is the system-wide analog of [StateDir].
 //
-//	Linux/BSD: /var/lib/<appName>
-//	macOS:     /Library/Application Support/<appName>
-//	Windows:   %PROGRAMDATA%\<appName>
+//	Linux/BSD:     /var/lib/<appName>
+//	macOS:         /Library/Application Support/<appName>
+//	Windows:       %PROGRAMDATA%\<appName>
 func SystemStateDir(appName string) (string, error) {
 	if err := validateAppName(appName); err != nil {
 		return "", wrapPathError(opSystemStateDir, appName, err)

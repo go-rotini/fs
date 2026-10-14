@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -51,15 +50,20 @@ type LockHandle struct {
 
 // Lock acquires an exclusive advisory lock on path, blocking until
 // the lock is available. The lockfile is created if it does not yet
-// exist. Returns a [*LockHandle] that the caller must Release.
+// exist (mode 0o644); a symlink at path is refused with an error
+// wrapping [ErrSymlinkLoop], and an empty path returns an error
+// wrapping [ErrInvalidPath]. Returns a [*LockHandle] that the caller
+// must Release.
 //
-// On POSIX, this is flock(LOCK_EX) via [syscall.Flock]. On Windows,
-// it is LockFileEx(LOCKFILE_EXCLUSIVE_LOCK) via kernel32.LockFileEx
-// over a single sentinel byte far past end-of-file, so the lockfile's
-// own content stays readable while the lock is held (Windows
-// byte-range locks are otherwise mandatory). The lock is associated
-// with the open file handle, not the path; closing the file (via
-// Release) releases it.
+// On POSIX this is flock(2). On Windows it is LockFileEx over a single
+// byte far past end-of-file, so the lockfile's content stays readable
+// while the lock is held. The lock belongs to the open file handle,
+// not the process: a second Lock on the same path from the same
+// process blocks too. AIX is the exception: there it is a fcntl(2)
+// record lock, which belongs to the process, so a second Lock from
+// the same process succeeds at once, and closing any descriptor of
+// the file releases it. On js/wasm, wasip1 and Plan 9, Lock returns
+// [ErrNotSupported].
 //
 // Advisory only: cooperating processes must agree to call Lock to
 // see each other's locks. Direct file reads and writes ignore the
@@ -78,7 +82,7 @@ func LockShared(path string) (*LockHandle, error) {
 // TryLock attempts to acquire an exclusive lock on path without
 // blocking. Returns (handle, true, nil) on success and (nil, false,
 // nil) when the lock is held by another holder. Any other error is
-// returned as-is.
+// returned.
 func TryLock(path string) (*LockHandle, bool, error) {
 	h, err := acquireLock(path, lockKindExclusiveNoBlock)
 	switch {
@@ -92,12 +96,9 @@ func TryLock(path string) (*LockHandle, bool, error) {
 }
 
 // LockTimeout acquires an exclusive lock on path, blocking up to d.
-// Returns [ErrLockTimeout] if the lock is not acquired before d
-// elapses. A non-positive d behaves like [TryLock]: a single
-// non-blocking attempt that returns ErrLockTimeout on busy.
-//
-// Implemented as a poll-and-retry loop atop the non-blocking
-// acquire; the wait granularity is 50 ms.
+// If the lock is not acquired before d elapses the error wraps
+// [ErrLockTimeout]. A non-positive d makes a single non-blocking
+// attempt. The lock is polled every 50 ms.
 func LockTimeout(path string, d time.Duration) (*LockHandle, error) {
 	deadline := time.Now().Add(d)
 	for {
@@ -137,10 +138,10 @@ func WithLock(path string, fn func() error) (err error) {
 	return fn()
 }
 
-// IsLocked reports whether path currently has an exclusive lock held
-// by another holder. Returns false on any error (path missing,
-// permission denied, etc.) so the predicate is safe to call from log
-// statements without error handling.
+// IsLocked reports whether another handle, in this process or another,
+// currently holds a shared or exclusive lock on path. It probes with
+// [TryLock], so a missing path is created as a side effect. Returns
+// false on any error.
 func IsLocked(path string) bool {
 	h, ok, err := TryLock(path)
 	if err != nil {
@@ -164,7 +165,7 @@ type pidLockConfig struct {
 // the bare PID-alive probe. The callback maps a PID to a string the
 // caller treats as a process identity, typically a process start time.
 //
-// The package's [ProcessStartTime] is the canonical argument:
+// [ProcessStartTime] is the usual source:
 //
 //	h, err := fs.PIDLock(path, fs.WithPIDLockFingerprint(func(pid int) string {
 //	    s, _ := fs.ProcessStartTime(pid)
@@ -184,21 +185,17 @@ func WithPIDLockFingerprint(fn func(pid int) string) PIDLockOption {
 	}
 }
 
-// PIDLock writes the calling process's PID to path and acquires an
-// exclusive lock on it. The lockfile content is the textual PID
-// followed by a newline, plus an optional fingerprint (see
-// [WithPIDLockFingerprint]).
+// PIDLock acquires an exclusive lock on path, blocking like [Lock],
+// then overwrites the file with the calling process's PID as
+// "<pid>\n", or "<pid> <fingerprint>\n" with
+// [WithPIDLockFingerprint].
 //
-// If path already exists, PIDLock reads the recorded PID. If the
-// recorded PID is alive and its fingerprint (if any) matches, PIDLock
-// blocks waiting for the lock as a normal [Lock] would. Otherwise
-// (PID dead, or PID alive but fingerprint changed indicating PID
-// recycle), PIDLock overwrites the file with the caller's PID and
-// returns the handle wrapped with [ErrStaleLock].
-//
-// Returns the handle and nil on a clean acquisition. Returns the
-// handle and a wrapped [ErrStaleLock] on a reclaimed stale lock.
-// Returns nil and an error on any acquire failure.
+// Before acquiring, PIDLock reads any PID already recorded in path.
+// If that process is no longer alive, or is alive but its fingerprint
+// has changed (the PID was recycled), the lock is reported as
+// reclaimed: PIDLock returns the valid handle together with an error
+// wrapping [ErrStaleLock]. On a clean acquisition the error is nil;
+// on failure the handle is nil.
 func PIDLock(path string, opts ...PIDLockOption) (*LockHandle, error) {
 	cfg := pidLockConfig{}
 	for _, opt := range opts {
@@ -243,9 +240,12 @@ func PIDLock(path string, opts ...PIDLockOption) (*LockHandle, error) {
 	return h, nil
 }
 
-// Release releases the lock and closes the underlying file. Idempotent;
-// the first call's error is returned, subsequent calls return nil.
-// Release does not remove the lockfile from disk.
+// Release releases the lock and closes the underlying file. It runs
+// once; later calls return the first call's result. Release does not
+// remove the lockfile from disk. For a [PIDLock] handle it empties the
+// file before unlocking, so only a holder that exited without
+// releasing leaves a PID behind for the next PIDLock to report as
+// stale.
 func (h *LockHandle) Release() error {
 	if h == nil {
 		return nil
@@ -268,6 +268,9 @@ func (h *LockHandle) PID() int {
 func (h *LockHandle) releaseInternal() error {
 	if h.f == nil {
 		return nil
+	}
+	if h.pid != 0 {
+		_ = h.f.Truncate(0) //nolint:errcheck // best effort: a PID left behind is only reported as a stale lock later
 	}
 	if err := unlockFile(h.f); err != nil {
 		_ = h.f.Close()
@@ -310,9 +313,13 @@ func acquireLockWithWriter(path string, kind lockKind, writePID int, writer func
 		return nil, wrapPathError(opLock, path, ErrInvalidPath)
 	}
 
-	flags := os.O_RDWR | os.O_CREATE
-	f, err := os.OpenFile(path, flags, lockFileMode)
+	// The lockfile often lives in a shared directory, so a symlink
+	// planted at path is refused rather than followed.
+	f, err := openNoFollow(path, os.O_RDWR|os.O_CREATE, lockFileMode)
 	if err != nil {
+		if pe, ok := errors.AsType[*PathError](err); ok {
+			err = pe.Cause
+		}
 		return nil, wrapPathError(opLock, path, err)
 	}
 
@@ -397,19 +404,4 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	return platformPIDAlive(pid)
-}
-
-// pidAliveSignal0 sends signal 0 to pid (POSIX). Returns true when
-// the kill succeeds or fails with EPERM (process exists but we lack
-// permission to signal it). False on ESRCH or any other error.
-func pidAliveSignal0(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, syscall.EPERM)
 }

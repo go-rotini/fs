@@ -385,7 +385,7 @@ func (r *Rotator) rotatedName() string {
 }
 
 func openRotatedFile(path string, perm os.FileMode) (*os.File, stdfs.FileInfo, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
+	f, err := openSharedAppend(path, perm)
 	if err != nil {
 		return nil, nil, wrapPathError(opRotateOpen, path, err)
 	}

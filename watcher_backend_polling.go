@@ -19,6 +19,7 @@ type pollingBackend struct {
 	mu       sync.Mutex
 	paths    map[string]*pollSnapshot            // absolute path -> last stat
 	dirChild map[string]map[string]*pollSnapshot // for watched directories: child name -> last stat
+	gone     map[string]bool                     // paths to unregister once a tick sees them missing
 	// statChildren makes each tick stat the children of watched directories, so writes to
 	// files inside them are reported. Without it children are only listed, which reports
 	// them appearing and disappearing.
@@ -63,6 +64,7 @@ func newPollingBackend(interval time.Duration) *pollingBackend {
 		interval: interval,
 		paths:    make(map[string]*pollSnapshot),
 		dirChild: make(map[string]map[string]*pollSnapshot),
+		gone:     make(map[string]bool),
 		out:      make(chan rawWatchEvent, 64),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -84,6 +86,7 @@ func (b *pollingBackend) AddPath(path string) error {
 		return ErrWatcherClosed
 	}
 	if _, ok := b.paths[abs]; ok {
+		delete(b.gone, abs)
 		return nil // already registered
 	}
 	snap := snapshotPath(abs)
@@ -116,6 +119,24 @@ func (b *pollingBackend) RemovePath(path string) error {
 		if p == abs || hasParentDir(p, abs) {
 			delete(b.paths, p)
 			delete(b.dirChild, p)
+			delete(b.gone, p)
+		}
+	}
+	return nil
+}
+
+func (b *pollingBackend) RemoveWhenGone(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err //nolint:wrapcheck // outer Watcher wraps via *PathError
+	}
+	abs = filepath.Clean(abs)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for p := range b.paths {
+		if p == abs || hasParentDir(p, abs) {
+			b.gone[p] = true
 		}
 	}
 	return nil
@@ -191,9 +212,15 @@ func (b *pollingBackend) tick() {
 		// Update only paths still registered: RemovePath may have run
 		// since the watch set was copied.
 		if _, still := b.paths[path]; still && !b.closed {
-			b.paths[path] = curr
-			if isDir {
-				b.dirChild[path] = currChildren
+			if b.gone[path] && !curr.exists {
+				delete(b.paths, path)
+				delete(b.dirChild, path)
+				delete(b.gone, path)
+			} else {
+				b.paths[path] = curr
+				if isDir {
+					b.dirChild[path] = currChildren
+				}
 			}
 		}
 		b.mu.Unlock()

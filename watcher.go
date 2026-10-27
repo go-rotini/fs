@@ -361,13 +361,14 @@ func (w *Watcher) overflowOwed() bool {
 // followSubdirectory keeps a recursive directory watch in step with
 // the tree: a directory that appears beneath the target is watched,
 // with everything already inside it reported as created, and one that
-// disappears is no longer watched.
+// disappears is no longer watched once the backend has reported what
+// was inside it removed.
 func (w *Watcher) followSubdirectory(ev rawWatchEvent) {
 	if !w.isDir || !w.recursive || ev.path == w.target {
 		return
 	}
 	if ev.op&WatchRemove != 0 && ev.op&WatchCreate == 0 {
-		_ = w.backend.RemovePath(ev.path) //nolint:errcheck // only fails to resolve an absolute path, which ev.path already is
+		_ = w.backend.RemoveWhenGone(ev.path) //nolint:errcheck // only fails to resolve an absolute path, which ev.path already is
 		return
 	}
 	if ev.op&WatchCreate == 0 {

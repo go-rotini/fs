@@ -14,6 +14,12 @@ type watcherBackend interface {
 	// is a no-op (no error).
 	RemovePath(path string) error
 
+	// RemoveWhenGone unregisters path and every path registered
+	// beneath it, each once the backend has seen it disappear, so the
+	// entries they held are still reported removed. Adding a path again
+	// cancels this for it.
+	RemoveWhenGone(path string) error
+
 	// Events returns the channel of raw events the backend emits.
 	// The channel closes when Close() is called.
 	Events() <-chan rawWatchEvent

@@ -785,9 +785,7 @@ func TestPollingBackend_StopAt(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no event for child create")
 	}
-	if err := os.Remove(child); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
+	removeWatched(t, child)
 	select {
 	case <-b.Events():
 	case <-time.After(time.Second):
@@ -862,6 +860,23 @@ func awaitOp(t *testing.T, ch <-chan WatchEvent, path string, op WatchOp) {
 	}
 }
 
+// removeWatched removes path and everything in it, retrying while it fails: on Windows a poll
+// can hold the path open for a moment, and removing an open path fails there.
+func removeWatched(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.RemoveAll(path)
+		if err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("remove %s: %v", path, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A directory watcher reports writes to files inside it, at the top level and in subdirectories.
 func TestWatcher_DirWatchSeesFileWrite(t *testing.T) {
 	t.Parallel()
@@ -923,9 +938,7 @@ func TestWatcher_DirWatchFollowsNewSubdirectory(t *testing.T) {
 	awaitOp(t, ch, late, WatchWrite)
 
 	// Removed and recreated, the subdirectory is followed again.
-	if err := os.RemoveAll(filepath.Join(dir, "a")); err != nil {
-		t.Fatal(err)
-	}
+	removeWatched(t, filepath.Join(dir, "a"))
 	awaitOp(t, ch, late, WatchRemove)
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
@@ -987,9 +1000,7 @@ func TestPollingBackend_RemovedDirReportsChildrenOnce(t *testing.T) {
 	if err := b.AddPath(dir); err != nil {
 		t.Fatalf("AddPath: %v", err)
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
+	removeWatched(t, dir)
 	removes := 0
 	deadline := time.After(200 * time.Millisecond)
 	for {

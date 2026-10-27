@@ -470,6 +470,51 @@ func TestPollingBackend_RemovePath(t *testing.T) {
 	}
 }
 
+// A subdirectory dropped as gone before any tick saw it vanish still reports the files it held.
+func TestPollingBackend_RemoveWhenGoneReportsContents(t *testing.T) {
+	t.Parallel()
+	b := newPollingBackend(time.Hour) // ticks only when called
+	t.Cleanup(func() { _ = b.Close() })
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "a", "b")
+	file := filepath.Join(sub, "late.txt")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{root, filepath.Join(root, "a"), sub} {
+		if err := b.AddPath(p); err != nil {
+			t.Fatalf("AddPath(%s): %v", p, err)
+		}
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.RemoveWhenGone(filepath.Join(root, "a")); err != nil {
+		t.Fatalf("RemoveWhenGone: %v", err)
+	}
+	b.tick()
+
+	removed := false
+	for len(b.out) > 0 {
+		if ev := <-b.out; ev.path == file && ev.op.Has(WatchRemove) {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Errorf("no remove event for %s", file)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.paths[sub]; ok {
+		t.Errorf("%s is still registered after a tick saw it gone", sub)
+	}
+}
+
 func TestPollingBackend_AddAfterCloseErrors(t *testing.T) {
 	t.Parallel()
 	b := newPollingBackend(pollInterval)
